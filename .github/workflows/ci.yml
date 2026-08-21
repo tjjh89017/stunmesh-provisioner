@@ -3,8 +3,7 @@
 # This workflow checks format, module tidiness, vet, and unit tests. It then
 # builds each release target and uploads the binaries as artifacts.
 #
-# The Makefile is the source of truth for every build and check command.
-# This workflow calls make targets. It does not call go commands directly.
+# Steps live in `.github/actions/*`; the Makefile is the source of truth.
 
 name: CI
 
@@ -28,22 +27,10 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: ./.github/actions/setup-go
 
-      - name: Check formatting
-        run: make fmt-check
-
-      - name: Check module tidiness
-        run: make tidy-check
-
-      - name: Run go vet
-        run: make vet
-
-      - name: Run tests
-        run: make test
+      - name: Check
+        uses: ./.github/actions/check
 
   build:
     name: Build (${{ matrix.target }})
@@ -58,16 +45,12 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: ./.github/actions/setup-go
+
+      - name: Build
+        uses: ./.github/actions/build
         with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build ${{ matrix.target }}
-        run: make ${{ matrix.target }}
-
-      - name: Record binary sizes
-        run: make size
+          target: ${{ matrix.target }}
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v7

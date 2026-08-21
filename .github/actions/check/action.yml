@@ -1,0 +1,21 @@
+name: 'Check'
+description: 'Check format, module tidiness, vet, and unit tests. The Makefile is the source of truth.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check formatting
+      shell: bash
+      run: make fmt-check
+
+    - name: Check module tidiness
+      shell: bash
+      run: make tidy-check
+
+    - name: Run go vet
+      shell: bash
+      run: make vet
+
+    - name: Run tests
+      shell: bash
+      run: make test

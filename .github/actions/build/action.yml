@@ -1,0 +1,27 @@
+name: 'Build'
+description: 'Build one release target and record its binary size. The Makefile is the source of truth.'
+
+inputs:
+  target:
+    description: 'Make target to build (build, agent-mips, agent-mipsle, agent-arm64)'
+    required: true
+  embedca:
+    description: 'Embed the Mozilla CA bundle when not 0, passed to make as EMBED_CA'
+    required: false
+    default: '0'
+
+outputs:
+  dist-dir:
+    description: 'Directory that holds the built binaries'
+    value: 'dist'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build ${{ inputs.target }}
+      shell: bash
+      run: make EMBED_CA=${{ inputs.embedca }} ${{ inputs.target }}
+
+    - name: Record binary sizes
+      shell: bash
+      run: make size
