@@ -13,6 +13,9 @@ package bundle
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"os/exec"
 	"testing"
 )
 
@@ -118,5 +121,104 @@ func TestUnescapeLineSeparators(t *testing.T) {
 				t.Fatalf("unescapeLineSeparators(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNormalizeEscapesMatchesJQAcrossCodePoints is a table-driven,
+// whole-code-point sweep of every place Go's encoding/json and jq
+// 1.8.2 are known (or suspected) to diverge in how they escape a
+// string byte, plus a sample of code points where they are expected
+// to already agree. For each code point it builds a valid bundle with
+// that character in `stunmesh`, and a second valid bundle with it as
+// a peer-name map key, runs Canonical, and compares byte-for-byte
+// with `jq -S -c 'del(.timestamp)'`. This is the empirical discovery
+// step: it does not assume which code points diverge, it checks all
+// of 0x00-0x1F, 0x7F, U+2028, U+2029, plus `"`, `\`, `/`, and two
+// non-ASCII samples.
+func TestNormalizeEscapesMatchesJQAcrossCodePoints(t *testing.T) {
+	jqPath, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not found on PATH, skipping byte-equality check against the jq reference")
+	}
+
+	var codePoints []rune
+	for cp := rune(0x00); cp <= 0x1F; cp++ {
+		codePoints = append(codePoints, cp)
+	}
+	codePoints = append(codePoints, 0x7F, 0x2028, 0x2029, '"', '\\', '/', 'é', '中')
+
+	for _, cp := range codePoints {
+		name := fmt.Sprintf("U+%04X", cp)
+
+		t.Run(name+"/stunmesh", func(t *testing.T) {
+			m := map[string]any{
+				"version":   1,
+				"namespace": "n",
+				"node_id":   "a",
+				"timestamp": 1,
+				"wg":        map[string]any{},
+				"stunmesh":  string(cp),
+			}
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			checkCanonicalMatchesJQ(t, jqPath, data)
+		})
+
+		t.Run(name+"/peer-name-key", func(t *testing.T) {
+			m := map[string]any{
+				"version":   1,
+				"namespace": "n",
+				"node_id":   "a",
+				"timestamp": 1,
+				"stunmesh":  "",
+				"wg": map[string]any{
+					"wg0": map[string]any{
+						"private_key": "k",
+						"addresses":   []any{"1.1.1.1/32"},
+						"peers": map[string]any{
+							string(cp): map[string]any{
+								"public_key":  "p",
+								"allowed_ips": []any{"1.1.1.2/32"},
+							},
+						},
+					},
+				},
+			}
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			checkCanonicalMatchesJQ(t, jqPath, data)
+		})
+	}
+}
+
+// checkCanonicalMatchesJQ parses data, runs Canonical, and fails the
+// test if the result does not match `jq -S -c 'del(.timestamp)'` on
+// the same input, byte for byte.
+func checkCanonicalMatchesJQ(t *testing.T, jqPath string, data []byte) {
+	t.Helper()
+
+	b, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	got, err := b.Canonical()
+	if err != nil {
+		t.Fatalf("Canonical: unexpected error: %v", err)
+	}
+
+	cmd := exec.Command(jqPath, "-S", "-c", "del(.timestamp)")
+	cmd.Stdin = bytes.NewReader(data)
+	want, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("jq: %v", err)
+	}
+	want = bytes.TrimRight(want, "\n")
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Canonical mismatch with jq reference\n got: %s\nwant: %s", got, want)
 	}
 }

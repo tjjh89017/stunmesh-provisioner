@@ -33,6 +33,12 @@
 // Canonical's output on a bundle that fails Validate (for example, a
 // required list or map left nil) is unspecified; callers should call
 // Validate before Canonical.
+//
+// Canonical also normalizes its output's character escapes to match
+// jq's choices (a raw U+007F byte becomes `\u007f`, and raw
+// U+2028/U+2029 bytes replace encoding/json's `\u2028`/`\u2029`
+// escapes) so the result equals `jq -S -c 'del(.timestamp)'` byte for
+// byte on every input Validate accepts.
 package bundle
 
 import (
@@ -407,13 +413,55 @@ func (b *Bundle) Canonical() ([]byte, error) {
 	if err := enc.Encode(m); err != nil {
 		return nil, fmt.Errorf("bundle: marshal canonical: %w", err)
 	}
-	// encoding/json always escapes U+2028 and U+2029 as the six
-	// ASCII bytes `\u2028` / `\u2029`, even with SetEscapeHTML(false);
-	// jq emits the raw UTF-8 bytes. Undo that escaping to match the jq
-	// reference bytes.
-	out := unescapeLineSeparators(buf.Bytes())
+	// encoding/json and jq -S -c disagree on the escape spelling of a
+	// handful of bytes; normalizeEscapes rewrites Go's output to jq's
+	// choices so Canonical matches the `jq -S -c 'del(.timestamp)'`
+	// reference byte for byte (PLAN.md 4.5).
+	out := normalizeEscapes(buf.Bytes())
 	// Encode always appends a trailing newline; the canonical form has none.
 	return bytes.TrimRight(out, "\n"), nil
+}
+
+// normalizeEscapes rewrites the byte-level differences between
+// encoding/json's and jq 1.8.2's escaping choices, so Canonical's
+// output matches the `jq -S -c 'del(.timestamp)'` reference exactly.
+// Two differences are known (found by sweeping every code point in
+// 0x00-0x1F, 0x7F, U+2028, U+2029, `"`, `\`, `/`, and non-ASCII
+// samples through both encoders): encoding/json emits U+007F (DEL) as
+// a raw, unescaped byte where jq emits `\u007f`, and encoding/json
+// always escapes U+2028/U+2029 as `\u2028`/`\u2029` where jq emits
+// their raw UTF-8 bytes. Every other code point already agrees
+// between the two encoders (both use the short forms `\b \f \n \r \t`
+// for their respective bytes and `\u00XX` for the remaining control
+// bytes).
+func normalizeEscapes(data []byte) []byte {
+	out := unescapeLineSeparators(data)
+	out = escapeRawDEL(out)
+	return out
+}
+
+// escapeRawDEL replaces every raw 0x7F (DEL) byte with the six-byte
+// escape `\u007f`, matching jq's output. This is a plain byte-level
+// replace, not a backslash-parity-aware scan like
+// unescapeLineSeparators: 0x7F is a single byte that never occurs as
+// a continuation byte of a multi-byte UTF-8 sequence (those all have
+// the high bit set) and is not JSON-structural (quote, backslash), so
+// every occurrence of the raw byte in encoding/json's output is
+// genuinely an unescaped DEL character, never part of some other
+// encoded sequence.
+func escapeRawDEL(data []byte) []byte {
+	if bytes.IndexByte(data, 0x7F) == -1 {
+		return data
+	}
+	out := make([]byte, 0, len(data))
+	for _, b := range data {
+		if b == 0x7F {
+			out = append(out, '\\', 'u', '0', '0', '7', 'f')
+		} else {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // u2028Bytes and u2029Bytes are the raw UTF-8 encodings of U+2028
