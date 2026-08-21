@@ -1142,7 +1142,11 @@ func TestPeerOptionsStates(t *testing.T) {
 }
 
 // TestInterfaceListenPortStates covers the three states of the
-// optional `listen_port` field: absent, explicit zero, and populated.
+// optional `listen_port` field: absent, populated, and explicit zero.
+// Explicit zero is outside the valid range (1-65535, see
+// TestValidateListenPortRange), so it is covered here as a rejection,
+// not as a jq-equality case: the byte-equality contract of Canonical
+// only applies to input Validate accepts (PLAN.md 4.5).
 func TestInterfaceListenPortStates(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1151,7 +1155,6 @@ func TestInterfaceListenPortStates(t *testing.T) {
 		field string
 	}{
 		{"absent", ``},
-		{"explicit zero", `,"listen_port":0`},
 		{"populated", `,"listen_port":51820`},
 	}
 
@@ -1169,10 +1172,22 @@ func TestInterfaceListenPortStates(t *testing.T) {
 			wantJQCanonical(t, jqPath, data, got)
 		})
 	}
+
+	t.Run("explicit zero is out of range", func(t *testing.T) {
+		data := []byte(`{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"listen_port":0}}}`)
+		b := mustParse(t, data)
+		if err := b.Validate("n", "a"); !errors.Is(err, bundle.ErrRange) {
+			t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+		}
+	})
 }
 
 // TestInterfaceMTUStates covers the three states of the optional
-// `mtu` field: absent, explicit zero, and populated.
+// `mtu` field: absent, populated, and explicit zero. Explicit zero is
+// outside the valid range (576-65535, see TestValidateMTURange), so
+// it is covered here as a rejection, not as a jq-equality case: the
+// byte-equality contract of Canonical only applies to input Validate
+// accepts (PLAN.md 4.5).
 func TestInterfaceMTUStates(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1181,7 +1196,6 @@ func TestInterfaceMTUStates(t *testing.T) {
 		field string
 	}{
 		{"absent", ``},
-		{"explicit zero", `,"mtu":0`},
 		{"populated", `,"mtu":1420`},
 	}
 
@@ -1199,6 +1213,14 @@ func TestInterfaceMTUStates(t *testing.T) {
 			wantJQCanonical(t, jqPath, data, got)
 		})
 	}
+
+	t.Run("explicit zero is out of range", func(t *testing.T) {
+		data := []byte(`{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"mtu":0}}}`)
+		b := mustParse(t, data)
+		if err := b.Validate("n", "a"); !errors.Is(err, bundle.ErrRange) {
+			t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+		}
+	})
 }
 
 // TestInterfaceRouteAllowedIPsStates covers the three states of the
@@ -1323,5 +1345,284 @@ func TestPeerPersistentKeepaliveStates(t *testing.T) {
 			}
 			wantJQCanonical(t, jqPath, data, got)
 		})
+	}
+}
+
+// listenPortDoc, mtuDoc, metricDoc, and keepaliveDoc build a minimal
+// valid bundle JSON document with the given field set on `wg0`, or on
+// its first route (metric) or its `bravo` peer (persistent_keepalive).
+// Shared by the range-boundary and number-literal tests below.
+func listenPortDoc(field string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
+}
+
+func mtuDoc(field string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
+}
+
+func metricDoc(metric string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"routes":[{"cidr":"10.0.0.0/24","metric":` + metric + `}]}}}`
+}
+
+func keepaliveDoc(field string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{"bravo":{"public_key":"p","allowed_ips":["1.1.1.2/32"]` + field + `}}}}}`
+}
+
+// TestValidateListenPortRange checks the `listen_port` bound
+// (1-65535, docs/format.md 5) at and past each edge.
+func TestValidateListenPortRange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"just below minimum", "0", true},
+		{"minimum", "1", false},
+		{"maximum", "65535", false},
+		{"just above maximum", "65536", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(listenPortDoc(`,"listen_port":` + tc.value))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestValidateMTURange checks the `mtu` bound (576-65535,
+// docs/format.md 5) at and past each edge.
+func TestValidateMTURange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"just below minimum", "575", true},
+		{"minimum", "576", false},
+		{"maximum", "65535", false},
+		{"just above maximum", "65536", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(mtuDoc(`,"mtu":` + tc.value))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestValidateRouteMetricRange checks the `routes[].metric` bound
+// (0-4294967295, docs/format.md 5) at and past each edge.
+func TestValidateRouteMetricRange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"just below minimum", "-1", true},
+		{"minimum", "0", false},
+		{"maximum", "4294967295", false},
+		{"just above maximum", "4294967296", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(metricDoc(tc.value))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestValidatePersistentKeepaliveRange checks the
+// `persistent_keepalive` bound (0-65535, docs/format.md 5) at and
+// past each edge.
+func TestValidatePersistentKeepaliveRange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"just below minimum", "-1", true},
+		{"minimum", "0", false},
+		{"maximum", "65535", false},
+		{"just above maximum", "65536", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(keepaliveDoc(`,"persistent_keepalive":` + tc.value))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestValidateTimestampRange checks the timestamp upper bound
+// (2^53-1, docs/format.md 5) at and past the edge. The lower bound
+// (must be positive) is already covered by
+// TestValidateRejectsNonPositiveTimestamp.
+func TestValidateTimestampRange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name      string
+		timestamp string
+		wantErr   bool
+	}{
+		{"maximum", "9007199254740991", false},
+		{"just above maximum", "9007199254740992", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(`{"version":1,"namespace":"n","node_id":"a","timestamp":` + tc.timestamp + `,"stunmesh":"","wg":{}}`)
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestParseRejectsNonCanonicalNumberLiterals covers ErrNumber: a JSON
+// number literal that Go's *int/int64 decoding accepts but that jq
+// would not represent identically (a fraction, an exponent, or `-0`,
+// which Go silently rounds to plain `0`).
+func TestParseRejectsNonCanonicalNumberLiterals(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+	}{
+		{
+			name: "metric negative zero",
+			json: metricDoc("-0"),
+		},
+		{
+			name: "mtu fraction",
+			json: mtuDoc(`,"mtu":1.0`),
+		},
+		{
+			name: "listen_port exponent lowercase e",
+			json: listenPortDoc(`,"listen_port":1e3`),
+		},
+		{
+			name: "listen_port exponent uppercase E",
+			json: listenPortDoc(`,"listen_port":1E3`),
+		},
+		{
+			name: "timestamp negative zero",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":-0,"stunmesh":"","wg":{}}`,
+		},
+		{
+			name: "version fraction",
+			json: `{"version":1.0,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := bundle.Parse([]byte(tc.json))
+			if !errors.Is(err, bundle.ErrNumber) {
+				t.Fatalf("Parse: got %v, want error wrapping ErrNumber", err)
+			}
+		})
+	}
+}
+
+// TestParseAcceptsCanonicalNumberLiterals proves
+// TestParseRejectsNonCanonicalNumberLiterals is not vacuous: a bundle
+// whose numbers are all plain base-10 integers still parses, and the
+// golden vector (whose numbers were never in question) still parses
+// and validates.
+func TestParseAcceptsCanonicalNumberLiterals(t *testing.T) {
+	data := []byte(`{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"listen_port":51820,"mtu":1420,"routes":[{"cidr":"10.0.0.0/24","metric":0}]}}}`)
+	b := mustParse(t, data)
+	if err := b.Validate("n", "a"); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+
+	b2 := mustParse(t, testvectors.BundleJSON())
+	if err := b2.Validate("test-ns", "alpha"); err != nil {
+		t.Fatalf("Validate on golden vector: unexpected error: %v", err)
 	}
 }

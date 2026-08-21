@@ -126,29 +126,35 @@ omit the key instead of setting it to `null` (section 6).
 | `version` | Yes | Must be `1`. |
 | `namespace` | Yes | Must equal the receiving node's namespace. |
 | `node_id` | Yes | Must equal the receiving node's node ID. |
-| `timestamp` | Yes | Unix time at publish. Picks the newest of several values (section 8). Not compared with the node's own clock. |
+| `timestamp` | Yes | Unix time at publish. Positive integer, at most 9007199254740991 (2^53-1). Picks the newest of several values (section 8). Not compared with the node's own clock. |
 | `wg` | Yes | Map of interface name to interface. Can be empty (remove all interfaces). Absent is an error. |
 | `wg.*.private_key` | Yes | Tunnel private key. |
-| `wg.*.listen_port` | No | Absent: WireGuard picks a random port. |
+| `wg.*.listen_port` | No | Integer, 1-65535. Absent: WireGuard picks a random port. |
 | `wg.*.addresses` | Yes | List. At least one entry. |
-| `wg.*.mtu` | No | Absent: use the platform default. |
+| `wg.*.mtu` | No | Integer, 576-65535. Absent: use the platform default. |
 | `wg.*.route_allowed_ips` | No | Boolean. Default `true`. Installs a route for each peer's `allowed_ips` on this interface. |
 | `wg.*.routes` | No | List of static routes on this interface. Default empty. |
 | `wg.*.options` | No | Map of string to string. Extra options for the interface. |
 | `routes[].cidr` | Yes | IPv4 or IPv6 prefix. |
 | `routes[].gateway` | No | Next hop. Absent: on-link through the interface. Must not be present and empty (`""`); `Validate` rejects that. |
-| `routes[].metric` | No | Integer. |
+| `routes[].metric` | No | Integer, 0-4294967295. |
 | `wg.*.peers` | Yes | Map of peer name to peer. Can be empty. |
 | `peers.*.public_key` | Yes | Peer tunnel public key. |
 | `peers.*.preshared_key` | No | Must not be present and empty (`""`); `Validate` rejects that. |
 | `peers.*.allowed_ips` | Yes | List. At least one entry. |
 | `peers.*.endpoint` | No | `host:port`. IPv6: `[addr]:port`. Must not be present and empty (`""`); `Validate` rejects that. |
-| `peers.*.persistent_keepalive` | No | Seconds. |
+| `peers.*.persistent_keepalive` | No | Integer, seconds, 0-65535. |
 | `peers.*.options` | No | Map of string to string. Extra options for the peer. |
 | `stunmesh` | Yes | String. Full `stunmesh-go` `config.yaml` text. The agent does not parse it. Empty string (`""`): no stunmesh config, and still counts as present. `Validate` rejects a bundle where the key is absent entirely. |
 
 A bundle must not have a key that is not in this table, at any
 level. `Validate` rejects a bundle that fails a rule in this table.
+
+Every number in the bundle must be a plain base-10 integer: no
+fraction (`1.0`), no exponent (`1e3`), no `-0`. Go's `*int`/`int64`
+decoding and jq's float64 arithmetic disagree on these spellings, so
+`Parse` rejects them outright rather than risk `Canonical` diverging
+from the `jq -S -c 'del(.timestamp)'` reference (section 7).
 
 `Validate` does not check these two things:
 
@@ -164,16 +170,17 @@ The node runs these checks, in order, on a decrypted bundle:
 | # | Check |
 |---|---|
 | 1 | No `null` value exists anywhere in the JSON, at any depth. |
-| 2 | `version` is `1`. |
-| 3 | `namespace` equals the node's namespace. |
-| 4 | `node_id` equals the node's node ID. |
-| 5 | `timestamp` is a positive integer. |
-| 6 | `stunmesh` is present (an empty string is valid; the key must exist). |
-| 7 | `wg` is present (an empty map is valid; the key must exist). |
-| 8 | No unknown key exists at any level. |
-| 9 | Every interface has `private_key`, at least one address, and a `peers` map. |
-| 10 | Every peer has `public_key` and at least one `allowed_ips` entry, and does not have a present-but-empty `preshared_key` or `endpoint`. |
-| 11 | Every route has a `cidr`, and does not have a present-but-empty `gateway`. |
+| 2 | Every number in the JSON is a plain base-10 integer: no fraction, no exponent, no `-0`. |
+| 3 | `version` is `1`. |
+| 4 | `namespace` equals the node's namespace. |
+| 5 | `node_id` equals the node's node ID. |
+| 6 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
+| 7 | `stunmesh` is present (an empty string is valid; the key must exist). |
+| 8 | `wg` is present (an empty map is valid; the key must exist). |
+| 9 | No unknown key exists at any level. |
+| 10 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
+| 11 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
+| 12 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
 
 If one check fails, the node rejects the value. The node changes no
 file.

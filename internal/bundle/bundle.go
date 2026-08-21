@@ -14,6 +14,11 @@
 // (base64, length) or CIDR syntax. Those checks are out of scope for
 // this package.
 //
+// Every JSON number in the input must be a plain base-10 integer
+// (ErrNumber; see its doc comment), and `timestamp`, `listen_port`,
+// `mtu`, `routes[].metric`, and `persistent_keepalive` must each fall
+// within the range documented in docs/format.md 5 (ErrRange).
+//
 // Canonical form preserves the presence of empty containers exactly
 // as received: a bundle parsed from JSON that explicitly has
 // `"wg":{}`, `"routes":[]`, or `"options":{}` keeps that key in its
@@ -46,6 +51,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -226,19 +232,35 @@ var errParse = errors.New("bundle: invalid bundle JSON")
 // input meant to keep. Omit the key instead of setting it to `null`.
 var ErrNull = errors.New("bundle: null is not permitted; omit the key instead")
 
+// ErrNumber means a JSON number literal somewhere in the input is not
+// a plain base-10 integer that both Go and jq represent identically.
+// Rejected spellings: a fraction (`1.0`), an exponent (`1e3`, `1E3`),
+// `-0`, and any literal too large for a signed 64-bit integer. Go's
+// `*int` decoding and jq's float64 arithmetic diverge on exactly
+// these inputs (a `-0` literal decodes to Go `0` but jq keeps the
+// sign; a value beyond 2^53 loses precision under jq's float64), so
+// Parse rejects them outright rather than risk Canonical silently
+// disagreeing with the `jq -S -c 'del(.timestamp)'` reference.
+var ErrNumber = errors.New("bundle: number is not a plain base-10 integer")
+
 // Parse decodes an inner bundle from JSON.
 //
 // Parse rejects any key that is not in the field table of PLAN.md 4.3,
-// at any level, rejects data that follows the JSON object, and
-// rejects a `null` anywhere in the input (ErrNull). Parse never puts a
-// field value in its error message; the bundle may hold private keys.
+// at any level, rejects data that follows the JSON object, rejects a
+// `null` anywhere in the input (ErrNull), and rejects a JSON number
+// literal that is not a plain base-10 integer representable exactly
+// in both Go and jq (ErrNumber; see its doc comment). Parse never
+// puts a field value in its error message; the bundle may hold
+// private keys.
 func Parse(data []byte) (*Bundle, error) {
+	dec0 := json.NewDecoder(bytes.NewReader(data))
+	dec0.UseNumber()
 	var raw any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := dec0.Decode(&raw); err != nil {
 		return nil, errParse
 	}
-	if containsNull(raw) {
-		return nil, ErrNull
+	if err := checkRaw(raw); err != nil {
+		return nil, err
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -261,28 +283,52 @@ func Parse(data []byte) (*Bundle, error) {
 	return &b, nil
 }
 
-// containsNull reports whether v, decoded from JSON into `any`, has a
-// `null` anywhere: as v itself, as an object value at any depth, or
-// as an array element at any depth.
-func containsNull(v any) bool {
+// checkRaw walks v, decoded from JSON into `any` with
+// json.Decoder.UseNumber(), and reports the first problem found: a
+// `null` anywhere (ErrNull; as v itself, an object value, or an array
+// element, at any depth) or a json.Number literal that is not a plain
+// base-10 integer (ErrNumber; see its doc comment).
+func checkRaw(v any) error {
 	if v == nil {
-		return true
+		return ErrNull
 	}
 	switch t := v.(type) {
 	case map[string]any:
 		for _, val := range t {
-			if containsNull(val) {
-				return true
+			if err := checkRaw(val); err != nil {
+				return err
 			}
 		}
 	case []any:
 		for _, val := range t {
-			if containsNull(val) {
-				return true
+			if err := checkRaw(val); err != nil {
+				return err
 			}
 		}
+	case json.Number:
+		if err := checkNumber(t); err != nil {
+			return err
+		}
 	}
-	return false
+	return nil
+}
+
+// checkNumber reports ErrNumber if n's literal text is not a plain
+// base-10 integer: it contains `.`, `e`, or `E`, it starts with
+// `-0`, or it does not parse with strconv.ParseInt(s, 10, 64). See
+// ErrNumber's doc comment for why each of these is rejected.
+func checkNumber(n json.Number) error {
+	s := n.String()
+	if strings.ContainsAny(s, ".eE") {
+		return ErrNumber
+	}
+	if strings.HasPrefix(s, "-0") {
+		return ErrNumber
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+		return ErrNumber
+	}
+	return nil
 }
 
 // isUnknownFieldError reports whether err is the stdlib "unknown field"
@@ -303,6 +349,16 @@ var (
 	ErrNodeID = errors.New("bundle: node_id does not match")
 	// ErrTimestamp means the bundle timestamp is not a positive value.
 	ErrTimestamp = errors.New("bundle: timestamp is not positive")
+	// ErrRange means a numeric field is present but outside the range
+	// documented in docs/format.md 5: `timestamp` (upper bound only;
+	// the lower bound is ErrTimestamp), `listen_port`, `mtu`,
+	// `routes[].metric`, and `persistent_keepalive`. Each bound closes
+	// a gap between Go's *int/int64 decoding and jq's float64
+	// arithmetic: a value outside the bound would round differently
+	// under jq than it decodes in Go, breaking the
+	// `jq -S -c 'del(.timestamp)'` byte-equality contract of
+	// Canonical (PLAN.md 4.5).
+	ErrRange = errors.New("bundle: numeric field is out of range")
 	// ErrStunmesh means the bundle stunmesh field is absent. An
 	// explicit empty string is valid; only a missing key is not.
 	ErrStunmesh = errors.New("bundle: stunmesh is missing")
@@ -334,6 +390,14 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 	if b.Timestamp <= 0 {
 		return ErrTimestamp
 	}
+	// 2^53-1: the largest integer jq's float64 arithmetic represents
+	// exactly. A larger timestamp would round under jq but not under
+	// Go's int64, breaking Canonical's byte-equality with the jq
+	// reference (PLAN.md 4.5).
+	const maxSafeInteger = 9007199254740991
+	if b.Timestamp > maxSafeInteger {
+		return fmt.Errorf("%w: timestamp exceeds %d", ErrRange, maxSafeInteger)
+	}
 	if b.Stunmesh == nil {
 		return ErrStunmesh
 	}
@@ -351,6 +415,12 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 		if iface.Peers == nil {
 			return fmt.Errorf("%w %q: peers is missing", ErrInterface, name)
 		}
+		if iface.ListenPort != nil && (*iface.ListenPort < 1 || *iface.ListenPort > 65535) {
+			return fmt.Errorf("%w %q: listen_port must be between 1 and 65535", ErrRange, name)
+		}
+		if iface.MTU != nil && (*iface.MTU < 576 || *iface.MTU > 65535) {
+			return fmt.Errorf("%w %q: mtu must be between 576 and 65535", ErrRange, name)
+		}
 
 		for pname, peer := range iface.Peers {
 			if peer.PublicKey == "" {
@@ -365,6 +435,9 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 			if peer.Endpoint != nil && *peer.Endpoint == "" {
 				return fmt.Errorf("%w %q: endpoint is present but empty", ErrPeer, pname)
 			}
+			if peer.PersistentKeepalive != nil && (*peer.PersistentKeepalive < 0 || *peer.PersistentKeepalive > 65535) {
+				return fmt.Errorf("%w %q: persistent_keepalive must be between 0 and 65535", ErrRange, pname)
+			}
 		}
 
 		for _, route := range iface.Routes {
@@ -373,6 +446,11 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 			}
 			if route.Gateway != nil && *route.Gateway == "" {
 				return fmt.Errorf("%w on interface %q: gateway is present but empty", ErrRoute, name)
+			}
+			if route.Metric != nil {
+				if m := int64(*route.Metric); m < 0 || m > 4294967295 {
+					return fmt.Errorf("%w on interface %q: metric must be between 0 and 4294967295", ErrRange, name)
+				}
 			}
 		}
 	}
