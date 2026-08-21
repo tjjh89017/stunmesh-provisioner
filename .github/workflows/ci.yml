@@ -1,0 +1,78 @@
+# CI workflow.
+#
+# This workflow checks format, module tidiness, vet, and unit tests. It then
+# builds each release target and uploads the binaries as artifacts.
+#
+# The Makefile is the source of truth for every build and check command.
+# This workflow calls make targets. It does not call go commands directly.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Check module tidiness
+        run: make tidy-check
+
+      - name: Run go vet
+        run: make vet
+
+      - name: Run tests
+        run: make test
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [agent-mips, agent-mipsle, agent-arm64, build]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build ${{ matrix.target }}
+        run: make ${{ matrix.target }}
+
+      - name: Record binary sizes
+        run: make size
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error

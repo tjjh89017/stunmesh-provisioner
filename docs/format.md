@@ -1,0 +1,223 @@
+# DHT data format
+
+## 1. Scope
+
+This document defines the data that stunmesh-provisioner stores on the
+DHT and the data inside it. It defines the DHT key, the encrypted DHT
+value, and the inner bundle that the value carries after decryption.
+
+Implementers of a publisher (`stunmesh-provd`) or an agent
+(`stunmesh-agent`) are the readers of this document. `PLAN.md` section
+4 is the design source. This document tracks the code in
+`internal/bundle`, `internal/dhtkey`, `internal/crypto`, and
+`internal/dhtproxy`, and is more specific than `PLAN.md` where the
+code adds a rule.
+
+## 2. DHT key
+
+The DHT key is the lowercase hex SHA-1 digest of the namespace and
+the node ID, joined by one `/` character:
+
+```
+key = SHA1(namespace + "/" + node_id)
+```
+
+The key is a 40-character lowercase hex string.
+
+| Rule | Detail |
+|---|---|
+| `namespace` | Must not be empty. Must not contain `/`. |
+| `node_id` | Must not be empty. Must not contain `/`. |
+
+The no-`/` rule stops a collision. Without it, the pair
+`("a", "b/c")` and the pair `("a/b", "c")` join to the same string
+`a/b/c` and hash to the same key.
+
+Golden vector: for `namespace = "test-ns"` and `node_id = "alpha"`,
+the key is the value in `testdata/dhtkey.txt`:
+
+```
+be9c941a9a95be818895c0fb0ee60aecab6cb4f3
+```
+
+## 3. DHT value
+
+The DHT value is layered. Each layer wraps the one before it:
+
+1. The inner bundle, encoded as JSON (section 4).
+2. Sealed with `nacl/box`: `nonce(24 bytes) ‖ ciphertext`.
+3. The sealed bytes, encoded as standard base64 with padding.
+4. Placed in the `data` field of the dhtproxy JSON object.
+
+```
+data field  =  base64( nonce(24) || nacl/box(inner bundle JSON) )
+```
+
+Nothing is in plain text on the DHT. There is no outer JSON around
+the sealed bytes; the `data` field holds only the base64 text.
+
+The controller is the sender. It seals with its own private key and
+the node's identity public key. The node is the recipient. It opens
+with its own identity private key and the controller's public key.
+
+`Open` can fail. A failure means one thing only: the value did not
+open with this key pair. The three possible causes — a wrong
+recipient key, a wrong sender key, and a tampered ciphertext — are
+not distinguished. Distinguishing them would let an attacker probe
+keys with the difference.
+
+## 4. Inner bundle
+
+The inner bundle is the plain text that `nacl/box` reveals after a
+successful open. It is JSON. This example matches
+`testdata/bundle.json`, for namespace `test-ns`, node `alpha`. It has
+one interface (`wg0`) and two peers (`bravo`, `charlie`):
+
+```json
+{
+  "version": 1,
+  "namespace": "test-ns",
+  "node_id": "alpha",
+  "timestamp": 1755760000,
+  "wg": {
+    "wg0": {
+      "private_key": "<tunnel private key, base64>",
+      "listen_port": 51820,
+      "addresses": ["10.0.0.1/24", "fd00::1/64"],
+      "mtu": 1420,
+      "options": { "defaultroute": "0" },
+      "route_allowed_ips": false,
+      "routes": [
+        { "cidr": "10.20.0.0/16", "gateway": "10.0.0.2" },
+        { "cidr": "fd00:20::/32" }
+      ],
+      "peers": {
+        "bravo": {
+          "public_key": "<bravo tunnel public key>",
+          "allowed_ips": ["10.0.0.2/32"],
+          "endpoint": "bravo.example.com:51820",
+          "persistent_keepalive": 25,
+          "options": { "description": "Bravo" }
+        },
+        "charlie": {
+          "public_key": "<charlie tunnel public key>",
+          "allowed_ips": ["10.0.0.3/32", "fd00::3/128"]
+        }
+      }
+    }
+  },
+  "stunmesh": "interfaces:\n  wg0:\n    peers:\n      bravo: {}\nplugins:\n  cf:\n    type: cloudflare\n    api_token: test-token\n"
+}
+```
+
+## 5. Fields
+
+Canonical form (section 7) preserves presence: an absent field and an
+explicit empty one (`"wg":{}`, `"routes":[]`, `"options":{}`) produce
+different canonical bytes, so two such bundles compare unequal. A
+publisher should choose one form and keep it, and this format
+recommends always emitting `wg`, even when it is empty.
+
+| Field | Required | Rule |
+|---|---|---|
+| `version` | Yes | Must be `1`. |
+| `namespace` | Yes | Must equal the receiving node's namespace. |
+| `node_id` | Yes | Must equal the receiving node's node ID. |
+| `timestamp` | Yes | Unix time at publish. Picks the newest of several values (section 8). Not compared with the node's own clock. |
+| `wg` | No | Map of interface name to interface. Can be empty; absent is equivalent to empty. |
+| `wg.*.private_key` | Yes | Tunnel private key. |
+| `wg.*.listen_port` | No | Absent: WireGuard picks a random port. |
+| `wg.*.addresses` | Yes | List. At least one entry. |
+| `wg.*.mtu` | No | Absent: use the platform default. |
+| `wg.*.route_allowed_ips` | No | Boolean. Default `true`. Installs a route for each peer's `allowed_ips` on this interface. |
+| `wg.*.routes` | No | List of static routes on this interface. Default empty. |
+| `wg.*.options` | No | Map of string to string. Extra options for the interface. |
+| `routes[].cidr` | Yes | IPv4 or IPv6 prefix. |
+| `routes[].gateway` | No | Next hop. Absent: on-link through the interface. |
+| `routes[].metric` | No | Integer. |
+| `wg.*.peers` | Yes | Map of peer name to peer. Can be empty. |
+| `peers.*.public_key` | Yes | Peer tunnel public key. |
+| `peers.*.preshared_key` | No | |
+| `peers.*.allowed_ips` | Yes | List. At least one entry. |
+| `peers.*.endpoint` | No | `host:port`. IPv6: `[addr]:port`. |
+| `peers.*.persistent_keepalive` | No | Seconds. |
+| `peers.*.options` | No | Map of string to string. Extra options for the peer. |
+| `stunmesh` | Yes | String. Full `stunmesh-go` `config.yaml` text. The agent does not parse it. Empty string: no stunmesh config. |
+
+A bundle must not have a key that is not in this table, at any
+level. `Validate` rejects a bundle that fails a rule in this table.
+
+`Validate` does not check these two things:
+
+- Whether a key field (`private_key`, `public_key`,
+  `preshared_key`) is valid base64 or the right length.
+- Whether a `cidr`, `addresses`, or `allowed_ips` entry is a valid
+  CIDR or IP address.
+
+## 6. Checks after decryption
+
+The node runs these checks, in order, on a decrypted bundle:
+
+| # | Check |
+|---|---|
+| 1 | `version` is `1`. |
+| 2 | `namespace` equals the node's namespace. |
+| 3 | `node_id` equals the node's node ID. |
+| 4 | `timestamp` is a positive integer. |
+| 5 | No unknown key exists at any level. |
+| 6 | Every interface has `private_key`, at least one address, and a `peers` map. |
+| 7 | Every peer has `public_key` and at least one `allowed_ips` entry. |
+| 8 | Every route has a `cidr`. |
+
+If one check fails, the node rejects the value. The node changes no
+file.
+
+## 7. Change detection
+
+The content of a bundle is everything except `timestamp`.
+`timestamp` only orders values; it is not content.
+
+The canonical form of a bundle is its JSON with these rules:
+
+- No `timestamp` key.
+- All object keys sorted, at every level.
+- No whitespace between tokens.
+- No trailing newline.
+
+Two bundles with the same canonical form have the same content, even
+if their `timestamp` differs. The reference command for tests is:
+
+```sh
+jq -S -c 'del(.timestamp)'
+```
+
+Golden vector: `testdata/canonical.json` is the canonical form of
+`testdata/bundle.json`.
+
+## 8. More than one value
+
+The dhtproxy can return more than one value for one key: an old
+republish, or a value a third party wrote.
+
+An agent must:
+
+1. Try to decrypt every returned value.
+2. Keep the decrypted bundle with the largest `timestamp`.
+3. Read at most 64 values. Ignore the rest and log a warning.
+
+A flood of junk values under a key is a denial of service. It does
+not compromise a node, because a value that fails to decrypt is
+discarded. Version 1 of this format has no replay protection: an old,
+valid, correctly-sealed value stays valid until a newer one exists.
+
+## 9. Golden vectors
+
+| File | Pins |
+|---|---|
+| `testdata/dhtkey.txt` | Section 2, DHT key. |
+| `testdata/bundle.json` | Section 4, inner bundle. Section 5, fields. |
+| `testdata/canonical.json` | Section 7, canonical form. |
+| `testdata/ciphertext.b64` | Section 3, DHT value. Sealed with a fixed nonce (the 24 bytes `0x00` through `0x17`), not a random one, so the vector is reproducible. Production code always uses a random nonce. |
+| `testdata/controller.key` / `.pub` | Section 3, sender key pair. |
+| `testdata/node.key` / `.pub` | Section 3, recipient key pair. |
+| `testdata/tunnel.key` / `.pub` | Section 4, `wg.*.private_key` / peer `public_key` example values. |
