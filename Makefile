@@ -58,6 +58,15 @@ GO_FLAGS = -ldflags '$(LDFLAGS)' $(TRIMPATH_FLAGS) $(TAGS_FLAGS)
 # CGO_ENABLED is always 0. Both binaries are static, with no cgo dependency.
 CGO_ENABLED = 0
 
+# maybe-upx compresses the binary path(s) given as $(1) with upx, when
+# UPX=1. It fails with a clear message if the upx tool is not installed.
+# Callers guard the call with "ifneq ($(UPX),0)" so a plain "make -n"
+# prints no upx line at all.
+define maybe-upx
+@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
+upx --lzma --best $(1)
+endef
+
 .PHONY: all
 all: build
 
@@ -68,16 +77,14 @@ build: provd agent
 provd:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) go build $(GO_FLAGS) -v -o $(DIST)/$(APP_PROVD) ./cmd/stunmesh-provd
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_PROVD)
+	$(call maybe-upx,$(DIST)/$(APP_PROVD))
 endif
 
 .PHONY: agent
 agent:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT) ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_AGENT)
+	$(call maybe-upx,$(DIST)/$(APP_AGENT))
 endif
 
 # agent-mips and agent-mipsle build the agent for 32-bit MIPS routers with no
@@ -86,24 +93,21 @@ endif
 agent-mips:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mips GOMIPS=softfloat go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mips ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_AGENT)-linux-mips
+	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-mips)
 endif
 
 .PHONY: agent-mipsle
 agent-mipsle:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mipsle ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_AGENT)-linux-mipsle
+	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-mipsle)
 endif
 
 .PHONY: agent-arm64
 agent-arm64:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-arm64 ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_AGENT)-linux-arm64
+	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-arm64)
 endif
 
 .PHONY: test
@@ -134,13 +138,14 @@ tidy-check:
 clean:
 	rm -rf $(DIST)
 
-# upx compresses a built binary in place. It runs only when UPX=1, and it
-# fails with a clear message if the upx tool is not installed.
+# upx compresses every binary currently in $(DIST) in place, using the same
+# maybe-upx macro as the build targets so it cannot drift from them. It runs
+# only when UPX=1, and it fails with a clear message if upx is not
+# installed.
 .PHONY: upx
 upx:
 ifneq ($(UPX),0)
-	@command -v upx >/dev/null 2>&1 || { echo "upx: tool not found, install upx to use UPX=1"; exit 1; }
-	upx --lzma --best $(DIST)/$(APP_PROVD) $(DIST)/$(APP_AGENT)
+	$(call maybe-upx,$(wildcard $(DIST)/*))
 else
 	@echo "upx: skipped, set UPX=1 to enable"
 endif
