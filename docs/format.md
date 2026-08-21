@@ -54,7 +54,9 @@ data field  =  base64( nonce(24) || nacl/box(inner bundle JSON) )
 ```
 
 Nothing is in plain text on the DHT. There is no outer JSON around
-the sealed bytes; the `data` field holds only the base64 text.
+the sealed bytes; the `data` field holds only the base64 text. The
+inner bundle JSON (section 4) never contains a `null` value; omit a
+key instead of setting it to `null`.
 
 The controller is the sender. It seals with its own private key and
 the node's identity public key. The node is the recipient. It opens
@@ -114,9 +116,10 @@ one interface (`wg0`) and two peers (`bravo`, `charlie`):
 
 Canonical form (section 7) preserves presence: an absent field and an
 explicit empty one (`"wg":{}`, `"routes":[]`, `"options":{}`) produce
-different canonical bytes, so two such bundles compare unequal. A
-publisher should choose one form and keep it, and this format
-recommends always emitting `wg`, even when it is empty.
+different canonical bytes, so two such bundles compare unequal.
+
+A JSON `null` is not permitted anywhere in the bundle, at any depth:
+omit the key instead of setting it to `null` (section 6).
 
 | Field | Required | Rule |
 |---|---|---|
@@ -124,7 +127,7 @@ recommends always emitting `wg`, even when it is empty.
 | `namespace` | Yes | Must equal the receiving node's namespace. |
 | `node_id` | Yes | Must equal the receiving node's node ID. |
 | `timestamp` | Yes | Unix time at publish. Picks the newest of several values (section 8). Not compared with the node's own clock. |
-| `wg` | No | Map of interface name to interface. Can be empty; absent is equivalent to empty. |
+| `wg` | Yes | Map of interface name to interface. Can be empty (remove all interfaces). Absent is an error. |
 | `wg.*.private_key` | Yes | Tunnel private key. |
 | `wg.*.listen_port` | No | Absent: WireGuard picks a random port. |
 | `wg.*.addresses` | Yes | List. At least one entry. |
@@ -160,15 +163,17 @@ The node runs these checks, in order, on a decrypted bundle:
 
 | # | Check |
 |---|---|
-| 1 | `version` is `1`. |
-| 2 | `namespace` equals the node's namespace. |
-| 3 | `node_id` equals the node's node ID. |
-| 4 | `timestamp` is a positive integer. |
-| 5 | `stunmesh` is present (an empty string is valid; the key must exist). |
-| 6 | No unknown key exists at any level. |
-| 7 | Every interface has `private_key`, at least one address, and a `peers` map. |
-| 8 | Every peer has `public_key` and at least one `allowed_ips` entry, and does not have a present-but-empty `preshared_key` or `endpoint`. |
-| 9 | Every route has a `cidr`, and does not have a present-but-empty `gateway`. |
+| 1 | No `null` value exists anywhere in the JSON, at any depth. |
+| 2 | `version` is `1`. |
+| 3 | `namespace` equals the node's namespace. |
+| 4 | `node_id` equals the node's node ID. |
+| 5 | `timestamp` is a positive integer. |
+| 6 | `stunmesh` is present (an empty string is valid; the key must exist). |
+| 7 | `wg` is present (an empty map is valid; the key must exist). |
+| 8 | No unknown key exists at any level. |
+| 9 | Every interface has `private_key`, at least one address, and a `peers` map. |
+| 10 | Every peer has `public_key` and at least one `allowed_ips` entry, and does not have a present-but-empty `preshared_key` or `endpoint`. |
+| 11 | Every route has a `cidr`, and does not have a present-but-empty `gateway`. |
 
 If one check fails, the node rejects the value. The node changes no
 file.

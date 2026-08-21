@@ -21,9 +21,14 @@
 // (PLAN.md 4.5). A key that was absent from the input stays absent.
 //
 // Presence is significant: an absent `wg` and an explicit empty `wg`
-// canonicalize to different bytes, so Equal is false between them. A
-// publisher must pick one form; this package recommends always
-// emitting `wg`, even when empty.
+// canonicalize to different bytes, so Equal is false between them.
+// `wg` is required (PLAN.md 4.3): Validate rejects an absent `wg`
+// with ErrWG. An explicit empty `wg` (`{}`) is valid; it means remove
+// every interface.
+//
+// Parse rejects a JSON `null` anywhere in the input, at any depth, as
+// an object value or an array element, with ErrNull. Omit a key
+// instead of setting it to `null`.
 //
 // Canonical's output on a bundle that fails Validate (for example, a
 // required list or map left nil) is unspecified; callers should call
@@ -208,13 +213,28 @@ func (p Peer) MarshalJSON() ([]byte, error) {
 // field name only) through wrapping.
 var errParse = errors.New("bundle: invalid bundle JSON")
 
+// ErrNull means the JSON input has an explicit `null` value somewhere
+// (the whole document, a field value, or an array element). A `null`
+// is indistinguishable from an absent key once decoded into a Go
+// struct, which would make Canonical silently omit a key that the
+// input meant to keep. Omit the key instead of setting it to `null`.
+var ErrNull = errors.New("bundle: null is not permitted; omit the key instead")
+
 // Parse decodes an inner bundle from JSON.
 //
 // Parse rejects any key that is not in the field table of PLAN.md 4.3,
-// at any level, and rejects data that follows the JSON object. Parse
-// never puts a field value in its error message; the bundle may hold
-// private keys.
+// at any level, rejects data that follows the JSON object, and
+// rejects a `null` anywhere in the input (ErrNull). Parse never puts a
+// field value in its error message; the bundle may hold private keys.
 func Parse(data []byte) (*Bundle, error) {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, errParse
+	}
+	if containsNull(raw) {
+		return nil, ErrNull
+	}
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 
@@ -233,6 +253,30 @@ func Parse(data []byte) (*Bundle, error) {
 	}
 
 	return &b, nil
+}
+
+// containsNull reports whether v, decoded from JSON into `any`, has a
+// `null` anywhere: as v itself, as an object value at any depth, or
+// as an array element at any depth.
+func containsNull(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		for _, val := range t {
+			if containsNull(val) {
+				return true
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if containsNull(val) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isUnknownFieldError reports whether err is the stdlib "unknown field"
@@ -256,6 +300,9 @@ var (
 	// ErrStunmesh means the bundle stunmesh field is absent. An
 	// explicit empty string is valid; only a missing key is not.
 	ErrStunmesh = errors.New("bundle: stunmesh is missing")
+	// ErrWG means the bundle wg field is absent. An explicit empty
+	// map (`{}`) is valid; only a missing key is not.
+	ErrWG = errors.New("bundle: wg is missing")
 	// ErrInterface means a wg interface entry is invalid.
 	ErrInterface = errors.New("bundle: invalid interface")
 	// ErrPeer means a peer entry is invalid.
@@ -283,6 +330,9 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 	}
 	if b.Stunmesh == nil {
 		return ErrStunmesh
+	}
+	if b.WG == nil {
+		return ErrWG
 	}
 
 	for name, iface := range b.WG {
@@ -357,8 +407,57 @@ func (b *Bundle) Canonical() ([]byte, error) {
 	if err := enc.Encode(m); err != nil {
 		return nil, fmt.Errorf("bundle: marshal canonical: %w", err)
 	}
+	// encoding/json always escapes U+2028 and U+2029 as the six
+	// ASCII bytes `\u2028` / `\u2029`, even with SetEscapeHTML(false);
+	// jq emits the raw UTF-8 bytes. Undo that escaping to match the jq
+	// reference bytes.
+	out := unescapeLineSeparators(buf.Bytes())
 	// Encode always appends a trailing newline; the canonical form has none.
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+	return bytes.TrimRight(out, "\n"), nil
+}
+
+// u2028Bytes and u2029Bytes are the raw UTF-8 encodings of U+2028
+// LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+var (
+	u2028Bytes = []byte{0xE2, 0x80, 0xA8}
+	u2029Bytes = []byte{0xE2, 0x80, 0xA9}
+)
+
+// unescapeLineSeparators replaces the six-byte escape sequences
+// `\u2028` and `\u2029` with their raw UTF-8 bytes, but only where the
+// leading backslash genuinely starts that escape: where it is
+// preceded by an even number of consecutive backslashes (0, 2, 4,
+// ...). An odd count means the backslash itself is the second half of
+// an escaped `\\` pair, so the following `u2028`/`u2029` text is
+// literal input content, not an escape produced by the JSON encoder
+// for an actual U+2028/U+2029 character, and is left unchanged.
+func unescapeLineSeparators(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	i := 0
+	for i < len(data) {
+		if data[i] == '\\' && i+6 <= len(data) {
+			seq := data[i+1 : i+6]
+			isSep := bytes.Equal(seq, []byte("u2028")) || bytes.Equal(seq, []byte("u2029"))
+			if isSep {
+				n := 0
+				for j := i - 1; j >= 0 && data[j] == '\\'; j-- {
+					n++
+				}
+				if n%2 == 0 {
+					if seq[4] == '8' {
+						out = append(out, u2028Bytes...)
+					} else {
+						out = append(out, u2029Bytes...)
+					}
+					i += 6
+					continue
+				}
+			}
+		}
+		out = append(out, data[i])
+		i++
+	}
+	return out
 }
 
 // Equal reports whether two bundles have the same content, ignoring

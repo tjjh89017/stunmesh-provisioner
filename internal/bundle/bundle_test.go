@@ -10,7 +10,9 @@
 //	Bundle.Stunmesh (required,   *string               absent (rejected by
 //	  presence-tracked like the                        Validate: ErrStunmesh) /
 //	  optional fields)                                 "" / populated
-//	Bundle.WG                    map[string]Interface  absent / {} / populated
+//	Bundle.WG (required,         map[string]Interface  absent (rejected by
+//	  presence-tracked like the                        Validate: ErrWG) /
+//	  optional fields)                                 {} / populated
 //	Interface.ListenPort         *int                  absent / 0 / populated
 //	Interface.MTU                *int                  absent / 0 / populated
 //	Interface.RouteAllowedIPs    *bool                 absent / false / true
@@ -110,6 +112,76 @@ func TestCanonicalDoesNotHTMLEscapeCodeBuiltBundle(t *testing.T) {
 
 	if !strings.Contains(string(got), "a&b<c>d") {
 		t.Fatalf("Canonical output HTML-escapes special characters, want the raw bytes a&b<c>d: %s", got)
+	}
+}
+
+// TestCanonicalMatchesJQForLineSeparators checks Canonical against
+// the jq reference (PLAN.md 4.5) for U+2028 and U+2029: Go's
+// encoding/json always escapes these two runes as the six-byte
+// sequences `\u2028` / `\u2029`, even with SetEscapeHTML(false),
+// while jq emits their raw UTF-8 bytes. It also checks that literal
+// backslash-u2028/backslash-u2029 text already present in the input
+// (an escaped backslash followed by literal "u2028"/"u2029") is left
+// as the same escape text, not mistaken for an encoder-introduced
+// escape.
+func TestCanonicalMatchesJQForLineSeparators(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	// A genuine U+2028/U+2029 rune in the input always comes back from
+	// encoding/json as the six-byte escape `\u2028`/`\u2029`; jq
+	// instead emits the raw UTF-8 rune. A Go string holding one literal
+	// backslash followed by the literal text "u2028"/"u2029" is a
+	// different case: marshaling escapes only the backslash (as `\\`),
+	// so the JSON text already contains the ASCII escape spelling
+	// verbatim, indistinguishable in bytes from what the encoder would
+	// produce for a genuine rune -- this is exactly the case
+	// unescapeLineSeparators must not touch.
+	cases := []struct {
+		name string
+		// value is the Go string placed in `stunmesh`.
+		value string
+		// wantSubstring is the exact bytes Canonical's output must
+		// contain: the raw UTF-8 rune for a genuine separator, or the
+		// JSON-escaped spelling (backslash doubled) for literal
+		// backslash-u2028/u2029 text, since a literal backslash is
+		// always JSON-escaped regardless of this fix.
+		wantSubstring string
+	}{
+		{"raw U+2028 rune", "before\u2028after", "before\u2028after"},
+		{"raw U+2029 rune", "before\u2029after", "before\u2029after"},
+		{"literal backslash-u2028 text", "before\\u2028after", `before\\u2028after`},
+		{"literal backslash-u2029 text", "before\\u2029after", `before\\u2029after`},
+		{"both raw runes in one string", "a\u2028b\u2029c", "a\u2028b\u2029c"},
+		{"raw U+2028 rune at string start", "\u2028after", "\u2028after"},
+		{"raw U+2028 rune at string end", "before\u2028", "before\u2028"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]any{
+				"version":   1,
+				"namespace": "n",
+				"node_id":   "a",
+				"timestamp": 1,
+				"wg":        map[string]any{},
+				"stunmesh":  tc.value,
+			}
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			b := mustParse(t, data)
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+
+			if !strings.Contains(string(got), tc.wantSubstring) {
+				t.Fatalf("Canonical does not contain %q: %s", tc.wantSubstring, got)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
 	}
 }
 
@@ -226,28 +298,93 @@ func TestParseRejectsTrailingData(t *testing.T) {
 	}
 }
 
-func TestWGMayBeEmptyOrMissing(t *testing.T) {
+// TestParseRejectsExplicitNull covers every field named in the
+// finding: a JSON `null` decodes to a Go nil, indistinguishable from
+// an absent key, so Parse must reject it outright instead of letting
+// it silently look like "absent" to Canonical.
+func TestParseRejectsExplicitNull(t *testing.T) {
 	cases := []struct {
 		name string
 		json string
 	}{
 		{
-			name: "empty wg",
-			json: `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"wg":{},"stunmesh":""}`,
+			name: "wg null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":null}`,
 		},
 		{
-			name: "missing wg",
-			json: `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"stunmesh":""}`,
+			name: "routes null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"routes":null}}}`,
+		},
+		{
+			name: "options null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"options":null}}}`,
+		},
+		{
+			name: "peers null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":null}}}`,
+		},
+		{
+			name: "stunmesh null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"wg":{},"stunmesh":null}`,
+		},
+		{
+			name: "metric null",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"routes":[{"cidr":"10.0.0.0/24","metric":null}]}}}`,
+		},
+		{
+			name: "nested null inside a peer",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{"bravo":{"public_key":"p","allowed_ips":["1.1.1.2/32"],"endpoint":null}}}}}`,
+		},
+		{
+			name: "nested null inside a route",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{},"routes":[{"cidr":null}]}}}`,
+		},
+		{
+			name: "null inside an array element",
+			json: `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32",null],"peers":{}}}}`,
+		},
+		{
+			name: "whole document is null",
+			json: `null`,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			b := mustParse(t, []byte(tc.json))
-			if err := b.Validate("test-ns", "alpha"); err != nil {
-				t.Fatalf("Validate: unexpected error: %v", err)
+			_, err := bundle.Parse([]byte(tc.json))
+			if !errors.Is(err, bundle.ErrNull) {
+				t.Fatalf("Parse: got %v, want error wrapping ErrNull", err)
 			}
 		})
+	}
+}
+
+// TestParseAcceptsValidBundleWithNoNull proves TestParseRejectsExplicitNull
+// is not vacuous: a bundle with no `null` anywhere still parses.
+func TestParseAcceptsValidBundleWithNoNull(t *testing.T) {
+	mustParse(t, testvectors.BundleJSON())
+}
+
+// TestWGMayBeEmpty proves that an explicit `"wg":{}` validates: `wg`
+// is required (PLAN.md 4.3), but empty means "remove every
+// interface", not an error.
+func TestWGMayBeEmpty(t *testing.T) {
+	data := `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"wg":{},"stunmesh":""}`
+	b := mustParse(t, []byte(data))
+	if err := b.Validate("test-ns", "alpha"); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+}
+
+// TestValidateRejectsMissingWG proves that an absent `wg` key fails
+// Validate with ErrWG: `wg` is required (PLAN.md 4.3), and absence is
+// distinct from an explicit empty map.
+func TestValidateRejectsMissingWG(t *testing.T) {
+	data := `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"stunmesh":""}`
+	b := mustParse(t, []byte(data))
+	err := b.Validate("test-ns", "alpha")
+	if !errors.Is(err, bundle.ErrWG) {
+		t.Fatalf("Validate: got %v, want error wrapping ErrWG", err)
 	}
 }
 
