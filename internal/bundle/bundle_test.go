@@ -21,7 +21,7 @@
 //	Interface.Peers (required,   map[string]Peer       absent / {} / populated
 //	  presence-tracked like the optional fields)
 //	Route.Gateway                *string               absent / "" / populated
-//	Route.Metric                 *int                  absent / 0 / populated
+//	Route.Metric                 *int64                absent / 0 / populated
 //	Peer.PresharedKey            *string               absent / "" / populated
 //	Peer.Endpoint                *string               absent / "" / populated
 //	Peer.PersistentKeepalive     *int                  absent / 0 / populated

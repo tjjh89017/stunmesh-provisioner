@@ -156,6 +156,12 @@ decoding and jq's float64 arithmetic disagree on these spellings, so
 `Parse` rejects them outright rather than risk `Canonical` diverging
 from the `jq -S -c 'del(.timestamp)'` reference (section 7).
 
+No string value or object key may contain an escaped, unpaired UTF-16
+high surrogate (`\uD800`-`\uDBFF` not immediately followed by
+`\uDC00`-`\uDFFF`): Go decodes it to U+FFFD and would accept it, but
+jq rejects it, so `Parse` rejects it too rather than have no jq
+reference to check `Canonical` against.
+
 `Validate` does not check these two things:
 
 - Whether a key field (`private_key`, `public_key`,
@@ -171,16 +177,17 @@ The node runs these checks, in order, on a decrypted bundle:
 |---|---|
 | 1 | No `null` value exists anywhere in the JSON, at any depth. |
 | 2 | Every number in the JSON is a plain base-10 integer: no fraction, no exponent, no `-0`. |
-| 3 | `version` is `1`. |
-| 4 | `namespace` equals the node's namespace. |
-| 5 | `node_id` equals the node's node ID. |
-| 6 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
-| 7 | `stunmesh` is present (an empty string is valid; the key must exist). |
-| 8 | `wg` is present (an empty map is valid; the key must exist). |
-| 9 | No unknown key exists at any level. |
-| 10 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
-| 11 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
-| 12 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
+| 3 | No string value or object key contains an escaped, unpaired UTF-16 high surrogate. |
+| 4 | `version` is `1`. |
+| 5 | `namespace` equals the node's namespace. |
+| 6 | `node_id` equals the node's node ID. |
+| 7 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
+| 8 | `stunmesh` is present (an empty string is valid; the key must exist). |
+| 9 | `wg` is present (an empty map is valid; the key must exist). |
+| 10 | No unknown key exists at any level. |
+| 11 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
+| 12 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
+| 13 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
 
 If one check fails, the node rejects the value. The node changes no
 file.

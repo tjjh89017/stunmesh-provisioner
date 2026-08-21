@@ -35,6 +35,11 @@
 // an object value or an array element, with ErrNull. Omit a key
 // instead of setting it to `null`.
 //
+// Parse also rejects an escaped, unpaired UTF-16 high-surrogate
+// (`\uD800`-`\uDBFF` not immediately followed by `\uDC00`-`\uDFFF`)
+// anywhere in the input, with ErrSurrogate, because jq rejects it too
+// and there would be no reference for Canonical to match.
+//
 // Canonical's output on a bundle that fails Validate (for example, a
 // required list or map left nil) is unspecified; callers should call
 // Validate before Canonical.
@@ -106,9 +111,15 @@ func (b Bundle) MarshalJSON() ([]byte, error) {
 // Interface is one WireGuard interface inside a bundle (PLAN.md 4.3).
 // See the Bundle doc comment: the json tags apply to decoding only.
 type Interface struct {
-	PrivateKey      string            `json:"private_key"`
-	ListenPort      *int              `json:"listen_port,omitempty"`
-	Addresses       []string          `json:"addresses"`
+	PrivateKey string `json:"private_key"`
+	// ListenPort's documented and validated range is 1-65535
+	// (docs/format.md 5), well within a 32-bit Go `int`
+	// (max 2147483647), so *int is safe unlike Route.Metric.
+	ListenPort *int     `json:"listen_port,omitempty"`
+	Addresses  []string `json:"addresses"`
+	// MTU's documented and validated range is 576-65535
+	// (docs/format.md 5), well within a 32-bit Go `int`, so *int is
+	// safe unlike Route.Metric.
 	MTU             *int              `json:"mtu,omitempty"`
 	RouteAllowedIPs *bool             `json:"route_allowed_ips,omitempty"`
 	Routes          []Route           `json:"routes,omitempty"`
@@ -172,7 +183,11 @@ func (i Interface) RouteAllowedIPsOrDefault() bool {
 type Route struct {
 	CIDR    string  `json:"cidr"`
 	Gateway *string `json:"gateway,omitempty"`
-	Metric  *int    `json:"metric,omitempty"`
+	// Metric's documented and validated range is 0-4294967295
+	// (docs/format.md 5), which does not fit a 32-bit Go `int`
+	// (max 2147483647 on GOARCH=mips/mipsle/386/arm), so it is
+	// *int64 rather than *int.
+	Metric *int64 `json:"metric,omitempty"`
 }
 
 // Peer is one WireGuard peer inside an interface (PLAN.md 4.3). See
@@ -186,10 +201,13 @@ type Route struct {
 // a present-but-empty value as an error: an empty preshared key or
 // endpoint is never meaningful.
 type Peer struct {
-	PublicKey           string            `json:"public_key"`
-	PresharedKey        *string           `json:"preshared_key,omitempty"`
-	AllowedIPs          []string          `json:"allowed_ips"`
-	Endpoint            *string           `json:"endpoint,omitempty"`
+	PublicKey    string   `json:"public_key"`
+	PresharedKey *string  `json:"preshared_key,omitempty"`
+	AllowedIPs   []string `json:"allowed_ips"`
+	Endpoint     *string  `json:"endpoint,omitempty"`
+	// PersistentKeepalive's documented and validated range is 0-65535
+	// seconds (docs/format.md 5), well within a 32-bit Go `int`, so
+	// *int is safe unlike Route.Metric.
 	PersistentKeepalive *int              `json:"persistent_keepalive,omitempty"`
 	Options             map[string]string `json:"options,omitempty"`
 }
@@ -243,15 +261,29 @@ var ErrNull = errors.New("bundle: null is not permitted; omit the key instead")
 // disagreeing with the `jq -S -c 'del(.timestamp)'` reference.
 var ErrNumber = errors.New("bundle: number is not a plain base-10 integer")
 
+// ErrSurrogate means the raw input contains an escaped, unpaired
+// UTF-16 high surrogate: `\uD800`-`\uDBFF` (case-insensitive hex),
+// not immediately followed by a low-surrogate escape
+// (`\uDC00`-`\uDFFF`). encoding/json decodes an unpaired surrogate to
+// U+FFFD (the Unicode replacement character) and accepts the input,
+// but jq 1.8.2 rejects it ("Invalid \uXXXX\uXXXX surrogate pair
+// escape"), so there is no jq reference for Canonical to match; Parse
+// rejects it outright instead. A lone LOW surrogate escape is not
+// rejected: both Go and jq decode it to U+FFFD and agree, so there is
+// no divergence to guard against.
+var ErrSurrogate = errors.New("bundle: unpaired UTF-16 high-surrogate escape")
+
 // Parse decodes an inner bundle from JSON.
 //
 // Parse rejects any key that is not in the field table of PLAN.md 4.3,
 // at any level, rejects data that follows the JSON object, rejects a
-// `null` anywhere in the input (ErrNull), and rejects a JSON number
+// `null` anywhere in the input (ErrNull), rejects a JSON number
 // literal that is not a plain base-10 integer representable exactly
-// in both Go and jq (ErrNumber; see its doc comment). Parse never
-// puts a field value in its error message; the bundle may hold
-// private keys.
+// in both Go and jq (ErrNumber; see its doc comment), and rejects an
+// escaped, unpaired UTF-16 high surrogate anywhere in the input, in a
+// string value or an object key (ErrSurrogate; see its doc comment).
+// Parse never puts a field value in its error message; the bundle may
+// hold private keys.
 func Parse(data []byte) (*Bundle, error) {
 	dec0 := json.NewDecoder(bytes.NewReader(data))
 	dec0.UseNumber()
@@ -260,6 +292,9 @@ func Parse(data []byte) (*Bundle, error) {
 		return nil, errParse
 	}
 	if err := checkRaw(raw); err != nil {
+		return nil, err
+	}
+	if err := checkSurrogates(data); err != nil {
 		return nil, err
 	}
 
@@ -331,6 +366,89 @@ func checkNumber(n json.Number) error {
 	return nil
 }
 
+// checkSurrogates scans data, the raw JSON input bytes (not the
+// decoded value), for an escaped UTF-16 high surrogate
+// (`\uD800`-`\uDBFF`, case-insensitive hex) whose backslash is a real
+// escape introducer (see isRealEscape) and that is not immediately
+// followed by an escaped low surrogate (`\uDC00`-`\uDFFF`). It
+// reports ErrSurrogate for the first one found, or nil if none.
+//
+// Raw bytes, not the decoded Go value, because by the time
+// encoding/json decodes a string an unpaired surrogate has already
+// collapsed to U+FFFD, indistinguishable from other input that
+// produces the same rune. The scan is a plain byte walk without JSON
+// string-literal context: `\`, `u`, and hex digits are all ASCII and
+// never occur as a continuation byte of a multi-byte UTF-8 sequence
+// (those all have the high bit set), and a backslash-u escape only
+// has meaning inside a JSON string, so this is safe on any input that
+// already passed the earlier `dec0.Decode` syntax check in Parse.
+func checkSurrogates(data []byte) error {
+	for i := 0; i+6 <= len(data); i++ {
+		if data[i] != '\\' || data[i+1] != 'u' || !isRealEscape(data, i) {
+			continue
+		}
+		v, ok := parseHex4(data[i+2 : i+6])
+		if !ok || v < 0xD800 || v > 0xDBFF {
+			continue
+		}
+		if !followedByLowSurrogate(data, i+6) {
+			return ErrSurrogate
+		}
+	}
+	return nil
+}
+
+// isRealEscape reports whether the backslash at data[i] genuinely
+// starts an escape sequence, as opposed to being the second half of
+// an escaped `\\` pair. It is real when preceded by an even number
+// (0, 2, 4, ...) of consecutive backslash bytes; an odd count means
+// data[i] itself was escaped by the backslash before it, so what
+// follows is literal text, not an escape.
+func isRealEscape(data []byte, i int) bool {
+	n := 0
+	for j := i - 1; j >= 0 && data[j] == '\\'; j-- {
+		n++
+	}
+	return n%2 == 0
+}
+
+// followedByLowSurrogate reports whether data[i:] begins with an
+// escaped low surrogate (`\uDC00`-`\uDFFF`, case-insensitive hex).
+// The preceding escape (checked by the caller) ends exactly at i, so
+// data[i-1] is a hex digit, never a backslash; the backslash at i is
+// therefore automatically a real escape introducer, with no separate
+// isRealEscape check needed here.
+func followedByLowSurrogate(data []byte, i int) bool {
+	if i+6 > len(data) || data[i] != '\\' || data[i+1] != 'u' {
+		return false
+	}
+	v, ok := parseHex4(data[i+2 : i+6])
+	return ok && v >= 0xDC00 && v <= 0xDFFF
+}
+
+// parseHex4 parses exactly 4 case-insensitive hex digit bytes and
+// returns their value, or ok=false if any byte is not a hex digit.
+func parseHex4(b []byte) (v int, ok bool) {
+	if len(b) != 4 {
+		return 0, false
+	}
+	for _, c := range b {
+		var d int
+		switch {
+		case c >= '0' && c <= '9':
+			d = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = int(c-'A') + 10
+		default:
+			return 0, false
+		}
+		v = v<<4 | d
+	}
+	return v, true
+}
+
 // isUnknownFieldError reports whether err is the stdlib "unknown field"
 // decode error. encoding/json does not export a type for it.
 func isUnknownFieldError(err error) bool {
@@ -394,7 +512,12 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 	// exactly. A larger timestamp would round under jq but not under
 	// Go's int64, breaking Canonical's byte-equality with the jq
 	// reference (PLAN.md 4.5).
-	const maxSafeInteger = 9007199254740991
+	//
+	// Typed as int64 explicitly: an untyped constant this large
+	// defaults to Go's `int` when passed to fmt.Errorf below, which
+	// overflows on a 32-bit build (GOARCH=mips, mipsle, 386, arm) and
+	// fails to compile there.
+	const maxSafeInteger int64 = 9007199254740991
 	if b.Timestamp > maxSafeInteger {
 		return fmt.Errorf("%w: timestamp exceeds %d", ErrRange, maxSafeInteger)
 	}
@@ -448,7 +571,7 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 				return fmt.Errorf("%w on interface %q: gateway is present but empty", ErrRoute, name)
 			}
 			if route.Metric != nil {
-				if m := int64(*route.Metric); m < 0 || m > 4294967295 {
+				if m := *route.Metric; m < 0 || m > 4294967295 {
 					return fmt.Errorf("%w on interface %q: metric must be between 0 and 4294967295", ErrRange, name)
 				}
 			}
