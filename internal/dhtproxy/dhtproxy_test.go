@@ -841,6 +841,101 @@ func TestPut_ErrorMessageIsSanitized(t *testing.T) {
 	}
 }
 
+// TestGet_BadKeyRejectedWithoutRequest proves Get validates key before
+// making any HTTP request: a handler that fails the test if hit proves
+// no request went out for a malformed key.
+func TestGet_BadKeyRejectedWithoutRequest(t *testing.T) {
+	badKeys := []string{
+		"../x",
+		"0123456789ABCDEF0123456789abcdef01234567", // uppercase
+		"0123456789abcdef0123456789abcdef0123456",  // 39 chars
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request for path %q", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	c, err := dhtproxy.New([]string{srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, key := range badKeys {
+		_, err := c.Get(context.Background(), key)
+		if !errors.Is(err, dhtproxy.ErrBadKey) {
+			t.Errorf("Get(%q): err = %v, want ErrBadKey", key, err)
+		}
+	}
+}
+
+// TestPut_BadKeyRejectedWithoutRequest is the Put counterpart of
+// TestGet_BadKeyRejectedWithoutRequest.
+func TestPut_BadKeyRejectedWithoutRequest(t *testing.T) {
+	badKeys := []string{
+		"../x",
+		"0123456789ABCDEF0123456789abcdef01234567", // uppercase
+		"0123456789abcdef0123456789abcdef0123456",  // 39 chars
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request for path %q", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	c, err := dhtproxy.New([]string{srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, key := range badKeys {
+		err := c.Put(context.Background(), key, []byte("data"))
+		if !errors.Is(err, dhtproxy.ErrBadKey) {
+			t.Errorf("Put(%q): err = %v, want ErrBadKey", key, err)
+		}
+	}
+}
+
+// TestGet_ValidKeyStillWorks proves the key validation does not
+// reject the 40-char lowercase hex keys dhtkey.Key produces.
+func TestGet_ValidKeyStillWorks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":"` + b64("hello") + `"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	c, err := dhtproxy.New([]string{srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := c.Get(context.Background(), testKey)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if len(res.Values) != 1 || string(res.Values[0]) != "hello" {
+		t.Fatalf("Values = %v", res.Values)
+	}
+}
+
+// TestPut_ValidKeyStillWorks is the Put counterpart of
+// TestGet_ValidKeyStillWorks.
+func TestPut_ValidKeyStillWorks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, err := dhtproxy.New([]string{srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := c.Put(context.Background(), testKey, []byte("data")); err != nil {
+		t.Fatalf("Put: unexpected error: %v", err)
+	}
+}
+
 func TestWithHTTPClientOverridesTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

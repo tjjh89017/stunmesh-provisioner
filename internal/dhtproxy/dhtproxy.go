@@ -30,7 +30,10 @@
 //
 // A key names a DHT record and is part of a rendezvous secret. This
 // package never puts a key, or the data associated with it, into an
-// error message; errors name only the proxy host.
+// error message; errors name only the proxy host. Get and Put reject
+// a key that is not exactly 40 lowercase hex characters (the
+// internal/dhtkey format) with ErrBadKey, before it ever reaches a
+// URL.
 //
 // The dhtproxy protocol allows more than one value under one key.
 // OpenDHT caps that count (PLAN 4.6); Get enforces the same cap by
@@ -70,16 +73,18 @@ const (
 // Client is an HTTP client for the dhtproxy REST API. It holds an
 // ordered list of proxy base URLs. Create one with New.
 type Client struct {
-	baseURLs   []string
-	httpClient *http.Client
-	maxValues  int
+	baseURLs    []string
+	httpClient  *http.Client
+	maxValues   int
+	maxLineSize int
 }
 
 // config collects Option values before New builds the Client.
 type config struct {
-	httpClient *http.Client
-	timeout    time.Duration
-	maxValues  int
+	httpClient  *http.Client
+	timeout     time.Duration
+	maxValues   int
+	maxLineSize int
 }
 
 // Option configures a Client built by New.
@@ -126,8 +131,9 @@ func New(baseURLs []string, opts ...Option) (*Client, error) {
 	}
 
 	cfg := config{
-		timeout:   defaultTimeout,
-		maxValues: defaultMaxValues,
+		timeout:     defaultTimeout,
+		maxValues:   defaultMaxValues,
+		maxLineSize: maxLineSize,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -143,10 +149,34 @@ func New(baseURLs []string, opts ...Option) (*Client, error) {
 	}
 
 	return &Client{
-		baseURLs:   trimmed,
-		httpClient: hc,
-		maxValues:  cfg.maxValues,
+		baseURLs:    trimmed,
+		httpClient:  hc,
+		maxValues:   cfg.maxValues,
+		maxLineSize: cfg.maxLineSize,
 	}, nil
+}
+
+// ErrBadKey is returned by Get and Put when key is not a well-formed
+// dhtkey: exactly 40 lowercase hex characters (internal/dhtkey's
+// output format). The bad key itself is never included in the error,
+// since it is part of a rendezvous secret.
+var ErrBadKey = errors.New("dhtproxy: key must be 40 lowercase hex characters")
+
+// isHexKey reports whether key is exactly 40 lowercase hex characters,
+// the format internal/dhtkey produces.
+func isHexKey(key string) bool {
+	if len(key) != 40 {
+		return false
+	}
+	for _, r := range key {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Result is the outcome of a successful Get.
@@ -175,6 +205,10 @@ type Result struct {
 // can tell a majority outage apart from "nothing published". If every
 // base URL fails, Get returns an empty Result and a plain error.
 func (c *Client) Get(ctx context.Context, key string) (Result, error) {
+	if !isHexKey(key) {
+		return Result{}, ErrBadKey
+	}
+
 	var errs []error
 	var empty *Result
 
@@ -247,7 +281,7 @@ func (c *Client) parseValues(body io.Reader, base string) (Result, error) {
 
 	r := bufio.NewReaderSize(body, 64*1024)
 	for {
-		line, oversized, err := readLine(r, maxLineSize)
+		line, oversized, err := readLine(r, c.maxLineSize)
 		if err != nil && err != io.EOF {
 			return Result{}, err
 		}
@@ -268,8 +302,9 @@ func (c *Client) parseValues(body io.Reader, base string) (Result, error) {
 }
 
 // readLine reads one newline-delimited line from r, without
-// bufio.Scanner's all-or-nothing internal buffer limit. If the line
-// (excluding its terminating '\n') is longer than maxLen bytes,
+// bufio.Scanner's all-or-nothing internal buffer limit. The line's
+// terminator ("\n" or "\r\n") does not count against maxLen: only the
+// content is measured. If that content is longer than maxLen bytes,
 // oversized is true, line is nil, and the excess bytes up to the next
 // '\n' (or EOF) are discarded so the next call reads the following
 // line. err is io.EOF only once r has no more data to offer; a final
@@ -279,7 +314,7 @@ func readLine(r *bufio.Reader, maxLen int) (line []byte, oversized bool, err err
 	var buf []byte
 	for {
 		chunk, e := r.ReadSlice('\n')
-		if len(buf) <= maxLen {
+		if len(buf) <= maxLen+1 {
 			buf = append(buf, chunk...)
 		}
 		if e == bufio.ErrBufferFull {
@@ -289,25 +324,33 @@ func readLine(r *bufio.Reader, maxLen int) (line []byte, oversized bool, err err
 		break
 	}
 
-	if len(buf) > maxLen {
+	content := buf
+	if n := len(content); n > 0 && content[n-1] == '\n' {
+		content = content[:n-1]
+		if n := len(content); n > 0 && content[n-1] == '\r' {
+			content = content[:n-1]
+		}
+	}
+
+	if len(content) > maxLen {
 		return nil, true, err
 	}
 
-	buf = bytes.TrimSpace(buf)
-	if len(buf) == 0 && err == io.EOF {
+	content = bytes.TrimSpace(content)
+	if len(content) == 0 && err == io.EOF {
 		return nil, false, io.EOF
 	}
-	return buf, false, err
+	return content, false, err
 }
 
 // decodeLine decodes one already-trimmed, non-empty line into result,
-// counting a Skipped or Dropped value as appropriate.
+// counting a Skipped or Dropped value as appropriate. Once the cap
+// (c.maxValues) is reached, decodeLine still decodes the line to tell
+// a valid value from a malformed one: only a line that decodes
+// successfully counts as Dropped ("valid values received after the
+// cap", per Result.Dropped's doc); a malformed line still counts as
+// Skipped, cap or no cap.
 func (c *Client) decodeLine(line []byte, result *Result) {
-	if len(result.Values) >= c.maxValues {
-		result.Dropped++
-		return
-	}
-
 	var obj struct {
 		Data *string `json:"data"`
 	}
@@ -319,6 +362,11 @@ func (c *Client) decodeLine(line []byte, result *Result) {
 	data, err := base64.StdEncoding.DecodeString(*obj.Data)
 	if err != nil {
 		result.Skipped++
+		return
+	}
+
+	if len(result.Values) >= c.maxValues {
+		result.Dropped++
 		return
 	}
 
@@ -353,6 +401,10 @@ func (e *PartialError) Unwrap() []error {
 // every URL succeeds, a *PartialError when some succeed and some
 // fail, and a plain error when all fail.
 func (c *Client) Put(ctx context.Context, key string, data []byte) error {
+	if !isHexKey(key) {
+		return ErrBadKey
+	}
+
 	payload, err := json.Marshal(struct {
 		Data string `json:"data"`
 	}{Data: base64.StdEncoding.EncodeToString(data)})

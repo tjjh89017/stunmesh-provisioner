@@ -133,16 +133,16 @@ recommends always emitting `wg`, even when it is empty.
 | `wg.*.routes` | No | List of static routes on this interface. Default empty. |
 | `wg.*.options` | No | Map of string to string. Extra options for the interface. |
 | `routes[].cidr` | Yes | IPv4 or IPv6 prefix. |
-| `routes[].gateway` | No | Next hop. Absent: on-link through the interface. |
+| `routes[].gateway` | No | Next hop. Absent: on-link through the interface. Must not be present and empty (`""`); `Validate` rejects that. |
 | `routes[].metric` | No | Integer. |
 | `wg.*.peers` | Yes | Map of peer name to peer. Can be empty. |
 | `peers.*.public_key` | Yes | Peer tunnel public key. |
-| `peers.*.preshared_key` | No | |
+| `peers.*.preshared_key` | No | Must not be present and empty (`""`); `Validate` rejects that. |
 | `peers.*.allowed_ips` | Yes | List. At least one entry. |
-| `peers.*.endpoint` | No | `host:port`. IPv6: `[addr]:port`. |
+| `peers.*.endpoint` | No | `host:port`. IPv6: `[addr]:port`. Must not be present and empty (`""`); `Validate` rejects that. |
 | `peers.*.persistent_keepalive` | No | Seconds. |
 | `peers.*.options` | No | Map of string to string. Extra options for the peer. |
-| `stunmesh` | Yes | String. Full `stunmesh-go` `config.yaml` text. The agent does not parse it. Empty string: no stunmesh config. |
+| `stunmesh` | Yes | String. Full `stunmesh-go` `config.yaml` text. The agent does not parse it. Empty string (`""`): no stunmesh config, and still counts as present. `Validate` rejects a bundle where the key is absent entirely. |
 
 A bundle must not have a key that is not in this table, at any
 level. `Validate` rejects a bundle that fails a rule in this table.
@@ -164,10 +164,11 @@ The node runs these checks, in order, on a decrypted bundle:
 | 2 | `namespace` equals the node's namespace. |
 | 3 | `node_id` equals the node's node ID. |
 | 4 | `timestamp` is a positive integer. |
-| 5 | No unknown key exists at any level. |
-| 6 | Every interface has `private_key`, at least one address, and a `peers` map. |
-| 7 | Every peer has `public_key` and at least one `allowed_ips` entry. |
-| 8 | Every route has a `cidr`. |
+| 5 | `stunmesh` is present (an empty string is valid; the key must exist). |
+| 6 | No unknown key exists at any level. |
+| 7 | Every interface has `private_key`, at least one address, and a `peers` map. |
+| 8 | Every peer has `public_key` and at least one `allowed_ips` entry, and does not have a present-but-empty `preshared_key` or `endpoint`. |
+| 9 | Every route has a `cidr`, and does not have a present-but-empty `gateway`. |
 
 If one check fails, the node rejects the value. The node changes no
 file.

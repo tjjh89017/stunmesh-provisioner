@@ -51,7 +51,13 @@ type Bundle struct {
 	NodeID    string               `json:"node_id"`
 	Timestamp int64                `json:"timestamp"`
 	WG        map[string]Interface `json:"wg"`
-	Stunmesh  string               `json:"stunmesh"`
+	// Stunmesh is *string, not string, so an absent `stunmesh` key
+	// stays distinguishable from an explicit `""`: nil means absent,
+	// a pointer to "" means the input had `"stunmesh":""`, which is
+	// the legitimate "no stunmesh config" value (PLAN.md 4.5,
+	// docs/format.md 5). `stunmesh` is required, so Validate rejects
+	// nil with ErrStunmesh.
+	Stunmesh *string `json:"stunmesh"`
 }
 
 // MarshalJSON emits `wg` only when WG is non-nil, so an absent map and
@@ -59,16 +65,23 @@ type Bundle struct {
 // key, a non-nil empty map emits `"wg":{}`. This lets Canonical derive
 // canonical form straight from struct state (see the package doc)
 // instead of from bytes captured at Parse time.
+//
+// `stunmesh` is emitted only when Stunmesh is non-nil, so a bundle
+// built without ever setting Stunmesh (and thus failing Validate)
+// does not emit a synthetic `"stunmesh":""`; see the package doc on
+// Canonical's output for a bundle that fails Validate.
 func (b Bundle) MarshalJSON() ([]byte, error) {
 	m := map[string]any{
 		"version":   b.Version,
 		"namespace": b.Namespace,
 		"node_id":   b.NodeID,
 		"timestamp": b.Timestamp,
-		"stunmesh":  b.Stunmesh,
 	}
 	if b.WG != nil {
 		m["wg"] = b.WG
+	}
+	if b.Stunmesh != nil {
+		m["stunmesh"] = *b.Stunmesh
 	}
 	return json.Marshal(m)
 }
@@ -133,38 +146,53 @@ func (i Interface) RouteAllowedIPsOrDefault() bool {
 }
 
 // Route is one static route on an interface (PLAN.md 4.3).
+//
+// Gateway is a *string, not a string with `omitempty`, so an
+// explicit `""` in the input stays distinguishable from an absent
+// key: nil means absent, a pointer to "" means the input had
+// `"gateway":""`. See the Bundle doc comment for why presence
+// matters to Canonical.
 type Route struct {
-	CIDR    string `json:"cidr"`
-	Gateway string `json:"gateway,omitempty"`
-	Metric  *int   `json:"metric,omitempty"`
+	CIDR    string  `json:"cidr"`
+	Gateway *string `json:"gateway,omitempty"`
+	Metric  *int    `json:"metric,omitempty"`
 }
 
 // Peer is one WireGuard peer inside an interface (PLAN.md 4.3). See
 // the Bundle doc comment: the json tags apply to decoding only.
+//
+// PresharedKey and Endpoint are *string, not string with
+// `omitempty`, so an explicit `""` in the input stays distinguishable
+// from an absent key: nil means absent, a pointer to "" means the
+// input had `"preshared_key":""` / `"endpoint":""`. See the Bundle
+// doc comment for why presence matters to Canonical. Validate treats
+// a present-but-empty value as an error: an empty preshared key or
+// endpoint is never meaningful.
 type Peer struct {
 	PublicKey           string            `json:"public_key"`
-	PresharedKey        string            `json:"preshared_key,omitempty"`
+	PresharedKey        *string           `json:"preshared_key,omitempty"`
 	AllowedIPs          []string          `json:"allowed_ips"`
-	Endpoint            string            `json:"endpoint,omitempty"`
+	Endpoint            *string           `json:"endpoint,omitempty"`
 	PersistentKeepalive *int              `json:"persistent_keepalive,omitempty"`
 	Options             map[string]string `json:"options,omitempty"`
 }
 
 // MarshalJSON emits `options` only when Options is non-nil, preserving
 // explicit-empty vs. absent (see the package doc). `public_key` and
-// `allowed_ips` are required and always emitted; the remaining scalar
-// fields are omitted when empty/nil, like a plain `omitempty` struct
-// tag.
+// `allowed_ips` are required and always emitted; `preshared_key` and
+// `endpoint` are emitted whenever non-nil, including a pointer to
+// `""`, so an explicit empty value round-trips; the remaining scalar
+// fields are omitted when nil, like a plain `omitempty` struct tag.
 func (p Peer) MarshalJSON() ([]byte, error) {
 	m := map[string]any{
 		"public_key":  p.PublicKey,
 		"allowed_ips": p.AllowedIPs,
 	}
-	if p.PresharedKey != "" {
-		m["preshared_key"] = p.PresharedKey
+	if p.PresharedKey != nil {
+		m["preshared_key"] = *p.PresharedKey
 	}
-	if p.Endpoint != "" {
-		m["endpoint"] = p.Endpoint
+	if p.Endpoint != nil {
+		m["endpoint"] = *p.Endpoint
 	}
 	if p.PersistentKeepalive != nil {
 		m["persistent_keepalive"] = p.PersistentKeepalive
@@ -225,6 +253,9 @@ var (
 	ErrNodeID = errors.New("bundle: node_id does not match")
 	// ErrTimestamp means the bundle timestamp is not a positive value.
 	ErrTimestamp = errors.New("bundle: timestamp is not positive")
+	// ErrStunmesh means the bundle stunmesh field is absent. An
+	// explicit empty string is valid; only a missing key is not.
+	ErrStunmesh = errors.New("bundle: stunmesh is missing")
 	// ErrInterface means a wg interface entry is invalid.
 	ErrInterface = errors.New("bundle: invalid interface")
 	// ErrPeer means a peer entry is invalid.
@@ -250,6 +281,9 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 	if b.Timestamp <= 0 {
 		return ErrTimestamp
 	}
+	if b.Stunmesh == nil {
+		return ErrStunmesh
+	}
 
 	for name, iface := range b.WG {
 		if iface.PrivateKey == "" {
@@ -269,11 +303,20 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 			if len(peer.AllowedIPs) == 0 {
 				return fmt.Errorf("%w %q: allowed_ips has no entry", ErrPeer, pname)
 			}
+			if peer.PresharedKey != nil && *peer.PresharedKey == "" {
+				return fmt.Errorf("%w %q: preshared_key is present but empty", ErrPeer, pname)
+			}
+			if peer.Endpoint != nil && *peer.Endpoint == "" {
+				return fmt.Errorf("%w %q: endpoint is present but empty", ErrPeer, pname)
+			}
 		}
 
 		for _, route := range iface.Routes {
 			if route.CIDR == "" {
 				return fmt.Errorf("%w on interface %q: cidr is empty", ErrRoute, name)
+			}
+			if route.Gateway != nil && *route.Gateway == "" {
+				return fmt.Errorf("%w on interface %q: gateway is present but empty", ErrRoute, name)
 			}
 		}
 	}
