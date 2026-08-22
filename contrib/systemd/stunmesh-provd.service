@@ -1,0 +1,112 @@
+# stunmesh-provd.service — runs the republish loop as a system service.
+#
+# See contrib/systemd/README.md for install steps: the binary path, the
+# dedicated user, the directory tree, and how to enable this unit.
+#
+# Install:
+#   cp contrib/systemd/stunmesh-provd.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now stunmesh-provd.service
+
+[Unit]
+Description=stunmesh-provd republish loop
+Documentation=https://github.com/tjjh89017/stunmesh-provisioner
+# The loop puts bundles to remote dhtproxy servers over HTTPS. Wait for a
+# working network before the first round, so it does not spend its early
+# rounds failing DNS lookups and connects.
+After=network-online.target
+Wants=network-online.target
+# See the Restart policy comment in [Service]: these two cap the retries
+# systemd will make if the process keeps exiting non-zero, and belong in
+# [Unit], not [Service].
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+# --dir defaults to /etc/stunmesh/provd; state that default explicitly here
+# so the unit does not depend on it silently changing.
+ExecStart=/usr/local/bin/stunmesh-provd --dir /etc/stunmesh/provd publish
+
+# --- Identity ------------------------------------------------------------
+# Run as a dedicated, unprivileged user, not root. The tree only needs to
+# be read, never written, and a leaked private key under a dedicated
+# account is a smaller loss than one leaked under root. Create the user
+# with, for example, "useradd --system --no-create-home --shell
+# /usr/sbin/nologin stunmesh-provd" (see contrib/systemd/README.md). The
+# namespace directories and their files are mode 0700/0600, owned by
+# whoever ran `init` and `node add` (stage 2 items 2-3): the operator must
+# either run those commands as this same user, or chown the tree to it
+# afterward, or this service will fail to read its own configuration.
+User=stunmesh-provd
+Group=stunmesh-provd
+
+# --- Filesystem ------------------------------------------------------------
+# publish only ever reads the tree (internal/store's read side performs no
+# writes, and publish never calls store's write primitives -- stage 2
+# items 2-3). ProtectSystem=strict makes the whole filesystem read-only
+# except /dev, /proc, /sys, and any ReadWritePaths; nothing is listed
+# there because this service needs none. ReadOnlyPaths is redundant with
+# strict here but states the one directory this unit actually cares about
+# explicitly, for a reader of this file.
+ProtectSystem=strict
+ReadOnlyPaths=/etc/stunmesh/provd
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077
+
+# --- Capabilities ----------------------------------------------------------
+# Reading files and making outbound HTTPS connections need no Linux
+# capability at all. Drop the whole bounding set instead of trying to
+# name what is unneeded.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- Kernel and namespace surface ------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# @system-service is systemd's broad allowlist for ordinary daemons; it
+# already excludes the dangerous groups (@mount, @swap, @reboot, @module,
+# @raw-io, @debug, @clock, @privileged, @resources) so nothing further
+# needs to be denied by name. A narrower filter risks blocking a syscall
+# the Go runtime's scheduler, network poller, or garbage collector uses
+# (for example futex, epoll_*, or the signal syscalls it needs to handle
+# SIGINT/SIGTERM) and turning a hardening directive into an outage.
+SystemCallFilter=@system-service
+# AF_UNIX: local resolver / nss / journal sockets. AF_INET, AF_INET6: DNS
+# lookups and the HTTPS connections to the dhtproxy servers themselves.
+# AF_NETLINK: Go's net package queries interface and route state over
+# netlink on Linux even for a plain outbound connection.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# --- Restart policy ----------------------------------------------------
+# The loop exits 0 only on a clean SIGINT/SIGTERM shutdown (systemctl
+# stop), which must never trigger a restart. It exits non-zero only for a
+# failure that cannot self-heal by waiting -- a bad --namespace, an
+# unreadable tree root -- so restarting a few times, spaced out, covers a
+# transient case (for example the tree living on storage that mounts a few
+# seconds after this unit starts) without masking a real, permanent
+# misconfiguration. [Unit]'s StartLimitIntervalSec/StartLimitBurst cap the
+# retries: after 5 failures in 10 minutes systemd stops trying and leaves
+# the unit in "failed", so a persistent configuration error is visible in
+# `systemctl status` instead of looping forever.
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

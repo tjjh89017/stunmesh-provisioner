@@ -22,10 +22,16 @@ EXTRA_MIN ?= 0
 # EMBED_CA=1 adds the embedca build tag. This repository has no embedca code
 # yet; the tag is a placeholder for a future Mozilla root bundle embed.
 EMBED_CA ?= 0
-# PREFIX and BINDIR name the install location. Not used by any target yet;
-# kept for parity with the stunmesh-go Makefile.
+# PREFIX and BINDIR name the install location, used by the install target
+# below.
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+# UNITDIR names where the systemd unit is installed.
+UNITDIR ?= /etc/systemd/system
+# DESTDIR is prepended to every install path, for staged (packaging)
+# installs. Empty by default, so a plain "make install" writes to the
+# real BINDIR/UNITDIR.
+DESTDIR ?=
 # VERSION is stamped into each binary via -X main.version.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # DIST is the output directory for all built binaries.
@@ -140,6 +146,15 @@ fmt-check:
 tidy-check:
 	go mod tidy -diff
 
+.PHONY: install
+install: provd
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 $(DIST)/$(APP_PROVD) $(DESTDIR)$(BINDIR)/$(APP_PROVD)
+	install -d $(DESTDIR)$(UNITDIR)
+	install -m 0644 contrib/systemd/stunmesh-provd.service $(DESTDIR)$(UNITDIR)/stunmesh-provd.service
+	@echo "Installed $(APP_PROVD) to $(DESTDIR)$(BINDIR) and its systemd unit to $(DESTDIR)$(UNITDIR)."
+	@echo "See contrib/systemd/README.md for the remaining setup steps."
+
 .PHONY: clean
 clean:
 	rm -rf $(DIST)
@@ -178,6 +193,9 @@ help:
 	@echo "  tidy-check    fail if go mod tidy would change go.mod/go.sum"
 	@echo "  upx           compress dist binaries, set UPX=1"
 	@echo "  size          list dist binaries and their sizes"
+	@echo "  install       install stunmesh-provd and its systemd unit"
+	@echo "                (see contrib/systemd/README.md)"
 	@echo "  clean         remove the dist directory"
 	@echo ""
 	@echo "Variables: VERSION GOOS GOARCH STRIP TRIMPATH UPX EXTRA_MIN EMBED_CA"
+	@echo "           PREFIX BINDIR UNITDIR DESTDIR"
