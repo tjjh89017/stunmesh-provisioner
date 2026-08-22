@@ -291,6 +291,48 @@ func TestParseRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
+// TestParseUnknownFieldPrecedesValidateErrors pins the precedence
+// documented in docs/format.md section 6: an unknown key is a
+// Parse-time (phase 1) error, so it is reported even when the same
+// document also breaks a Validate-time (phase 2) rule that would
+// otherwise be reported first if the checks ran in the field's table
+// order. This is the exact case docs/format.md warns an implementer
+// about: Parse never reaches Validate, so Validate's error (here
+// ErrVersion) must never surface for these inputs.
+func TestParseUnknownFieldPrecedesValidateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+	}{
+		{
+			name: "unknown key with invalid version",
+			json: `{
+				"version": 99, "namespace": "test-ns", "node_id": "alpha",
+				"timestamp": 1, "wg": {}, "stunmesh": "", "bogus": true
+			}`,
+		},
+		{
+			name: "unknown key with wrong namespace and node_id",
+			json: `{
+				"version": 1, "namespace": "wrong-ns", "node_id": "wrong-id",
+				"timestamp": 1, "wg": {}, "stunmesh": "", "bogus": true
+			}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := bundle.Parse([]byte(tc.json))
+			if err == nil {
+				t.Fatalf("Parse: got no error, want an error for %s", tc.name)
+			}
+			if errors.Is(err, bundle.ErrVersion) || errors.Is(err, bundle.ErrNamespace) || errors.Is(err, bundle.ErrNodeID) {
+				t.Fatalf("Parse: got a Validate-phase error %v, want the unknown-field error to be reported first", err)
+			}
+		})
+	}
+}
+
 func TestParseRejectsTrailingData(t *testing.T) {
 	data := append(append([]byte{}, testvectors.BundleJSON()...), []byte(`{}`)...)
 	if _, err := bundle.Parse(data); err == nil {

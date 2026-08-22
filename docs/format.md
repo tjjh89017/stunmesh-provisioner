@@ -171,23 +171,44 @@ reference to check `Canonical` against.
 
 ## 6. Checks after decryption
 
-The node runs these checks, in order, on a decrypted bundle:
+The node runs these checks in two phases. Every phase 1 check runs
+before any phase 2 check. If a phase 1 check fails, the node rejects
+the value without running any phase 2 check.
+
+Phase 1 looks only at the JSON text itself: its syntax and its
+literal structure. It does not yet know the node's own namespace or
+node ID, and it does not yet look at field-specific rules like
+`listen_port`'s range.
 
 | # | Check |
 |---|---|
-| 1 | No `null` value exists anywhere in the JSON, at any depth. |
-| 2 | Every number in the JSON is a plain base-10 integer: no fraction, no exponent, no `-0`. |
-| 3 | No string value or object key contains an escaped, unpaired UTF-16 high surrogate. |
-| 4 | `version` is `1`. |
-| 5 | `namespace` equals the node's namespace. |
-| 6 | `node_id` equals the node's node ID. |
-| 7 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
-| 8 | `stunmesh` is present (an empty string is valid; the key must exist). |
-| 9 | `wg` is present (an empty map is valid; the key must exist). |
-| 10 | No unknown key exists at any level. |
-| 11 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
-| 12 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
-| 13 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
+| 1 | The bytes are syntactically valid JSON. |
+| 2 | No `null` value exists anywhere in the JSON, at any depth. |
+| 3 | Every number in the JSON is a plain base-10 integer: no fraction, no exponent, no `-0`. |
+| 4 | No string value or object key contains an escaped, unpaired UTF-16 high surrogate. |
+| 5 | No unknown key exists at any level, and every key that is present holds a value of the JSON type its field expects (for example, `wg` must be an object, `addresses` must be an array). |
+| 6 | No data follows the closing `}` of the JSON object. |
+
+Checks 2 and 3 both come from one walk over the decoded value. If a
+bundle breaks both rules at once, which of the two errors is
+reported first is unspecified (it follows Go's map key iteration
+order). Checks 1 and 4-6 are otherwise strictly ordered as listed.
+
+Phase 2 runs only after phase 1 passes completely. It checks the
+now-parsed value against the receiving node's own namespace and node
+ID and against each field's rule from section 5:
+
+| # | Check |
+|---|---|
+| 7 | `version` is `1`. |
+| 8 | `namespace` equals the node's namespace. |
+| 9 | `node_id` equals the node's node ID. |
+| 10 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
+| 11 | `stunmesh` is present (an empty string is valid; the key must exist). |
+| 12 | `wg` is present (an empty map is valid; the key must exist). |
+| 13 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
+| 14 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
+| 15 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
 
 If one check fails, the node rejects the value. The node changes no
 file.
