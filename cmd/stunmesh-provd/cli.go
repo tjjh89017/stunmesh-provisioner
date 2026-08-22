@@ -50,7 +50,8 @@ Commands:
         add a node to a namespace; reads the identity key from
         stdin when the key argument is omitted
   publish [--namespace <ns>] [--once]
-        build, encrypt, and put bundles to the DHT
+        build, encrypt, and put bundles to the DHT; without --once,
+        repeats until SIGINT or SIGTERM
 
 Flags:
   --dir <path>  root of the provisioning tree (default ` + defaultDir + `)

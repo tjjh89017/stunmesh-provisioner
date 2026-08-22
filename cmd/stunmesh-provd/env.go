@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"io"
 	"net/http"
@@ -24,6 +25,15 @@ import (
 // publish to let internal/dhtproxy build its own client. A test sets
 // HTTPClient to point every proxy request at an httptest.Server
 // instead of a real Jami instance.
+//
+// Sleep is the seam the republish loop (stage 2 item 8) uses to wait
+// between rounds. It blocks until either d elapses or ctx is
+// canceled, and returns ctx.Err() in the second case, nil in the
+// first. A test replaces Sleep with a fake that returns at once
+// instead of waiting, so a multi-round test of the loop takes no
+// real wall-clock time; the fake can also advance a fake Now by d
+// each call, so per-namespace interval math in the loop is exercised
+// without a real clock either.
 type Env struct {
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -35,6 +45,8 @@ type Env struct {
 	Rand io.Reader
 
 	HTTPClient *http.Client
+
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // newEnv builds the Env for a real run. dir is already resolved.
@@ -46,5 +58,21 @@ func newEnv(stdin io.Reader, stdout, stderr io.Writer, dir string) *Env {
 		Dir:    dir,
 		Now:    time.Now,
 		Rand:   rand.Reader,
+		Sleep:  sleepContext,
+	}
+}
+
+// sleepContext is the real implementation of Env.Sleep: an
+// interruptible wait, so the republish loop reacts to shutdown
+// (SIGINT/SIGTERM, via the context runPublish builds) at once
+// instead of finishing its current wait first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }

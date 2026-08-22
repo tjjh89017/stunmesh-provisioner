@@ -79,12 +79,14 @@ type nodeReport struct {
 // runPublish implements `stunmesh-provd publish [--namespace <ns>]
 // [--once]` (PLAN.md 7.2).
 //
-// --once is required for now: it runs exactly one publish round and
-// exits. Stage 2 item 8 adds the republish loop that runs without it;
-// until then, omitting --once is a usage error rather than a command
-// that silently does something item 8 has not built yet.
+// --once runs exactly one publish round and exits; see the exit code
+// rule below. Without --once, runPublish runs the republish loop
+// (stage 2 item 8, PLAN.md 7.2 step 6, republish_loop.go) until
+// SIGINT or SIGTERM, and always exits ExitOK on that clean shutdown --
+// a running service being asked to stop is not a failure, whatever a
+// node's last round looked like.
 //
-// Exit code: ExitOK when every node in the round published
+// Exit code (--once only): ExitOK when every node in the round published
 // successfully (including the trivial case of zero nodes to
 // publish). ExitError when at least one node failed -- whether it
 // failed outright or only reached some of its proxies (a
@@ -115,8 +117,7 @@ func runPublish(env *Env, args []string) int {
 	}
 
 	if !*once {
-		fmt.Fprint(env.Stderr, "stunmesh-provd: publish: the republish loop is not yet implemented; pass --once\n")
-		return ExitUsage
+		return runPublishLoop(env, *namespace)
 	}
 
 	reports, err := publishRound(env, *namespace)
@@ -255,27 +256,52 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 // 7.2 steps 1-5). It never returns an error directly: every failure is
 // recorded on the returned nodeReport's Err field instead, so one bad
 // node's problem never stops publishNamespace's loop over the rest.
+//
+// publishNode always seals fresh, even when nothing changed since the
+// last round: it is the building block --once uses, and --once has no
+// prior round to compare against. Stage 2 item 8's republish loop
+// calls prepareNode and sealAndPutNode directly instead, so it can
+// compare the prepared Bundle and IdentityPublicKey against a cached
+// prior round before deciding whether to seal again (see
+// republish_loop.go).
 func publishNode(env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
-	report := nodeReport{Namespace: deployment.Namespace, NodeID: nodeID}
+	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
+	if err != nil {
+		return report
+	}
+	return sealAndPutNode(proxy, deployment, node, report, plain)
+}
 
-	node, err := store.ReadNode(env.Dir, deployment.Namespace, nodeID)
+// prepareNode reads one node's files, builds and validates its inner
+// bundle, and computes its DHT key (PLAN.md 7.2 steps 1-3). It stops
+// short of encryption: the returned plain is the exact bundle JSON
+// that still needs sealing, and report already carries Namespace,
+// NodeID, IdentityPublicKey, Bundle, and Key.
+//
+// On failure, report.Err is set and returned alongside a non-nil err;
+// the caller must return report as-is without calling sealAndPutNode.
+// node and plain are only meaningful when err is nil.
+func prepareNode(env *Env, deployment *store.Deployment, nodeID string, now time.Time) (report nodeReport, node *store.Node, plain []byte, err error) {
+	report = nodeReport{Namespace: deployment.Namespace, NodeID: nodeID}
+
+	node, err = store.ReadNode(env.Dir, deployment.Namespace, nodeID)
 	if err != nil {
 		report.Err = fmt.Errorf("read node: %w", err)
-		return report
+		return report, nil, nil, report.Err
 	}
 	report.IdentityPublicKey = node.IdentityPublicKey
 
 	b, err := buildBundle(deployment.Namespace, node, now)
 	if err != nil {
 		report.Err = err
-		return report
+		return report, nil, nil, report.Err
 	}
 	report.Bundle = b
 
 	key, err := dhtkey.Key(deployment.Namespace, nodeID)
 	if err != nil {
 		report.Err = fmt.Errorf("dht key: %w", err)
-		return report
+		return report, nil, nil, report.Err
 	}
 	report.Key = key
 
@@ -284,12 +310,19 @@ func publishNode(env *Env, proxy *dhtproxy.Client, deployment *store.Deployment,
 	// the same marshal to measure that bound). This is the plaintext
 	// that gets sealed; nothing derived from assembledBundle's raw
 	// JSON is used here.
-	plain, err := json.Marshal(b)
+	plain, err = json.Marshal(b)
 	if err != nil {
 		report.Err = fmt.Errorf("marshal bundle: %w", err)
-		return report
+		return report, nil, nil, report.Err
 	}
 
+	return report, node, plain, nil
+}
+
+// sealAndPutNode seals plain to node's identity key and puts it to
+// every proxy under report.Key (PLAN.md 7.2 steps 4-5). report must
+// come from a successful prepareNode call for the same node.
+func sealAndPutNode(proxy *dhtproxy.Client, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
 	// The controller is the sender: it seals with its own private key
 	// (deployment.ControllerPrivateKey) and the node's identity public
 	// key (node.IdentityPublicKey) as the recipient (PLAN.md 2.4,
@@ -302,19 +335,29 @@ func publishNode(env *Env, proxy *dhtproxy.Client, deployment *store.Deployment,
 	}
 	report.Sealed = sealed
 
-	// dhtproxy.Client.Put base64-encodes its data argument itself (see
-	// internal/dhtproxy's package doc and Put's payload construction):
-	// it wraps sealed in {"data": base64(sealed)} before sending. sealed
-	// -- nonce || nacl/box ciphertext, raw bytes -- is passed here
-	// unencoded, so the wire value ends up as exactly
-	// base64(nonce || nacl/box(inner bundle JSON)), matching
-	// docs/format.md 3 with no double-encoding.
+	if err := putSealed(proxy, report.Key, sealed); err != nil {
+		report.Err = err
+		return report
+	}
+	return report
+}
+
+// putSealed puts sealed to every proxy under key (PLAN.md 7.2 step
+// 5). It is shared by sealAndPutNode (a freshly sealed value) and
+// stage 2 item 8's republish loop (a cached value re-put unchanged).
+//
+// dhtproxy.Client.Put base64-encodes its data argument itself (see
+// internal/dhtproxy's package doc and Put's payload construction): it
+// wraps sealed in {"data": base64(sealed)} before sending. sealed --
+// nonce || nacl/box ciphertext, raw bytes -- is passed here unencoded,
+// so the wire value ends up as exactly base64(nonce ||
+// nacl/box(inner bundle JSON)), matching docs/format.md 3 with no
+// double-encoding.
+func putSealed(proxy *dhtproxy.Client, key string, sealed []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), putTimeout)
 	defer cancel()
 	if err := proxy.Put(ctx, key, sealed); err != nil {
-		report.Err = fmt.Errorf("put: %w", err)
-		return report
+		return fmt.Errorf("put: %w", err)
 	}
-
-	return report
+	return nil
 }

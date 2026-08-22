@@ -140,14 +140,15 @@ func TestRun_Publish(t *testing.T) {
 }
 
 func TestRun_PublishDefaults(t *testing.T) {
-	// The republish loop (stage 2 item 8) is not implemented yet:
-	// omitting --once is a usage error, not a silent no-op.
-	code, _, stderr := run("publish")
-	if code != ExitUsage {
-		t.Fatalf("code = %d, want %d", code, ExitUsage)
-	}
-	if !strings.Contains(stderr, "--once") {
-		t.Errorf("stderr = %q, want it to mention --once", stderr)
+	// Omitting --once runs the republish loop (stage 2 item 8) against
+	// the default provisioning root instead of a usage error. run()
+	// passes no --dir, so this hits defaultDir, which does not exist
+	// in the test environment: resolveNamespaces fails before the
+	// loop's first wait, so this returns ExitError at once instead of
+	// blocking for a real signal.
+	code, _, _ := run("publish")
+	if code != ExitError {
+		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
 }
 

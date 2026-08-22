@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
@@ -397,16 +399,38 @@ func TestRunPublish_ExitErrorOnPartialProxyFailure(t *testing.T) {
 	}
 }
 
-func TestRunPublish_WithoutOnceIsUsageError(t *testing.T) {
+// TestRunPublish_WithoutOnceRunsUntilSignaled exercises the real
+// process entry point for the republish loop (runPublishLoop's
+// signal.NotifyContext wiring), not just runRepublishLoop's pure
+// logic (see republish_loop_test.go for that). It delivers SIGTERM to
+// this same process, the way systemd stops a running
+// `stunmesh-provd publish` service, and checks the loop returns ExitOK
+// instead of hanging or exiting with an error code.
+func TestRunPublish_WithoutOnceRunsUntilSignaled(t *testing.T) {
 	root := t.TempDir()
-	env, _, stderr := newTestEnv(root)
-
-	code := runPublish(env, nil)
-	if code != ExitUsage {
-		t.Fatalf("code = %d, want %d", code, ExitUsage)
+	env, _, _ := newTestEnv(root)
+	if code := runInit(env, nil); code != ExitOK {
+		t.Fatalf("runInit: code=%d", code)
 	}
-	if !strings.Contains(stderr.String(), "--once") {
-		t.Errorf("stderr = %q, want it to mention --once", stderr.String())
+
+	done := make(chan int, 1)
+	go func() { done <- runPublish(env, nil) }()
+
+	// Give the goroutine a moment to reach its first Sleep call before
+	// signaling, so the signal lands after signal.NotifyContext is
+	// registered rather than before the loop starts.
+	time.Sleep(20 * time.Millisecond)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	select {
+	case code := <-done:
+		if code != ExitOK {
+			t.Fatalf("code = %d, want %d (clean shutdown)", code, ExitOK)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runPublish(nil) did not stop after SIGTERM")
 	}
 }
 
