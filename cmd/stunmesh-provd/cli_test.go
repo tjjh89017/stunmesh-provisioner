@@ -63,33 +63,25 @@ func TestRun_UnknownFlag(t *testing.T) {
 	}
 }
 
-func TestRun_InitDefaultDir(t *testing.T) {
-	code, _, stderr := run("init")
-	if code != ExitError {
-		t.Fatalf("code = %d, want %d", code, ExitError)
-	}
-	if !strings.Contains(stderr, defaultDir) {
-		t.Errorf("stderr = %q, want it to contain the default dir %q", stderr, defaultDir)
-	}
-}
-
 func TestRun_InitDirOverride(t *testing.T) {
-	code, _, stderr := run("--dir", "/custom/root", "init")
-	if code != ExitError {
-		t.Fatalf("code = %d, want %d", code, ExitError)
+	root := t.TempDir() + "/custom-root"
+	code, stdout, stderr := run("--dir", root, "init")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %q, want %d", code, stderr, ExitOK)
 	}
-	if !strings.Contains(stderr, "/custom/root") {
-		t.Errorf("stderr = %q, want it to contain the overridden dir", stderr)
+	if !strings.Contains(stdout, root) {
+		t.Errorf("stdout = %q, want it to contain the overridden dir", stdout)
 	}
 }
 
 func TestRun_InitWithNamespace(t *testing.T) {
-	code, _, stderr := run("init", "myns")
-	if code != ExitError {
-		t.Fatalf("code = %d, want %d", code, ExitError)
+	root := t.TempDir()
+	code, stdout, stderr := run("--dir", root, "init", "myns")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %q, want %d", code, stderr, ExitOK)
 	}
-	if !strings.Contains(stderr, "myns") {
-		t.Errorf("stderr = %q, want it to contain the namespace", stderr)
+	if !strings.Contains(stdout, "myns") {
+		t.Errorf("stdout = %q, want it to contain the namespace", stdout)
 	}
 }
 
