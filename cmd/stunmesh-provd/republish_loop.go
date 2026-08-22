@@ -115,8 +115,8 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 
 			runsAt, seen := due[namespace]
 			if !seen || !now.Before(runsAt) {
-				for _, report := range publishNamespaceCached(env, deployment, now, cache) {
-					printReport(env, report)
+				for _, report := range publishNamespaceCached(ctx, env, deployment, now, cache) {
+					printPublishReport(env, report)
 				}
 				runsAt = now.Add(deployment.RepublishInterval)
 			}
@@ -136,21 +136,6 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 			return ExitOK
 		}
 	}
-}
-
-// printReport writes one node's outcome the same way --once does, so
-// an operator sees the same messages whether the round came from
-// --once or from the loop.
-func printReport(env *Env, r nodeReport) {
-	label := r.Namespace
-	if r.NodeID != "" {
-		label = r.Namespace + "/" + r.NodeID
-	}
-	if r.Err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-provd: publish: %s: %v\n", label, r.Err)
-		return
-	}
-	fmt.Fprintf(env.Stdout, "published %s: key=%s\n", label, r.Key)
 }
 
 // pruneCache drops cache entries for namespaces no longer present in
@@ -177,7 +162,7 @@ func pruneCache(cache map[nodeKey]cacheEntry, namespaces []string) {
 // of sealing again (PLAN.md 7.2 step 6). deployment is already read,
 // unlike publishNamespace, because the loop needs it to compute the
 // namespace's due time regardless of whether this round publishes it.
-func publishNamespaceCached(env *Env, deployment *store.Deployment, now time.Time, cache map[nodeKey]cacheEntry) []nodeReport {
+func publishNamespaceCached(ctx context.Context, env *Env, deployment *store.Deployment, now time.Time, cache map[nodeKey]cacheEntry) []nodeReport {
 	nodeIDs, err := store.Nodes(env.Dir, deployment.Namespace)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
@@ -193,7 +178,7 @@ func publishNamespaceCached(env *Env, deployment *store.Deployment, now time.Tim
 
 	reports := make([]nodeReport, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		reports = append(reports, publishNodeCached(env, proxy, deployment, nodeID, now, cache))
+		reports = append(reports, publishNodeCached(ctx, env, proxy, deployment, nodeID, now, cache))
 	}
 	return reports
 }
@@ -217,7 +202,7 @@ func publishNamespaceCached(env *Env, deployment *store.Deployment, now time.Tim
 // example, a bad wg.yaml mid-edit) does not erase a good node's
 // standing cache entry, and the next successful round can still
 // compare against it.
-func publishNodeCached(env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time, cache map[nodeKey]cacheEntry) nodeReport {
+func publishNodeCached(ctx context.Context, env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time, cache map[nodeKey]cacheEntry) nodeReport {
 	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
 	if err != nil {
 		return report
@@ -227,7 +212,7 @@ func publishNodeCached(env *Env, proxy *dhtproxy.Client, deployment *store.Deplo
 	if prior, ok := cache[key]; ok && prior.identityPub == report.IdentityPublicKey {
 		if equal, cmpErr := report.Bundle.Equal(prior.bundle); cmpErr == nil && equal {
 			report.Sealed = prior.sealed
-			if err := putSealed(proxy, report.Key, prior.sealed); err != nil {
+			if err := putSealed(ctx, proxy, report.Key, prior.sealed); err != nil {
 				report.Err = err
 				return report
 			}
@@ -235,7 +220,7 @@ func publishNodeCached(env *Env, proxy *dhtproxy.Client, deployment *store.Deplo
 		}
 	}
 
-	report = sealAndPutNode(proxy, deployment, node, report, plain)
+	report = sealAndPutNode(ctx, proxy, deployment, node, report, plain)
 	if report.Err != nil {
 		return report
 	}

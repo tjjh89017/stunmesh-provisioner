@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,7 +84,7 @@ func TestRunRepublishLoop_UnchangedContentPutsIdenticalBytesAcrossRounds(t *test
 	defer srv.Close()
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 	addPublishTestNode(t, env, namespace, "alpha")
 
 	wantKey, err := dhtkey.Key(namespace, "alpha")
@@ -110,7 +111,7 @@ func TestRunRepublishLoop_ContentChangeReseals(t *testing.T) {
 	defer srv.Close()
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 	addPublishTestNode(t, env, namespace, "alpha")
 
 	wantKey, err := dhtkey.Key(namespace, "alpha")
@@ -140,7 +141,7 @@ func TestRunRepublishLoop_IdentityKeyChangeReseals(t *testing.T) {
 	defer srv.Close()
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 	addPublishTestNode(t, env, namespace, "alpha")
 
 	wantKey, err := dhtkey.Key(namespace, "alpha")
@@ -266,7 +267,7 @@ func TestRunRepublishLoop_NodeAddedMidRunIsPublished(t *testing.T) {
 	defer srv.Close()
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 	addPublishTestNode(t, env, namespace, "alpha")
 
 	betaKey, err := dhtkey.Key(namespace, "beta")
@@ -282,5 +283,90 @@ func TestRunRepublishLoop_NodeAddedMidRunIsPublished(t *testing.T) {
 
 	if len(proxy.dataFieldsFor(betaKey)) != 1 {
 		t.Fatal("node added mid-run was not published on the next round")
+	}
+}
+
+// hangingProxyListener opens a raw TCP listener that accepts exactly
+// one connection, reads whatever the client sends, and never writes a
+// response: it models an unreachable dhtproxy (PLAN.md 7.2's "10 nodes
+// and unreachable proxies" scenario from Defect 2's report) at the
+// transport level, with no HTTP server framework in the way to
+// complicate connection-close accounting. accepted fires once the
+// connection is established, so a test can wait for the request to be
+// in flight before acting.
+func hangingProxyListener(t *testing.T) (url string, accepted <-chan struct{}) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	ch := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		close(ch)
+		// Read and discard whatever the client sends; never respond.
+		// The connection is intentionally leaked past this goroutine's
+		// lifetime -- ln.Close() above stops new accepts, and the test
+		// process exits without waiting for this goroutine, which is
+		// fine because nothing here holds a reference the runtime
+		// needs to collect.
+		buf := make([]byte, 4096)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	return "http://" + ln.Addr().String(), ch
+}
+
+// TestRunRepublishLoop_AbandonsPromptlyOnContextCancelDuringRound proves
+// Defect 2's fix: a SIGTERM-equivalent context cancellation reaching
+// runRepublishLoop while a round is stuck inside one node's DHT put
+// aborts that put at once instead of waiting out the rest of
+// putTimeout (30s). The fake proxy never responds, so the only way
+// this test finishes quickly is if runRepublishLoop's ctx argument
+// reached all the way into putSealed's http request and aborted it
+// client-side.
+//
+// No real sleep drives the loop itself: the only real waiting in this
+// test is synchronization on a channel to know the request is in
+// flight before cancelling, and on the loop's own goroutine to
+// finish -- not a fixed sleep standing in for the behavior under
+// test.
+func TestRunRepublishLoop_AbandonsPromptlyOnContextCancelDuringRound(t *testing.T) {
+	proxyURL, accepted := hangingProxyListener(t)
+
+	env, namespace, _ := setupPublishTestNamespace(t, []string{proxyURL})
+	addPublishTestNode(t, env, namespace, "alpha")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- runRepublishLoop(ctx, env, "") }()
+
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("round never reached the fake proxy; test setup is broken")
+	}
+
+	cancelledAt := time.Now()
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != ExitOK {
+			t.Fatalf("code = %d, want %d (clean shutdown)", code, ExitOK)
+		}
+		if elapsed := time.Since(cancelledAt); elapsed > 2*time.Second {
+			t.Fatalf("runRepublishLoop took %v to stop after its context was cancelled, want well under putTimeout (%v)", elapsed, putTimeout)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runRepublishLoop did not stop after its context was cancelled; it is still waiting out the put")
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,9 +58,12 @@ func TestRun_UnknownCommand(t *testing.T) {
 }
 
 func TestRun_UnknownFlag(t *testing.T) {
-	code, _, _ := run("--bogus")
+	code, _, stderr := run("--bogus")
 	if code != ExitUsage {
 		t.Fatalf("code = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "bogus") {
+		t.Errorf("stderr = %q, want it to name the unknown flag", stderr)
 	}
 }
 
@@ -93,7 +97,13 @@ func TestRun_InitTooManyArgs(t *testing.T) {
 }
 
 func TestRun_NodeAdd(t *testing.T) {
-	code, _, stderr := run("node", "add", "ns1", "node1")
+	// Defect 3 audit: this used to omit --dir, relying on the real
+	// default root not having a namespace called "ns1" already
+	// initialized. --dir now points at a fresh t.TempDir(), so the
+	// "not initialized" error path this test pins is guaranteed on
+	// every machine.
+	root := t.TempDir()
+	code, _, stderr := run("--dir", root, "node", "add", "ns1", "node1")
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -127,10 +137,14 @@ func TestRun_NodeUnknownSubcommand(t *testing.T) {
 }
 
 func TestRun_Publish(t *testing.T) {
-	// The default --dir (/etc/stunmesh/provd) does not exist in the
-	// test environment, so naming a namespace under it is a clear,
-	// reported error rather than a silent no-op.
-	code, _, stderr := run("publish", "--namespace", "ns1", "--once")
+	// Defect 3 audit: this used to omit --dir, relying on the real
+	// default root (/etc/stunmesh/provd) not existing on the test
+	// machine and not containing a namespace called "ns1". --dir now
+	// points at a fresh, guaranteed-empty t.TempDir(), so naming a
+	// namespace under it is a clear, reported error on every machine,
+	// not just ones that happen not to have that namespace configured.
+	root := t.TempDir()
+	code, _, stderr := run("--dir", root, "publish", "--namespace", "ns1", "--once")
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -141,12 +155,23 @@ func TestRun_Publish(t *testing.T) {
 
 func TestRun_PublishDefaults(t *testing.T) {
 	// Omitting --once runs the republish loop (stage 2 item 8) against
-	// the default provisioning root instead of a usage error. run()
-	// passes no --dir, so this hits defaultDir, which does not exist
-	// in the test environment: resolveNamespaces fails before the
-	// loop's first wait, so this returns ExitError at once instead of
-	// blocking for a real signal.
-	code, _, _ := run("publish")
+	// the given provisioning root instead of a usage error. Defect 3:
+	// this test used to omit --dir, which resolves to the real default
+	// root (/etc/stunmesh/provd) and runs with the real sleepContext
+	// and a real signal context; it only passed because that directory
+	// happened not to exist on the machine running the test. On a host
+	// that followed contrib/systemd/README.md and created that
+	// directory, this would perform live DHT puts against the
+	// operator's configured proxies and then block for a real signal.
+	//
+	// --dir now points at a nonexistent directory under t.TempDir(),
+	// so resolveNamespaces fails before the loop's first wait for the
+	// same reason as before (the directory does not exist), but the
+	// nonexistence is guaranteed by the test itself instead of by an
+	// assumption about the host. This still cannot reach env.Sleep or
+	// a real signal context, so no stub for either is needed here.
+	root := t.TempDir()
+	code, _, _ := run("--dir", filepath.Join(root, "does-not-exist"), "publish")
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -160,9 +185,12 @@ func TestRun_PublishExtraArgs(t *testing.T) {
 }
 
 func TestRun_PublishUnknownFlag(t *testing.T) {
-	code, _, _ := run("publish", "--bogus")
+	code, _, stderr := run("publish", "--bogus")
 	if code != ExitUsage {
 		t.Fatalf("code = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "bogus") {
+		t.Errorf("stderr = %q, want it to name the unknown flag", stderr)
 	}
 }
 

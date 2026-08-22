@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -131,7 +132,7 @@ func TestPublishRound_PutsDecryptableBundleToEveryProxy(t *testing.T) {
 	env, namespace, controllerPub := setupPublishTestNamespace(t, []string{srvA.URL, srvB.URL})
 	nodePriv := addPublishTestNode(t, env, namespace, "alpha")
 
-	reports, err := publishRound(env, "")
+	reports, err := publishRound(context.Background(), env, "")
 	if err != nil {
 		t.Fatalf("publishRound: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestPublishRound_SealedBytesMatchBundleCanonicalContent(t *testing.T) {
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
 	addPublishTestNode(t, env, namespace, "alpha")
 
-	reports, err := publishRound(env, "")
+	reports, err := publishRound(context.Background(), env, "")
 	if err != nil {
 		t.Fatalf("publishRound: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestPublishRound_OneBadNodeDoesNotAbortOthers(t *testing.T) {
 		t.Fatalf("runNodeAdd(bad): code=%d", code)
 	}
 
-	reports, err := publishRound(env, "")
+	reports, err := publishRound(context.Background(), env, "")
 	if err != nil {
 		t.Fatalf("publishRound: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestPublishRound_UnknownNamespaceIsError(t *testing.T) {
 		t.Fatalf("runInit: code=%d", code)
 	}
 
-	_, err := publishRound(env, "does-not-exist")
+	_, err := publishRound(context.Background(), env, "does-not-exist")
 	if err == nil {
 		t.Fatal("publishRound succeeded for an unknown namespace, want an error")
 	}
@@ -295,7 +296,7 @@ func TestPublishRound_NamespaceWithNoNodesIsNotAnError(t *testing.T) {
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
 
-	reports, err := publishRound(env, namespace)
+	reports, err := publishRound(context.Background(), env, namespace)
 	if err != nil {
 		t.Fatalf("publishRound: %v", err)
 	}
@@ -312,11 +313,11 @@ func TestPublishRound_SecondRoundWithUnchangedFilesPutsIdenticalCanonicalContent
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
 	addPublishTestNode(t, env, namespace, "alpha")
 
-	reports1, err := publishRound(env, "")
+	reports1, err := publishRound(context.Background(), env, "")
 	if err != nil {
 		t.Fatalf("publishRound #1: %v", err)
 	}
-	reports2, err := publishRound(env, "")
+	reports2, err := publishRound(context.Background(), env, "")
 	if err != nil {
 		t.Fatalf("publishRound #2: %v", err)
 	}

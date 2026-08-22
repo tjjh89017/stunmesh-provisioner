@@ -76,6 +76,23 @@ type nodeReport struct {
 	Err error
 }
 
+// printPublishReport writes one node's outcome. It is the single
+// implementation both --once (runPublish, above) and the republish
+// loop (runRepublishLoop, republish_loop.go) use, so an operator sees
+// identical messages whichever path produced the report and a future
+// change to the wording only has to happen once.
+func printPublishReport(env *Env, r nodeReport) {
+	label := r.Namespace
+	if r.NodeID != "" {
+		label = r.Namespace + "/" + r.NodeID
+	}
+	if r.Err != nil {
+		fmt.Fprintf(env.Stderr, "stunmesh-provd: publish: %s: %v\n", label, r.Err)
+		return
+	}
+	fmt.Fprintf(env.Stdout, "published %s: key=%s\n", label, r.Key)
+}
+
 // runPublish implements `stunmesh-provd publish [--namespace <ns>]
 // [--once]` (PLAN.md 7.2).
 //
@@ -120,7 +137,13 @@ func runPublish(env *Env, args []string) int {
 		return runPublishLoop(env, *namespace)
 	}
 
-	reports, err := publishRound(env, *namespace)
+	// --once has no signal handling of its own (unlike the loop, which
+	// reacts to SIGINT/SIGTERM via runPublishLoop's signal.NotifyContext):
+	// it runs exactly one round and returns, so there is nothing running
+	// afterward for a cancellation to interrupt. context.Background()
+	// still threads through publishRound into putSealed so every put's
+	// timeout is derived the same way in both paths (see putSealed).
+	reports, err := publishRound(context.Background(), env, *namespace)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-provd: publish: %v\n", err)
 		return ExitError
@@ -128,16 +151,10 @@ func runPublish(env *Env, args []string) int {
 
 	failed := 0
 	for _, r := range reports {
-		label := r.Namespace
-		if r.NodeID != "" {
-			label = r.Namespace + "/" + r.NodeID
-		}
 		if r.Err != nil {
 			failed++
-			fmt.Fprintf(env.Stderr, "stunmesh-provd: publish: %s: %v\n", label, r.Err)
-			continue
 		}
-		fmt.Fprintf(env.Stdout, "published %s: key=%s\n", label, r.Key)
+		printPublishReport(env, r)
 	}
 
 	if failed > 0 {
@@ -174,7 +191,7 @@ func runPublish(env *Env, args []string) int {
 // instead of stopping the round: a broken provd.yaml in one namespace,
 // or a bad wg.yaml in one node, must not keep the rest from
 // publishing (stage 2 item 7 requirement).
-func publishRound(env *Env, ns string) ([]nodeReport, error) {
+func publishRound(ctx context.Context, env *Env, ns string) ([]nodeReport, error) {
 	namespaces, err := resolveNamespaces(env, ns)
 	if err != nil {
 		return nil, err
@@ -184,7 +201,7 @@ func publishRound(env *Env, ns string) ([]nodeReport, error) {
 
 	var reports []nodeReport
 	for _, namespace := range namespaces {
-		reports = append(reports, publishNamespace(env, namespace, now)...)
+		reports = append(reports, publishNamespace(ctx, env, namespace, now)...)
 	}
 	return reports, nil
 }
@@ -209,7 +226,7 @@ func resolveNamespaces(env *Env, ns string) ([]string, error) {
 // one nodeReport with an empty NodeID describing that failure, rather
 // than an error, so a bad namespace never keeps publishRound's caller
 // from seeing -- and acting on -- the other namespaces in the round.
-func publishNamespace(env *Env, namespace string, now time.Time) []nodeReport {
+func publishNamespace(ctx context.Context, env *Env, namespace string, now time.Time) []nodeReport {
 	deployment, err := store.ReadDeployment(env.Dir, namespace)
 	if err != nil {
 		return []nodeReport{{Namespace: namespace, Err: fmt.Errorf("read deployment: %w", err)}}
@@ -233,7 +250,7 @@ func publishNamespace(env *Env, namespace string, now time.Time) []nodeReport {
 
 	reports := make([]nodeReport, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		reports = append(reports, publishNode(env, proxy, deployment, nodeID, now))
+		reports = append(reports, publishNode(ctx, env, proxy, deployment, nodeID, now))
 	}
 	return reports
 }
@@ -264,12 +281,12 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 // compare the prepared Bundle and IdentityPublicKey against a cached
 // prior round before deciding whether to seal again (see
 // republish_loop.go).
-func publishNode(env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
+func publishNode(ctx context.Context, env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
 	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
 	if err != nil {
 		return report
 	}
-	return sealAndPutNode(proxy, deployment, node, report, plain)
+	return sealAndPutNode(ctx, proxy, deployment, node, report, plain)
 }
 
 // prepareNode reads one node's files, builds and validates its inner
@@ -322,7 +339,7 @@ func prepareNode(env *Env, deployment *store.Deployment, nodeID string, now time
 // sealAndPutNode seals plain to node's identity key and puts it to
 // every proxy under report.Key (PLAN.md 7.2 steps 4-5). report must
 // come from a successful prepareNode call for the same node.
-func sealAndPutNode(proxy *dhtproxy.Client, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
+func sealAndPutNode(ctx context.Context, proxy *dhtproxy.Client, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
 	// The controller is the sender: it seals with its own private key
 	// (deployment.ControllerPrivateKey) and the node's identity public
 	// key (node.IdentityPublicKey) as the recipient (PLAN.md 2.4,
@@ -335,7 +352,7 @@ func sealAndPutNode(proxy *dhtproxy.Client, deployment *store.Deployment, node *
 	}
 	report.Sealed = sealed
 
-	if err := putSealed(proxy, report.Key, sealed); err != nil {
+	if err := putSealed(ctx, proxy, report.Key, sealed); err != nil {
 		report.Err = err
 		return report
 	}
@@ -346,6 +363,15 @@ func sealAndPutNode(proxy *dhtproxy.Client, deployment *store.Deployment, node *
 // 5). It is shared by sealAndPutNode (a freshly sealed value) and
 // stage 2 item 8's republish loop (a cached value re-put unchanged).
 //
+// putTimeout bounds this one put, derived from ctx rather than
+// context.Background(): ctx is the cancellable context that reaches
+// here from the republish loop's SIGINT/SIGTERM handling (or
+// context.Background() from --once, which has nothing to cancel).
+// Deriving from ctx means a shutdown signal aborts an in-flight put
+// at once instead of waiting out the rest of putTimeout, and a round
+// already under way abandons promptly instead of finishing every
+// remaining node's full 30s budget first.
+//
 // dhtproxy.Client.Put base64-encodes its data argument itself (see
 // internal/dhtproxy's package doc and Put's payload construction): it
 // wraps sealed in {"data": base64(sealed)} before sending. sealed --
@@ -353,8 +379,8 @@ func sealAndPutNode(proxy *dhtproxy.Client, deployment *store.Deployment, node *
 // so the wire value ends up as exactly base64(nonce ||
 // nacl/box(inner bundle JSON)), matching docs/format.md 3 with no
 // double-encoding.
-func putSealed(proxy *dhtproxy.Client, key string, sealed []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), putTimeout)
+func putSealed(ctx context.Context, proxy *dhtproxy.Client, key string, sealed []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, putTimeout)
 	defer cancel()
 	if err := proxy.Put(ctx, key, sealed); err != nil {
 		return fmt.Errorf("put: %w", err)

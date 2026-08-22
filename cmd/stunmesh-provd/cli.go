@@ -75,6 +75,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, version strin
 			fmt.Fprint(stdout, usage)
 			return ExitOK
 		}
+		fmt.Fprintf(stderr, "stunmesh-provd: %v\n\n", err)
 		fmt.Fprint(stderr, usage)
 		return ExitUsage
 	}

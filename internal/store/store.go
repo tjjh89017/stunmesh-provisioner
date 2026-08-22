@@ -304,6 +304,16 @@ func ReadDeployment(root, namespace string) (*Deployment, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: republish_interval", ErrMalformed, provdPath)
 	}
+	// A non-positive interval is syntactically a valid duration but
+	// turns the republish loop into an unthrottled flood: runsAt never
+	// advances past now, so every round republishes immediately with
+	// no wait at all. Reject it here, at the one place every reader of
+	// provd.yaml goes through, so the operator gets a clear error
+	// naming the file and field instead of the controller silently
+	// hammering its own dhtproxy servers.
+	if interval <= 0 {
+		return nil, fmt.Errorf("%w: %s: republish_interval must be positive", ErrMalformed, provdPath)
+	}
 
 	priv, err := readKey(filepath.Join(nsDir, "controller.key"))
 	if err != nil {

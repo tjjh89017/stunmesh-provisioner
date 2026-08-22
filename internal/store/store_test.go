@@ -136,6 +136,22 @@ func TestReadDeployment_BadRepublishInterval(t *testing.T) {
 	}
 }
 
+func TestReadDeployment_NonPositiveRepublishIntervalIsRejected(t *testing.T) {
+	for _, interval := range []string{"0s", "-1m", "0"} {
+		root := t.TempDir()
+		nsDir := setupNamespace(t, root, "test-ns")
+		writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies:\n  - https://dhtproxy2.jami.net\nrepublish_interval: "+interval+"\n")
+
+		_, err := store.ReadDeployment(root, "test-ns")
+		if !errors.Is(err, store.ErrMalformed) {
+			t.Fatalf("interval %q: err = %v, want ErrMalformed", interval, err)
+		}
+		if !strings.Contains(err.Error(), "provd.yaml") || !strings.Contains(err.Error(), "republish_interval") {
+			t.Errorf("interval %q: err = %q, want it to name provd.yaml and republish_interval", interval, err)
+		}
+	}
+}
+
 func TestReadDeployment_BadControllerKey(t *testing.T) {
 	root := t.TempDir()
 	nsDir := setupNamespace(t, root, "test-ns")

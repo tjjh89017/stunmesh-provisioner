@@ -240,7 +240,7 @@ func TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged(t *testing.T
 	defer srv.Close()
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 	addPublishTestNode(t, env, namespace, "alpha")
 
 	key, err := dhtkey.Key(namespace, "alpha")
@@ -286,7 +286,7 @@ func TestAcceptance_PublishNeverModifiesOperatorFiles(t *testing.T) {
 	// edit, before the "before" snapshot below: this test's own setup
 	// writes provd.yaml, so it must not be mistaken for a write made by
 	// publish or the loop.
-	setRepublishInterval(t, env, namespace, "0s")
+	setRepublishInterval(t, env, namespace, "1ns")
 
 	provdPath := filepath.Join(env.Dir, namespace, "provd.yaml")
 	wgPath := filepath.Join(env.Dir, namespace, "nodes", "alpha", "wg.yaml")
