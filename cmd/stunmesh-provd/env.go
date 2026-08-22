@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -17,6 +18,12 @@ import (
 // Now and Rand are seams for later items. Init makes a key pair with
 // Rand. Init, node add, and publish stamp timestamps with Now. Fixing
 // both in a test makes the output deterministic.
+//
+// HTTPClient is the seam publish uses to reach the dhtproxy proxies.
+// A nil HTTPClient (the default for a real run, see newEnv) tells
+// publish to let internal/dhtproxy build its own client. A test sets
+// HTTPClient to point every proxy request at an httptest.Server
+// instead of a real Jami instance.
 type Env struct {
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -26,6 +33,8 @@ type Env struct {
 
 	Now  func() time.Time
 	Rand io.Reader
+
+	HTTPClient *http.Client
 }
 
 // newEnv builds the Env for a real run. dir is already resolved.

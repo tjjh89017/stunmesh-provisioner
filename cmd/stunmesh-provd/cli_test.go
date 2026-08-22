@@ -127,6 +127,9 @@ func TestRun_NodeUnknownSubcommand(t *testing.T) {
 }
 
 func TestRun_Publish(t *testing.T) {
+	// The default --dir (/etc/stunmesh/provd) does not exist in the
+	// test environment, so naming a namespace under it is a clear,
+	// reported error rather than a silent no-op.
 	code, _, stderr := run("publish", "--namespace", "ns1", "--once")
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -134,18 +137,17 @@ func TestRun_Publish(t *testing.T) {
 	if !strings.Contains(stderr, "ns1") {
 		t.Errorf("stderr = %q, want it to contain the namespace", stderr)
 	}
-	if !strings.Contains(stderr, "once=true") {
-		t.Errorf("stderr = %q, want it to show once=true", stderr)
-	}
 }
 
 func TestRun_PublishDefaults(t *testing.T) {
+	// The republish loop (stage 2 item 8) is not implemented yet:
+	// omitting --once is a usage error, not a silent no-op.
 	code, _, stderr := run("publish")
-	if code != ExitError {
-		t.Fatalf("code = %d, want %d", code, ExitError)
+	if code != ExitUsage {
+		t.Fatalf("code = %d, want %d", code, ExitUsage)
 	}
-	if !strings.Contains(stderr, "once=false") {
-		t.Errorf("stderr = %q, want it to show once=false", stderr)
+	if !strings.Contains(stderr, "--once") {
+		t.Errorf("stderr = %q, want it to mention --once", stderr)
 	}
 }
 
