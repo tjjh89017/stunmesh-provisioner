@@ -10,11 +10,6 @@ inputs:
     required: false
     default: '0'
 
-outputs:
-  dist-dir:
-    description: 'Directory that holds the built binaries'
-    value: 'dist'
-
 runs:
   using: 'composite'
   steps:
