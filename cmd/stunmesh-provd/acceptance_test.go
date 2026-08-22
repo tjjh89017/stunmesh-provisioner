@@ -265,16 +265,17 @@ func TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged(t *testing.T
 // few rounds of the republish loop -- every code path that reads
 // these files -- and checks nothing about them changed.
 //
-// Content equality is the non-negotiable check here (a byte-for-byte
-// os.ReadFile comparison). The modification time is also compared,
-// but only as a corroborating signal, logged with t.Logf rather than
-// failed with t.Errorf: on this test's tree, mtime can only fail to
-// move if the file really was never written, so it is not a source of
-// flaky, intermittent test failures the way a coarse clock comparing
-// two real writes' timing could be; but a filesystem with second-level
+// Content equality is the primary check here (a byte-for-byte
+// os.ReadFile comparison). The modification time is compared too,
+// and a change fails the test with t.Errorf: on this test's tree,
+// nothing but the code under test touches these files between the
+// snapshots, so an mtime that moved means a real write happened --
+// even one that rewrote identical bytes and would slip past the
+// content check -- and failing on it is deterministic, not flaky.
+// The asymmetry runs the other way: a filesystem with second-level
 // (or coarser) mtime resolution could in principle mask a real write
-// that landed on the same tick, so mtime alone must never be the
-// reason this test passes or fails -- content is.
+// that landed on the same tick, so an unchanged mtime is never taken
+// as proof of no write -- content equality must still hold.
 func TestAcceptance_PublishNeverModifiesOperatorFiles(t *testing.T) {
 	proxy := newCapturingProxy()
 	srv := proxy.server()
