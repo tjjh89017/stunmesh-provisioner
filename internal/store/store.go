@@ -1,9 +1,12 @@
-// Package store reads the operator's provisioning tree (PLAN.md 7.1).
+// Package store reads and writes the operator's provisioning tree
+// (PLAN.md 7.1).
 //
-// This package is read-only. It never creates, writes, or modifies a
-// file. `stunmesh-provd init` and `node add` (stage 2 items 2 and 3)
-// write the tree; this package only reads what they, or the operator,
-// already wrote.
+// The read side (ReadDeployment, ReadNode, Namespaces, Nodes) never
+// modifies a file. The write side (WriteFile, CreateDir) is the
+// shared, single-responsibility layer that `stunmesh-provd init` and
+// `node add` (stage 2 items 4 and 5) build on to create the tree; it
+// never overwrites a file the operator already owns. See "Write
+// primitives" below.
 //
 // # Tree layout
 //
@@ -96,6 +99,44 @@
 // node without aborting the others. No error message from this
 // package ever includes a file's content or a key's value; only a
 // path, a namespace, a node ID, or a field name.
+//
+// # Write primitives
+//
+// WriteFile and CreateDir are the only two ways this package touches
+// the file system for writing. Both refuse to overwrite: WriteFile
+// reports ErrExists for a file that is already there, and CreateDir
+// treats an existing directory as success and leaves it untouched.
+// Neither takes a "force" flag, because the operator owns every file
+// under root and no caller may ever be given a way to overwrite one,
+// accidentally or otherwise. errors.Is(err, ErrExists) lets a caller
+// such as `init` tell "already there, nothing done" apart from a real
+// failure, so re-running `init` or `node add` against an existing
+// tree is calm, not an error.
+//
+// Both primitives call os.Chmod after creating their target, so the
+// mode a caller asks for is the mode the file or directory ends up
+// with, regardless of the process umask (an OpenFile or MkdirAll
+// permission argument is masked by umask and can only ever come out
+// narrower than requested, never wider; an unusual umask that masks
+// an owner bit could otherwise silently produce a private key file
+// that even its own owner cannot read). CreateDir chmods only the
+// directory it was asked to create, not any parent it had to create
+// along the way; a caller that wants a parent and a leaf at different
+// modes calls CreateDir once per level, parent first.
+//
+// Mode policy is the caller's choice, not something these primitives
+// bake in, but PLAN.md 7.1 fixes two: controller.key and wg.yaml are
+// 0600, because they hold a private key. Every other file in the
+// tree is 0644. For directories, PLAN.md 7.1 does not specify a mode;
+// this package recommends 0700 for a namespace directory and a node
+// directory, tighter than the 0755 of a plain directory (root,
+// nodes/). Both hold at least one secret file. The plan describes no
+// group-based access model and the controller runs as a single
+// operator or root account, so there is no one who legitimately needs
+// to list a secret directory's file names without also being able to
+// read the 0600 files inside it; keeping the directory listing itself
+// private costs nothing and follows the same reasoning that already
+// puts controller.key and wg.yaml at 0600 instead of 0644.
 package store
 
 import (
@@ -183,7 +224,7 @@ func Namespaces(root string) ([]string, error) {
 // <root>/<namespace>/nodes/. It skips any non-directory entry and any
 // hidden entry.
 func Nodes(root, namespace string) ([]string, error) {
-	nsDir, err := resolveName(root, namespace)
+	nsDir, err := ResolveName(root, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -215,11 +256,16 @@ func listDirs(dir string) ([]string, error) {
 	return names, nil
 }
 
-// resolveName validates name (a namespace or a node ID) and returns
+// ResolveName validates name (a namespace or a node ID) and returns
 // filepath.Join(root, name). It rejects a name that could escape
 // root: empty, ".", "..", a leading ".", or a name containing a path
 // separator.
-func resolveName(root, name string) (string, error) {
+//
+// ResolveName is exported so that `stunmesh-provd init` and `node
+// add` (stage 2 items 4 and 5) validate a namespace or node ID name
+// the same way the read side does, before they call WriteFile or
+// CreateDir with the resulting path.
+func ResolveName(root, name string) (string, error) {
 	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, ".") {
 		return "", fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
@@ -238,7 +284,7 @@ func resolveName(root, name string) (string, error) {
 // ReadDeployment reads the namespace directory <root>/<namespace>:
 // provd.yaml, controller.key, and controller.pub.
 func ReadDeployment(root, namespace string) (*Deployment, error) {
-	nsDir, err := resolveName(root, namespace)
+	nsDir, err := ResolveName(root, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -281,11 +327,11 @@ func ReadDeployment(root, namespace string) (*Deployment, error) {
 // <root>/<namespace>/nodes/<nodeID>: identity.pub, wg.yaml, and
 // stunmesh.yaml.
 func ReadNode(root, namespace, nodeID string) (*Node, error) {
-	nsDir, err := resolveName(root, namespace)
+	nsDir, err := ResolveName(root, namespace)
 	if err != nil {
 		return nil, err
 	}
-	nodeDir, err := resolveName(filepath.Join(nsDir, "nodes"), nodeID)
+	nodeDir, err := ResolveName(filepath.Join(nsDir, "nodes"), nodeID)
 	if err != nil {
 		return nil, err
 	}
