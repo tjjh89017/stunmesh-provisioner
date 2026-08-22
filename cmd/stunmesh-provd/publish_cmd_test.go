@@ -86,17 +86,34 @@ func setupPublishTestNamespace(t *testing.T, proxyURLs []string) (env *Env, name
 	}
 	controllerPub = deployment.ControllerPublicKey
 
-	// Point provd.yaml at the fake proxy/proxies instead of the real
-	// Jami instances runInit wrote by default.
+	writePublishTestProvdYAML(t, env, namespace, proxyURLs)
+
+	return env, namespace, controllerPub
+}
+
+// writePublishTestProvdYAML points a namespace's provd.yaml at the
+// fake proxy/proxies instead of the real Jami instances runInit wrote
+// by default.
+func writePublishTestProvdYAML(t *testing.T, env *Env, namespace string, proxyURLs []string) {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString("proxies:\n")
 	for _, u := range proxyURLs {
 		b.WriteString("  - " + u + "\n")
 	}
 	b.WriteString("republish_interval: 5m\n")
-	mustWriteFile(t, filepath.Join(root, namespace, "provd.yaml"), b.String())
+	mustWriteFile(t, filepath.Join(env.Dir, namespace, "provd.yaml"), b.String())
+}
 
-	return env, namespace, controllerPub
+// addPublishTestNamespace creates one more namespace in env's existing
+// tree, through the same runInit path an operator uses, and points its
+// provd.yaml at proxyURLs.
+func addPublishTestNamespace(t *testing.T, env *Env, namespace string, proxyURLs []string) {
+	t.Helper()
+	if code := runInit(env, []string{namespace}); code != ExitOK {
+		t.Fatalf("runInit(%s): code=%d", namespace, code)
+	}
+	writePublishTestProvdYAML(t, env, namespace, proxyURLs)
 }
 
 // addPublishTestNode adds a node with a real, decryptable identity key
@@ -367,9 +384,14 @@ func TestRunPublish_ExitErrorWhenANodeFails(t *testing.T) {
 		t.Fatalf("runNodeAdd: code=%d", code)
 	}
 
+	stderr := env.Stderr.(interface{ String() string })
+
 	code := runPublish(env, []string{"--once"})
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr.String(), "1 of 1 node(s) failed") {
+		t.Errorf("stderr %q does not contain the end-of-round summary", stderr.String())
 	}
 }
 
@@ -400,6 +422,109 @@ func TestRunPublish_ExitErrorOnPartialProxyFailure(t *testing.T) {
 	}
 }
 
+// TestRunPublish_NamespaceFlagPublishesOnlyThatNamespace pins the
+// positive half of --namespace's contract: the named namespace's
+// nodes are published, and every other namespace's nodes are left
+// alone. (TestPublishRound_UnknownNamespaceIsError covers the
+// negative half.) Without this, resolveNamespaces could keep its
+// existence check but return every namespace, and no test would
+// notice.
+func TestRunPublish_NamespaceFlagPublishesOnlyThatNamespace(t *testing.T) {
+	proxy := newCapturingProxy()
+	srv := proxy.server()
+	defer srv.Close()
+
+	env, ns1, _ := setupPublishTestNamespace(t, []string{srv.URL})
+	addPublishTestNode(t, env, ns1, "alpha")
+
+	addPublishTestNamespace(t, env, "otherns", []string{srv.URL})
+	addPublishTestNode(t, env, "otherns", "beta")
+
+	code := runPublish(env, []string{"--namespace", ns1, "--once"})
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d; stderr=%q", code, ExitOK, env.Stderr.(interface{ String() string }).String())
+	}
+
+	ns1Key, err := dhtkey.Key(ns1, "alpha")
+	if err != nil {
+		t.Fatalf("dhtkey.Key(%s): %v", ns1, err)
+	}
+	if got := len(proxy.dataFieldsFor(ns1Key)); got != 1 {
+		t.Errorf("named namespace's node got %d put(s), want 1", got)
+	}
+
+	otherKey, err := dhtkey.Key("otherns", "beta")
+	if err != nil {
+		t.Fatalf("dhtkey.Key(otherns): %v", err)
+	}
+	if got := len(proxy.dataFieldsFor(otherKey)); got != 0 {
+		t.Errorf("other namespace's node got %d put(s), want 0: --namespace did not filter", got)
+	}
+}
+
+// TestRunPublish_BrokenNamespaceDoesNotAbortOthers exercises
+// publishNamespace's failure isolation: a namespace whose provd.yaml
+// does not parse becomes one namespace-level nodeReport, not an error
+// that stops the round, so the healthy namespace still publishes and
+// the exit code still reports the failure. The broken namespace is
+// named to sort before the healthy one, so the round meets the
+// failure first and must keep going.
+func TestRunPublish_BrokenNamespaceDoesNotAbortOthers(t *testing.T) {
+	proxy := newCapturingProxy()
+	srv := proxy.server()
+	defer srv.Close()
+
+	env, healthy, _ := setupPublishTestNamespace(t, []string{srv.URL})
+	addPublishTestNode(t, env, healthy, "alpha")
+
+	addPublishTestNamespace(t, env, "aaa-broken", []string{srv.URL})
+	mustWriteFile(t, filepath.Join(env.Dir, "aaa-broken", "provd.yaml"), "proxies: [broken\n")
+
+	stderr := env.Stderr.(interface{ String() string })
+
+	code := runPublish(env, []string{"--once"})
+	if code != ExitError {
+		t.Fatalf("code = %d, want %d: the broken namespace is a failure", code, ExitError)
+	}
+
+	healthyKey, err := dhtkey.Key(healthy, "alpha")
+	if err != nil {
+		t.Fatalf("dhtkey.Key: %v", err)
+	}
+	if got := len(proxy.dataFieldsFor(healthyKey)); got != 1 {
+		t.Fatalf("healthy namespace's node got %d put(s), want 1: the broken namespace aborted the round", got)
+	}
+
+	if !strings.Contains(stderr.String(), "aaa-broken") {
+		t.Errorf("stderr %q does not report the broken namespace", stderr.String())
+	}
+	// One namespace-level report for the broken namespace plus one node
+	// report for the healthy node: the summary must count both.
+	if !strings.Contains(stderr.String(), "1 of 2 node(s) failed") {
+		t.Errorf("stderr %q does not contain the end-of-round summary", stderr.String())
+	}
+}
+
+// TestRunPublish_NothingToPublishMessage pins the --once message for a
+// round that had zero nodes to attempt: an operator running publish
+// against an empty tree must see that it was a no-op, not silence.
+func TestRunPublish_NothingToPublishMessage(t *testing.T) {
+	proxy := newCapturingProxy()
+	srv := proxy.server()
+	defer srv.Close()
+
+	env, _, _ := setupPublishTestNamespace(t, []string{srv.URL})
+	stdout := env.Stdout.(interface{ String() string })
+
+	code := runPublish(env, []string{"--once"})
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(stdout.String(), "nothing to publish") {
+		t.Errorf("stdout %q does not say nothing to publish", stdout.String())
+	}
+}
+
 // TestRunPublish_WithoutOnceRunsUntilSignaled exercises the real
 // process entry point for the republish loop (runPublishLoop's
 // signal.NotifyContext wiring), not just runRepublishLoop's pure
@@ -414,13 +539,28 @@ func TestRunPublish_WithoutOnceRunsUntilSignaled(t *testing.T) {
 		t.Fatalf("runInit: code=%d", code)
 	}
 
+	// Deterministic handshake: the loop's first env.Sleep call happens
+	// strictly after runPublishLoop's signal.NotifyContext registration,
+	// so blocking on sleeping before signaling guarantees the handler is
+	// installed when SIGTERM arrives. A wall-clock sleep here would
+	// race: SIGTERM delivered before registration takes the default
+	// disposition and kills the whole test binary.
+	sleeping := make(chan struct{})
+	var once sync.Once
+	env.Sleep = func(ctx context.Context, d time.Duration) error {
+		once.Do(func() { close(sleeping) })
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
 	done := make(chan int, 1)
 	go func() { done <- runPublish(env, nil) }()
 
-	// Give the goroutine a moment to reach its first Sleep call before
-	// signaling, so the signal lands after signal.NotifyContext is
-	// registered rather than before the loop starts.
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-sleeping:
+	case <-time.After(5 * time.Second):
+		t.Fatal("republish loop never reached its first Sleep call")
+	}
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
