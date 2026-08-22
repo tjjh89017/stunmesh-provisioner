@@ -46,8 +46,9 @@ const usage = `Usage: stunmesh-provd [--dir <path>] <command> [<args>]
 Commands:
   init [<namespace>]
         create a namespace directory and its controller key pair
-  node add <namespace> <node_id>
-        add a node to a namespace
+  node add <namespace> <node_id> [<identity_pub_key>]
+        add a node to a namespace; reads the identity key from
+        stdin when the key argument is omitted
   publish [--namespace <ns>] [--once]
         build, encrypt, and put bundles to the DHT
 
