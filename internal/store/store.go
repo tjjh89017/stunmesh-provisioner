@@ -1,0 +1,348 @@
+// Package store reads the operator's provisioning tree (PLAN.md 7.1).
+//
+// This package is read-only. It never creates, writes, or modifies a
+// file. `stunmesh-provd init` and `node add` (stage 2 items 2 and 3)
+// write the tree; this package only reads what they, or the operator,
+// already wrote.
+//
+// # Tree layout
+//
+//	<root>/
+//	├── README.md
+//	└── <namespace>/
+//	    ├── provd.yaml
+//	    ├── controller.key
+//	    ├── controller.pub
+//	    └── nodes/
+//	        └── <node_id>/
+//	            ├── identity.pub
+//	            ├── wg.yaml
+//	            └── stunmesh.yaml
+//
+// The namespace and node ID are directory names, not file content.
+// ReadDeployment and ReadNode reject a name that could escape the
+// tree (empty, ".", "..", a leading ".", or a name containing a path
+// separator) before touching the file system.
+//
+// # YAML decision
+//
+// wg.yaml must become the bundle's `wg` section without losing the
+// presence semantics that internal/bundle depends on: an absent key,
+// an explicit empty map (`{}`), and an explicit empty list (`[]`)
+// must stay distinguishable (PLAN.md 4.3, 4.5; internal/bundle package
+// doc). This package converts wg.yaml with sigs.k8s.io/yaml.YAMLToJSON
+// instead of decoding it into a Go struct with a YAML library's own
+// tags.
+//
+// YAMLToJSON parses the YAML into a generic tree
+// (map[string]interface{}, []interface{}, scalars) and marshals that
+// tree with encoding/json. A YAML key that is absent from the source
+// document is simply not a key in the map; an explicit `{}` or `[]`
+// stays an empty map or slice, not a nil one. Presence survives the
+// conversion for free, because the conversion never passes through a
+// Go struct's zero-value field. Decoding straight into a
+// bundle.Interface-shaped struct with a YAML library's own tags would
+// need every presence trick already in internal/bundle (pointer
+// fields, custom (Un)MarshalJSON) re-derived a second time in the
+// YAML library's tag dialect, and kept in sync with docs/format.md by
+// hand forever after; converting to JSON reuses the one dialect
+// internal/bundle already speaks.
+//
+// sigs.k8s.io/yaml was chosen over decoding directly with a YAML
+// library (gopkg.in/yaml.v3 or go.yaml.in/yaml/v3) for that reason: it
+// turns wg.yaml into the exact seam stage 2 item 6 (bundle assembly)
+// needs — JSON bytes it can embed under the `wg` key of the assembled
+// bundle and pass through bundle.Parse and bundle.Validate, the same
+// code path stunmesh-agent uses. That gets item 6 unknown-key
+// rejection, the no-`null` rule, the plain-base-10-integer rule, and
+// the unpaired-surrogate rule for free, with one rule table
+// (docs/format.md) instead of two.
+//
+// sigs.k8s.io/yaml is maintained by kubernetes-sigs and is the YAML
+// library Kubernetes itself uses for this same YAML-as-JSON pattern.
+// Its only transitive dependency is go.yaml.in/yaml/v2, the
+// yaml.v3-lineage fork that sigs.k8s.io/yaml now vendors its YAML
+// parsing from; no other module is pulled in. This package never
+// decodes wg.yaml into a typed struct itself (see ReadNode), so a
+// YAML syntax error is a structural error ("did not find expected
+// key"), not a type-mismatch error that could echo a field value
+// (some "cannot unmarshal into T" messages from struct-typed
+// decoding do echo the offending scalar); avoiding struct-typed
+// decoding here is itself part of the no-secrets-in-errors discipline
+// (see the package doc "Errors" section).
+//
+// # Seam for bundle assembly (stage 2 item 6)
+//
+// Node.WG is JSON bytes shaped exactly like the bundle's `wg` value:
+// a map of interface name to interface fields, with presence
+// preserved. It is not wrapped in an outer `{"wg": ...}` envelope.
+// Item 6 assembles the full bundle object (`version`, `namespace`,
+// `node_id`, `timestamp`, this `wg` value, and `stunmesh`) and
+// validates the assembled whole with bundle.Parse and
+// (*bundle.Bundle).Validate. This package performs no bundle-level
+// validation itself; it only decodes files.
+//
+// # Errors
+//
+// A caller distinguishes three failure kinds with errors.Is:
+//
+//   - ErrNotExist: a required file or directory is absent.
+//   - ErrMalformed: a file exists but its content is not well-formed
+//     (bad YAML, bad duration syntax).
+//   - ErrInvalidKey: a key file exists and parses as text but is not a
+//     valid key (bad base64, wrong length).
+//
+// stunmesh-provd publish (stage 2 item 7) uses this to skip one bad
+// node without aborting the others. No error message from this
+// package ever includes a file's content or a key's value; only a
+// path, a namespace, a node ID, or a field name.
+package store
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"sigs.k8s.io/yaml"
+
+	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
+)
+
+// ErrNotExist means a required file or directory is absent.
+var ErrNotExist = errors.New("store: does not exist")
+
+// ErrMalformed means a file exists but its content is not
+// well-formed.
+var ErrMalformed = errors.New("store: malformed content")
+
+// ErrInvalidKey means a key file exists but does not hold a valid
+// key.
+var ErrInvalidKey = errors.New("store: invalid key")
+
+// ErrInvalidName means a namespace or node ID name is not a valid
+// directory name: empty, ".", "..", hidden (a leading "."), or
+// containing a path separator.
+var ErrInvalidName = errors.New("store: invalid name")
+
+// Deployment is one namespace directory's settings: provd.yaml and
+// the controller key pair.
+type Deployment struct {
+	// Namespace is the directory name.
+	Namespace string
+	// Proxies is the list of dhtproxy base URLs from provd.yaml.
+	Proxies []string
+	// RepublishInterval is the parsed republish_interval from
+	// provd.yaml.
+	RepublishInterval time.Duration
+	// ControllerPrivateKey is controller.key, parsed.
+	ControllerPrivateKey crypto.Key
+	// ControllerPublicKey is controller.pub, parsed.
+	ControllerPublicKey crypto.Key
+}
+
+// Node is one node directory under a namespace's nodes/ subdirectory.
+type Node struct {
+	// NodeID is the directory name.
+	NodeID string
+	// IdentityPublicKey is identity.pub, parsed.
+	IdentityPublicKey crypto.Key
+	// WG is wg.yaml, converted to JSON. It is shaped exactly like the
+	// bundle's `wg` value (PLAN.md 4.2): a map of interface name to
+	// interface fields. Presence is preserved: a field absent from
+	// wg.yaml stays absent in WG, and an explicit empty map or list
+	// stays present-and-empty. See the package doc "YAML decision"
+	// and "Seam for bundle assembly".
+	WG json.RawMessage
+	// Stunmesh is the raw stunmesh.yaml text, unchanged. An empty
+	// file is legitimate: it means "no stunmesh config" and is
+	// distinct from a missing file, which is ErrNotExist.
+	Stunmesh string
+}
+
+// provdYAML is the on-disk shape of provd.yaml. RepublishInterval is
+// decoded as a string first because YAML has no duration type; Go
+// parses it with time.ParseDuration afterward.
+type provdYAML struct {
+	Proxies           []string `json:"proxies"`
+	RepublishInterval string   `json:"republish_interval"`
+}
+
+// Namespaces lists the namespace directories directly under root. It
+// skips README.md and any other non-directory entry, and any hidden
+// entry (a name starting with "."). The result is sorted by
+// directory-read order (os.ReadDir already sorts by name).
+func Namespaces(root string) ([]string, error) {
+	return listDirs(root)
+}
+
+// Nodes lists the node ID directories under
+// <root>/<namespace>/nodes/. It skips any non-directory entry and any
+// hidden entry.
+func Nodes(root, namespace string) ([]string, error) {
+	nsDir, err := resolveName(root, namespace)
+	if err != nil {
+		return nil, err
+	}
+	return listDirs(filepath.Join(nsDir, "nodes"))
+}
+
+// listDirs returns the directory-entry names directly under dir that
+// are themselves directories and not hidden (a name starting with
+// ".").
+func listDirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrNotExist, dir)
+		}
+		return nil, fmt.Errorf("store: read %s: %w", dir, err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
+// resolveName validates name (a namespace or a node ID) and returns
+// filepath.Join(root, name). It rejects a name that could escape
+// root: empty, ".", "..", a leading ".", or a name containing a path
+// separator.
+func resolveName(root, name string) (string, error) {
+	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return "", fmt.Errorf("%w: %q", ErrInvalidName, name)
+	}
+	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidName, name)
+	}
+	// filepath.Base guards against a name that is technically free of
+	// "/" on this platform's separator convention but still would not
+	// name a single, direct child of root once cleaned.
+	if filepath.Base(name) != name {
+		return "", fmt.Errorf("%w: %q", ErrInvalidName, name)
+	}
+	return filepath.Join(root, name), nil
+}
+
+// ReadDeployment reads the namespace directory <root>/<namespace>:
+// provd.yaml, controller.key, and controller.pub.
+func ReadDeployment(root, namespace string) (*Deployment, error) {
+	nsDir, err := resolveName(root, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	provdPath := filepath.Join(nsDir, "provd.yaml")
+	data, err := readFile(provdPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var p provdYAML
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrMalformed, provdPath, err)
+	}
+
+	interval, err := time.ParseDuration(p.RepublishInterval)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: republish_interval", ErrMalformed, provdPath)
+	}
+
+	priv, err := readKey(filepath.Join(nsDir, "controller.key"))
+	if err != nil {
+		return nil, err
+	}
+	pub, err := readKey(filepath.Join(nsDir, "controller.pub"))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Deployment{
+		Namespace:            namespace,
+		Proxies:              p.Proxies,
+		RepublishInterval:    interval,
+		ControllerPrivateKey: priv,
+		ControllerPublicKey:  pub,
+	}, nil
+}
+
+// ReadNode reads the node directory
+// <root>/<namespace>/nodes/<nodeID>: identity.pub, wg.yaml, and
+// stunmesh.yaml.
+func ReadNode(root, namespace, nodeID string) (*Node, error) {
+	nsDir, err := resolveName(root, namespace)
+	if err != nil {
+		return nil, err
+	}
+	nodeDir, err := resolveName(filepath.Join(nsDir, "nodes"), nodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	identity, err := readKey(filepath.Join(nodeDir, "identity.pub"))
+	if err != nil {
+		return nil, err
+	}
+
+	wgPath := filepath.Join(nodeDir, "wg.yaml")
+	wgYAML, err := readFile(wgPath)
+	if err != nil {
+		return nil, err
+	}
+	wgJSON, err := yaml.YAMLToJSON(wgYAML)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrMalformed, wgPath)
+	}
+
+	stunmeshPath := filepath.Join(nodeDir, "stunmesh.yaml")
+	stunmesh, err := readFile(stunmeshPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Node{
+		NodeID:            nodeID,
+		IdentityPublicKey: identity,
+		WG:                json.RawMessage(wgJSON),
+		Stunmesh:          string(stunmesh),
+	}, nil
+}
+
+// readFile reads path read-only and classifies a missing file as
+// ErrNotExist.
+func readFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrNotExist, path)
+		}
+		return nil, fmt.Errorf("store: read %s: %w", path, err)
+	}
+	return data, nil
+}
+
+// readKey reads path and parses it as a crypto.Key. It classifies a
+// missing file as ErrNotExist and a file that does not hold a valid
+// key as ErrInvalidKey. The error never includes the file content.
+func readKey(path string) (crypto.Key, error) {
+	data, err := readFile(path)
+	if err != nil {
+		return crypto.Key{}, err
+	}
+	key, err := crypto.ParseKey(string(data))
+	if err != nil {
+		return crypto.Key{}, fmt.Errorf("%w: %s: %v", ErrInvalidKey, path, err)
+	}
+	return key, nil
+}
