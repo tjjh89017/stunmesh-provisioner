@@ -49,13 +49,30 @@ func runFetch(env *Env, args []string) int {
 // doFetch is the seam stage 3 items 2-10 fill in: taking the lock,
 // getting and decrypting the DHT values, running the checks of
 // PLAN.md 4.4, comparing with last.json, diffing, building and
-// applying the UCI batch, and writing last.json. This item stops
-// after flag parsing and validation, so doFetch is a stub: it does no
-// work and always reports failure, which is correct until a later
-// item replaces this body -- there is nothing yet for a caller to
-// treat as success.
+// applying the UCI batch, and writing last.json.
+//
+// This item (stage 3 item 2) implements only the lock: acquireLock at
+// cfg.LockPath, released on every return path through defer. Another
+// instance already holding the lock is normal, not a failure (see
+// acquireLock and errLockHeld); doFetch logs one line and returns
+// ExitOK. Any other failure to acquire the lock is ExitError.
+//
+// Past the lock, doFetch is still a stub for the rest of stage 3: it
+// does no work and always reports failure, which is correct until a
+// later item replaces this body -- there is nothing yet for a caller
+// to treat as success.
 func doFetch(env *Env, cfg *Config) int {
-	_ = cfg
+	lock, err := acquireLock(cfg.LockPath)
+	if err != nil {
+		if errors.Is(err, errLockHeld) {
+			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: %s: already locked by another instance, exiting\n", cfg.LockPath)
+			return ExitOK
+		}
+		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: %v\n", err)
+		return ExitError
+	}
+	defer lock.Release()
+
 	fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: not implemented yet")
 	return ExitError
 }
