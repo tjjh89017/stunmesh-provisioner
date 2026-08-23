@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/execx"
 )
 
 func TestRunFetch_MissingFlagsReportsExitError(t *testing.T) {
@@ -335,9 +336,9 @@ func TestDoFetch_DecryptableValueHandsOffToNextItem(t *testing.T) {
 	cfg, controllerPriv, identityPub := fetchTestConfig(t, lockPath, nil)
 
 	// wg is non-empty so this bundle's content differs from the (missing,
-	// so empty) last.json: checkAndApply (stage 3 item 5) now compares
-	// the two for real, and only a genuine content difference reaches
-	// applyChanges, the still-unimplemented seam the next item fills in.
+	// so empty) last.json: checkAndApply (stage 3 item 5) compares the
+	// two for real, and only a genuine content difference reaches
+	// applyChanges and then applyDiff (stage 3 item 8).
 	plain := []byte(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,` +
 		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":""}`)
 	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
@@ -354,17 +355,16 @@ func TestDoFetch_DecryptableValueHandsOffToNextItem(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	env.HTTPClient = srv.Client()
+	env.Runner = execx.NewFake()
 
 	code := doFetch(env, cfg)
-	// applyChanges, the seam the next item fills in, is still a stub
-	// that always reports failure; reaching it (rather than the
-	// no-value, none-decrypted, or no-change paths) proves decrypt-and-
-	// select and the last.json comparison both worked end to end.
-	if code != ExitError {
-		t.Errorf("code = %d, want %d; stderr=%q", code, ExitError, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, want it to reach the applyChanges seam", stderr.String())
+	// applyDiff (stage 3 item 8) applies for real against the fake
+	// runner; reaching ExitOK (rather than the no-value,
+	// none-decrypted, or no-change paths) proves decrypt-and-select,
+	// the last.json comparison, the diff, and the apply all worked end
+	// to end.
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
 	}
 }
 

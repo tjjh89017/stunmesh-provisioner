@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/execx"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
 )
 
@@ -274,20 +275,22 @@ func TestCheckAndApply_DifferentContentHandsOffToNextSeam(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
 		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
 
-	cfg := &Config{LastPath: lastPath}
+	cfg := &Config{LastPath: lastPath, StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml")}
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.Runner = execx.NewFake()
 
 	code := checkAndApply(env, cfg, b)
-	// applyChanges, the next item's seam, is still a stub that reports
-	// failure; reaching it (rather than ExitNoChange) proves the
-	// comparison correctly decided "different".
-	if code != ExitError {
-		t.Errorf("code = %d, want %d (the apply-seam stub); stderr=%q", code, ExitError, stderr.String())
+	// applyDiff (stage 3 item 8) applies for real against the fake
+	// runner; reaching ExitOK (rather than ExitNoChange) proves the
+	// comparison correctly decided "different" and the apply ran end
+	// to end.
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, want it to reach the apply seam", stderr.String())
+	if _, err := os.Stat(lastPath); err != nil {
+		t.Errorf("last.json not written after a successful apply: %v", err)
 	}
 }
 

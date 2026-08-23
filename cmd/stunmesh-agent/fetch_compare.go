@@ -67,11 +67,13 @@ func stateToBundle(state *last.State, ref *bundle.Bundle) *bundle.Bundle {
 }
 
 // applyChanges computes the diff between b and state (stage 3 item 6,
-// fetch_diff.go: computeDiff, Diff, InterfaceDiff) and hands it to
-// applyDiff, the seam the next stage 3 item fills in: the UCI batch
-// and the apply (PLAN.md 6). state is the last.json content
+// fetch_diff.go: computeDiff, Diff, InterfaceDiff) and hands it, along
+// with state, to applyDiff (fetch_apply.go, stage 3 item 8): the UCI
+// batch and the apply (PLAN.md 6). state is the last.json content
 // checkAndApply already read, handed forward so neither this item nor
-// the next one needs to read it again.
+// applyDiff needs to read it again; applyDiff also needs state to
+// carry forward the recorded UCI sections of every unchanged
+// interface into the new last.json (see applyDiff's doc comment).
 func applyChanges(env *Env, cfg *Config, b *bundle.Bundle, state *last.State) int {
 	diff, err := computeDiff(b, state)
 	if err != nil {
@@ -83,19 +85,5 @@ func applyChanges(env *Env, cfg *Config, b *bundle.Bundle, state *last.State) in
 		return ExitError
 	}
 
-	return applyDiff(env, cfg, diff)
-}
-
-// applyDiff is the seam the next stage 3 item fills in: building the
-// UCI batch from diff (PLAN.md 6 "UCI layout") and applying it
-// (`uci commit network`, `ubus call network reload`, the stunmesh
-// config file, `/etc/init.d/stunmesh reload`/`stop`, and writing
-// last.json on success).
-//
-// This item's body is a stub: it does no work and always reports
-// failure, which is correct until the next item replaces it -- there
-// is nothing yet for a caller to treat as success.
-func applyDiff(env *Env, cfg *Config, diff *Diff) int {
-	fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: not implemented yet")
-	return ExitError
+	return applyDiff(env, cfg, diff, state)
 }

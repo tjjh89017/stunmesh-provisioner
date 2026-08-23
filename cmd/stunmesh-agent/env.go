@@ -3,6 +3,8 @@ package main
 import (
 	"io"
 	"net/http"
+
+	"github.com/tjjh89017/stunmesh-provisioner/internal/execx"
 )
 
 // Env carries the dependencies a subcommand needs. It replaces direct
@@ -16,15 +18,19 @@ import (
 // sets HTTPClient to point every proxy request at an httptest.Server
 // instead of a real Jami instance.
 //
-// Later stage 3 items extend Env with further seams they need (a
-// clock for last.json bookkeeping, an execx.Runner for uci/ubus/
-// init.d calls).
+// Runner is the seam the apply step (PLAN.md 6, fetch_apply.go) uses
+// for every uci, ubus, and /etc/init.d/stunmesh call. A nil Runner
+// (the default for a real run, see newEnv and runnerFor) tells the
+// apply step to use execx.Exec, the real command runner. A test sets
+// Runner to an *execx.Fake, so it never touches the real system and
+// can assert the exact command sequence the apply step ran.
 type Env struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 
 	HTTPClient *http.Client
+	Runner     execx.Runner
 }
 
 // newEnv builds the Env for a real run.
