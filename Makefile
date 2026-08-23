@@ -117,8 +117,15 @@ ifneq ($(UPX),0)
 endif
 
 .PHONY: test
-test:
+test: test-openwrt
 	go test ./...
+
+# test-openwrt runs the contrib/openwrt shell tests (see
+# contrib/openwrt/tests/run.sh for what they cover and how). It has no
+# Go dependency and needs no root.
+.PHONY: test-openwrt
+test-openwrt:
+	sh contrib/openwrt/tests/run.sh
 
 # vet runs go vet for the host GOOS/GOARCH, plus a second pass for
 # linux/mips (softfloat). go vet compiles every package it checks,
@@ -187,7 +194,8 @@ help:
 	@echo "  agent-mips    build stunmesh-agent for linux/mips (softfloat)"
 	@echo "  agent-mipsle  build stunmesh-agent for linux/mipsle (softfloat)"
 	@echo "  agent-arm64   build stunmesh-agent for linux/arm64"
-	@echo "  test          run go test ./..."
+	@echo "  test          run the contrib/openwrt shell tests, then go test ./..."
+	@echo "  test-openwrt  run only the contrib/openwrt shell tests"
 	@echo "  vet           run go vet ./..., plus linux/mips (softfloat)"
 	@echo "  fmt-check     fail if gofmt would change any file"
 	@echo "  tidy-check    fail if go mod tidy would change go.mod/go.sum"

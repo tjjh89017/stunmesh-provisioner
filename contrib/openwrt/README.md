@@ -133,3 +133,45 @@ build each command's argument list, since ash has no arrays; this
 also avoids the word-splitting bugs a plain string of flags would
 have if a value ever contained a space. Checked with
 `shellcheck -s dash`.
+
+## 6. Tests
+
+`contrib/openwrt/tests/` (`run.sh`, `test_init.sh`, `test_hotplug.sh`,
+`lib.sh`) tests both scripts. `make test` (and so CI) runs
+`test-openwrt` before `go test ./...`; run it alone with
+`make test-openwrt` or `sh contrib/openwrt/tests/run.sh`.
+
+`test_init.sh` loads `stunmesh-agent.init`'s functions by sourcing a
+filtered copy with only the `. /lib/functions.sh` line removed (that
+line pulls in OpenWrt's UCI helpers, which do not exist off an
+OpenWrt device, and only `read_config` -- not tested here -- needs
+them). Every function body it tests is the real, unmodified script
+text. It covers `remove_cron`, `install_cron`, and `stop_service`:
+normal removal keeps other entries and the file mode; a missing
+crontab; an unreadable crontab; mktemp and awk failures while
+building the replacement; a failed `cp` or `mv`; a repeated start
+does not duplicate the managed line; and a stop leaves no managed
+line -- every one of those also asserts no stray temp file is left
+and the crontab is never truncated or corrupted on a failure path.
+
+`test_hotplug.sh` runs the real, unmodified `hotplug-iface` for its
+guard clauses (only `ACTION=ifup` on `INTERFACE=wan` proceeds; every
+other event exits 0 before the script ever sources
+`/lib/functions.sh`). For the full read-config-and-dispatch path it
+uses a filtered copy with a minimal fake UCI library standing in for
+`/lib/functions.sh` and a fake `$BIN` that records its arguments; this
+proves the script reads the right option names and builds the right
+`--proxy` repeats and dispatch, not that OpenWrt's real
+`config_load`/`config_get` parse UCI syntax that way.
+
+Both test files run twice: once under `sh` (dash on the Debian/Ubuntu
+CI runner) and, when a `busybox` binary is on `PATH`, once under
+`busybox ash`, the scripts' actual target interpreter. When busybox
+is not installed -- the common case on a stock CI runner -- only the
+`sh` pass runs, and `run.sh` says so. Neither pass proves BusyBox
+*utility* behaviour (its `awk`, `sed`, `mktemp`, etc. can differ from
+GNU coreutils in edge cases): both prove the scripts' own control
+flow and POSIX-ish shell syntax under an ash-family shell, which is
+what an untested `remove_cron` defect actually looked like in
+practice (a `sed` delimiter collision, an unchecked `mv`) -- logic
+bugs a GNU-utility test run still catches.
