@@ -1,0 +1,160 @@
+#!/bin/sh /etc/rc.common
+# stunmesh-agent.init -- procd init script for stunmesh-agent.
+#
+# See contrib/openwrt/README.md for the full explanation. In short:
+#
+# stunmesh-agent fetch is a one-shot command. It runs once and exits; it
+# is not a daemon. This script never calls procd_open_instance, so procd
+# never registers a running instance for it and never respawns it. If it
+# did, procd would see the process exit after every fetch and restart it
+# in a tight loop, because procd treats an unexpected exit of a managed
+# instance as a crash to recover from -- exactly wrong for a command
+# whose whole job is to run once and stop.
+#
+# Instead, this script uses cron as the recurring trigger:
+#   - start() runs one fetch in the background after option boot_delay
+#     seconds, then (re)installs a cron line built from option
+#     fetch_interval, so the delayed boot fetch never blocks boot.
+#   - stop() removes that cron line. Nothing else needs to stop: every
+#     fetch has already exited by the time stop() runs.
+#   - A repeated start() (for example "service stunmesh-agent restart")
+#     removes any existing cron line before adding the new one, so the
+#     crontab never ends up with two lines for stunmesh-agent.
+#
+# The init.d enable/disable mechanism (/etc/init.d/stunmesh-agent
+# enable|disable) controls whether start() runs at boot at all, the
+# normal rc.common behaviour. It needs nothing extra here.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+UCI_PACKAGE="provd"
+UCI_SECTION="main"
+BIN="/usr/sbin/stunmesh-agent"
+CRONTAB="/etc/crontabs/root"
+CRON_TAG="# stunmesh-agent: managed by /etc/init.d/stunmesh-agent, do not edit"
+DEFAULT_BOOT_DELAY=15
+DEFAULT_FETCH_INTERVAL=5
+DEFAULT_LOCK_FILE="/var/lock/stunmesh-agent.lock"
+
+. /lib/functions.sh
+
+# log writes one line to the system log, tagged so it is easy to find
+# with "logread | grep stunmesh-agent". It never receives a value that
+# could be a secret: callers pass fixed text only.
+log() {
+	logger -t stunmesh-agent "$1"
+}
+
+# read_config loads /etc/config/provd's "main" section into the shell
+# variables build_fetch_args and install_cron both need. It returns 1
+# when the file is absent or the section is missing required options;
+# callers must treat that as "not provisioned yet", not as an error.
+read_config() {
+	config_load "$UCI_PACKAGE" || {
+		log "no /etc/config/$UCI_PACKAGE; skipping"
+		return 1
+	}
+
+	config_get namespace "$UCI_SECTION" namespace
+	config_get node_id "$UCI_SECTION" node_id
+	config_get controller_pubkey "$UCI_SECTION" controller_pubkey
+	config_get private_key_file "$UCI_SECTION" private_key_file
+	config_get proxies "$UCI_SECTION" proxy
+	config_get boot_delay "$UCI_SECTION" boot_delay "$DEFAULT_BOOT_DELAY"
+	config_get fetch_interval "$UCI_SECTION" fetch_interval "$DEFAULT_FETCH_INTERVAL"
+	config_get lock_file "$UCI_SECTION" lock_file "$DEFAULT_LOCK_FILE"
+
+	if [ -z "$namespace" ] || [ -z "$node_id" ] || \
+	   [ -z "$controller_pubkey" ] || [ -z "$private_key_file" ]; then
+		log "incomplete /etc/config/$UCI_PACKAGE (need namespace, node_id, controller_pubkey, private_key_file); skipping"
+		return 1
+	fi
+
+	return 0
+}
+
+# build_fetch_args sets the positional parameters ($@) to the
+# "fetch"-and-flags argument list stunmesh-agent needs, from the
+# variables read_config set. None of these values are secret: the
+# controller key is a public key, and private_key_file is only a path,
+# never the key material itself.
+build_fetch_args() {
+	set -- fetch \
+		--namespace "$namespace" \
+		--node-id "$node_id" \
+		--controller-pubkey "$controller_pubkey" \
+		--identity-key "$private_key_file" \
+		--lock "$lock_file"
+
+	local p
+	for p in $proxies; do
+		set -- "$@" --proxy "$p"
+	done
+
+	echo "$@"
+}
+
+# run_fetch runs stunmesh-agent fetch once and logs the outcome.
+# Exit code 3 (no change) is success, the same as 0 (applied, or
+# nothing to do): PLAN.md section 5 defines only these two as
+# non-failure. Only a nonzero code other than 3 is logged as an error.
+# run_fetch itself always returns 0: a failed fetch is not a failure of
+# this init script, and the next cron run or hotplug event tries again.
+run_fetch() {
+	# shellcheck disable=SC2086 # word splitting is exactly what we want here: $args is a shell argument list, not a single value
+	set -- $args
+	"$BIN" "$@" >/dev/null 2>&1
+	rc=$?
+	case "$rc" in
+		0) log "fetch applied" ;;
+		3) log "fetch: no change" ;;
+		*) log "fetch failed, exit code $rc" ;;
+	esac
+	return 0
+}
+
+# install_cron writes one cron line that runs fetch every
+# fetch_interval minutes, replacing any line this script wrote before.
+install_cron() {
+	remove_cron
+	mkdir -p /etc/crontabs
+	echo "*/$fetch_interval * * * * $BIN $args >/dev/null 2>&1 $CRON_TAG" >> "$CRONTAB"
+	# crond notices a crontab whose mtime changed within about a
+	# minute on its own; nudge it now so a fresh install does not
+	# wait a full poll interval for its first scheduled run.
+	/etc/init.d/cron reload >/dev/null 2>&1
+}
+
+# remove_cron deletes only the line install_cron wrote (matched by
+# CRON_TAG), and leaves every other crontab line untouched.
+remove_cron() {
+	[ -f "$CRONTAB" ] || return 0
+	sed -i "\\#$CRON_TAG#d" "$CRONTAB"
+	/etc/init.d/cron reload >/dev/null 2>&1
+}
+
+boot() {
+	# Run after network's own boot() (START=95 is well after network's),
+	# but "network started" does not mean the WAN address is up yet, so
+	# still wait boot_delay before the first fetch.
+	start "$@"
+}
+
+start_service() {
+	read_config || return 0
+
+	args="$(build_fetch_args)"
+
+	# Run the boot-time fetch in the background so start_service (and
+	# therefore boot) never blocks on boot_delay or on the fetch
+	# itself.
+	( sleep "$boot_delay"; run_fetch ) &
+
+	install_cron
+}
+
+stop_service() {
+	remove_cron
+}
