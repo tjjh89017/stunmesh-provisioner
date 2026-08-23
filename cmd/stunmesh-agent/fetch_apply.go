@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/execx"
@@ -449,32 +448,18 @@ func buildState(diff *Diff, state *last.State) *last.State {
 
 // sectionsFor names the UCI sections BuildInterface creates for name
 // and iface (PLAN.md 6 "Rules": interface "<iface>", route
-// "<iface>_r_<n>", peer "<iface>_p_<peer>"). Routes follow iface's own
-// slice order, the same order buildRoute in internal/uci assigns
-// route indices. Peers are sorted by name, the same order buildPeer
-// in internal/uci creates them in (internal/uci's package doc
-// "Ordering"), so Sections.Peers reads in the order the agent actually
-// created them, as its own doc comment promises.
+// "<iface>_r_<n>", peer "<iface>_p_<peer>"). It names them through
+// uci.RouteSectionNames and uci.PeerSectionNames, the same functions
+// internal/uci's own BuildInterface derives its create commands'
+// section names from (both go through routeSectionName and
+// peerSectionName). sectionsFor holds no naming rule of its own: it
+// cannot drift from what BuildInterface actually creates, because
+// there is only one implementation of the naming convention, and this
+// is it, called from the record side too.
 func sectionsFor(name string, iface bundle.Interface) last.Sections {
-	routes := make([]string, len(iface.Routes))
-	for n := range iface.Routes {
-		routes[n] = fmt.Sprintf("%s_r_%d", name, n)
-	}
-
-	peerNames := make([]string, 0, len(iface.Peers))
-	for peer := range iface.Peers {
-		peerNames = append(peerNames, peer)
-	}
-	sort.Strings(peerNames)
-
-	peers := make([]string, 0, len(peerNames))
-	for _, peer := range peerNames {
-		peers = append(peers, name+"_p_"+peer)
-	}
-
 	return last.Sections{
 		Interface: name,
-		Routes:    routes,
-		Peers:     peers,
+		Routes:    uci.RouteSectionNames(name, iface.Routes),
+		Peers:     uci.PeerSectionNames(name, iface.Peers),
 	}
 }

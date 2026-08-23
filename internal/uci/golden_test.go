@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
@@ -260,6 +261,134 @@ func TestListOptions_NoPeers(t *testing.T) {
 	if len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("ListOptions = %v, want %v", got, want)
 	}
+}
+
+// TestRouteSectionNames_PeerSectionNames pins the exact names
+// RouteSectionNames and PeerSectionNames return for a multi-route,
+// multi-peer interface, with peer map iteration randomized per
+// process (see TestBuildInterface_Determinism), the same way
+// TestListOptions_InterfaceAndPeers pins ListOptions.
+func TestRouteSectionNames_PeerSectionNames(t *testing.T) {
+	routes := []bundle.Route{
+		{CIDR: "10.20.0.0/16"},
+		{CIDR: "10.30.0.0/16"},
+		{CIDR: "fd00:40::/32"},
+	}
+	peers := map[string]bundle.Peer{
+		"charlie": {PublicKey: "charlie-key", AllowedIPs: []string{"10.0.0.4/32"}},
+		"alfa":    {PublicKey: "alfa-key", AllowedIPs: []string{"10.0.0.2/32"}},
+		"bravo":   {PublicKey: "bravo-key", AllowedIPs: []string{"10.0.0.3/32"}},
+	}
+
+	gotRoutes := uci.RouteSectionNames("wg0", routes)
+	wantRoutes := []string{"wg0_r_0", "wg0_r_1", "wg0_r_2"}
+	if len(gotRoutes) != len(wantRoutes) {
+		t.Fatalf("RouteSectionNames = %v, want %v", gotRoutes, wantRoutes)
+	}
+	for i := range wantRoutes {
+		if gotRoutes[i] != wantRoutes[i] {
+			t.Fatalf("RouteSectionNames = %v, want %v", gotRoutes, wantRoutes)
+		}
+	}
+
+	gotPeers := uci.PeerSectionNames("wg0", peers)
+	wantPeers := []string{"wg0_p_alfa", "wg0_p_bravo", "wg0_p_charlie"}
+	if len(gotPeers) != len(wantPeers) {
+		t.Fatalf("PeerSectionNames = %v, want %v", gotPeers, wantPeers)
+	}
+	for i := range wantPeers {
+		if gotPeers[i] != wantPeers[i] {
+			t.Fatalf("PeerSectionNames = %v, want %v", gotPeers, wantPeers)
+		}
+	}
+}
+
+// TestRouteSectionNames_PeerSectionNames_MatchBuildInterface pins that
+// RouteSectionNames and PeerSectionNames name exactly the route and
+// peer sections BuildInterface's own batch creates -- not merely
+// names that look right in isolation. It parses the section names out
+// of BuildInterface's create commands ("uci set network.<section>=
+// <type>", the only Command form with no "." between "network." and
+// "=") and compares them against RouteSectionNames/PeerSectionNames,
+// in creation order. Since sectionsFor (cmd/stunmesh-agent) builds
+// last.Sections from these same two functions, this test is also the
+// guarantee that the create side and the record side cannot drift:
+// both read the identical section names from the identical call.
+func TestRouteSectionNames_PeerSectionNames_MatchBuildInterface(t *testing.T) {
+	iface := bundle.Interface{
+		PrivateKey: "wg0-private-key",
+		Addresses:  []string{"10.0.0.1/24"},
+		Routes: []bundle.Route{
+			{CIDR: "10.20.0.0/16", Gateway: strPtr("10.0.0.2")},
+			{CIDR: "10.30.0.0/16", Metric: int64Ptr(50)},
+			{CIDR: "fd00:40::/32"},
+		},
+		Peers: map[string]bundle.Peer{
+			"charlie": {PublicKey: "charlie-public-key", AllowedIPs: []string{"10.0.0.4/32"}},
+			"alfa":    {PublicKey: "alfa-public-key", AllowedIPs: []string{"10.0.0.2/32"}},
+			"bravo":   {PublicKey: "bravo-public-key", AllowedIPs: []string{"10.0.0.3/32"}},
+		},
+	}
+
+	batch := uci.BuildInterface("wg0", iface)
+	gotRoutes, gotPeers := createdSectionNames(batch, len(iface.Routes))
+
+	wantRoutes := uci.RouteSectionNames("wg0", iface.Routes)
+	wantPeers := uci.PeerSectionNames("wg0", iface.Peers)
+
+	if !equalStrings(gotRoutes, wantRoutes) {
+		t.Fatalf("route sections created = %v, RouteSectionNames = %v", gotRoutes, wantRoutes)
+	}
+	if !equalStrings(gotPeers, wantPeers) {
+		t.Fatalf("peer sections created = %v, PeerSectionNames = %v", gotPeers, wantPeers)
+	}
+}
+
+// createdSectionNames extracts, in order, the route and peer section
+// names that batch's "uci set network.<section>=<type>" create
+// commands name, skipping the leading interface-section create.
+// wantRouteCount tells it how many of the create commands after the
+// interface are routes (the rest are peers); BuildInterface always
+// emits all route creates before any peer create (package doc
+// "Ordering"). It ignores every other command (option sets, add_list
+// calls): those share the "network.<section>.<option>=<value>" form,
+// which always has a "." before the "=", so a create command --
+// "network.<section>=<type>", with no such "." -- is unambiguous.
+func createdSectionNames(batch uci.Batch, wantRouteCount int) (routes, peers []string) {
+	first := true
+	for _, cmd := range batch {
+		if len(cmd.Args) != 2 || cmd.Args[0] != "set" {
+			continue
+		}
+		body := strings.TrimPrefix(cmd.Args[1], "network.")
+		eq := strings.Index(body, "=")
+		if eq < 0 || strings.Contains(body[:eq], ".") {
+			continue // an option set or add_list, not a section create.
+		}
+		section := body[:eq]
+		if first {
+			first = false
+			continue // the interface section itself, not a route or peer.
+		}
+		if len(routes) < wantRouteCount {
+			routes = append(routes, section)
+		} else {
+			peers = append(peers, section)
+		}
+	}
+	return routes, peers
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestBuildDelete_Full covers an interface with an interface section,

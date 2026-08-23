@@ -165,6 +165,47 @@ func peerSectionName(iface, peer string) string {
 	return iface + "_p_" + peer
 }
 
+// RouteSectionNames returns the UCI route section names that
+// BuildInterface(name, routes-holding-iface) creates for routes, in
+// the same order buildRoute assigns them: routes[n] names
+// "<name>_r_<n>", indexed by routes' own slice order (PLAN.md 6
+// "Rules"). It is the record side's read of the same naming
+// buildRoute already applies on the create side, so the two can never
+// drift apart: both call routeSectionName, and only routeSectionName
+// knows the "<iface>_r_<n>" format.
+//
+// A caller records this alongside PeerSectionNames to build the
+// last.Sections a later apply deletes by (see internal/last's package
+// doc "Schema" and PLAN.md 6 "Rules": "The agent deletes sections by
+// the exact names that last.json records").
+func RouteSectionNames(name string, routes []bundle.Route) []string {
+	names := make([]string, len(routes))
+	for n := range routes {
+		names[n] = routeSectionName(name, n)
+	}
+	return names
+}
+
+// PeerSectionNames returns the UCI peer section names that
+// BuildInterface(name, peers-holding-iface) creates for peers, sorted
+// by peer name -- the same order buildPeer creates them in (see the
+// package doc "Ordering"). It is the record side's read of the same
+// naming buildPeer already applies on the create side, so the two can
+// never drift apart: both call peerSectionName, and only
+// peerSectionName knows the "<iface>_p_<peer>" format.
+//
+// A caller records this alongside RouteSectionNames to build the
+// last.Sections a later apply deletes by (see internal/last's package
+// doc "Schema" and PLAN.md 6 "Rules": "The agent deletes sections by
+// the exact names that last.json records").
+func PeerSectionNames(name string, peers map[string]bundle.Peer) []string {
+	names := make([]string, 0, len(peers))
+	for _, peer := range sortedKeys(peers) {
+		names = append(names, peerSectionName(name, peer))
+	}
+	return names
+}
+
 // routeFamily returns "route" for an IPv4 cidr and "route6" for an
 // IPv6 one (PLAN.md 6: "route6 for IPv6"). It first tries
 // net.ParseCIDR, the authoritative parse. bundle.Validate does not
