@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -113,6 +114,100 @@ func TestBuildBundle_GenuineNestedNullStillReportsErrNull(t *testing.T) {
 	}
 }
 
+// TestBuildBundle_HalfEditedWGYAMLFailsPhaseTwoValidation pins the
+// phase-2 (*bundle.Bundle).Validate call in buildBundle. Each fixture
+// below is well-formed enough to get through bundle.Parse -- the
+// phase-1 syntax check -- and is rejected only by Validate. Without
+// the Validate call, buildBundle would happily publish a bundle
+// stunmesh-agent refuses after decryption.
+//
+// These are the shapes an operator half-editing the `node add`
+// template actually produces: a filled-in interface that is still
+// missing a required piece.
+func TestBuildBundle_HalfEditedWGYAMLFailsPhaseTwoValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		nodeID  string
+		wgYAML  string
+		wantErr error
+		wantMsg string
+	}{
+		{
+			name:   "interface with an empty address list",
+			nodeID: "alpha",
+			wgYAML: `wg0:
+  private_key: cGxhY2Vob2xkZXItcHJpdmF0ZS1rZXktMzItYnl0ZXMh
+  addresses: []
+  peers:
+    bravo:
+      public_key: cGxhY2Vob2xkZXItcHVibGljLWtleS0zMi1ieXRlcyE=
+      allowed_ips:
+        - 10.0.0.2/32
+`,
+			wantErr: bundle.ErrInterface,
+			wantMsg: "addresses has no entry",
+		},
+		{
+			name:   "interface with no peers key at all",
+			nodeID: "bravo",
+			wgYAML: `wg0:
+  private_key: cGxhY2Vob2xkZXItcHJpdmF0ZS1rZXktMzItYnl0ZXMh
+  addresses:
+    - 10.0.0.1/24
+`,
+			wantErr: bundle.ErrInterface,
+			wantMsg: "peers is missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := testNode(t, tt.nodeID, tt.wgYAML, "")
+
+			// The fixture must reach Validate, not fail earlier: assert
+			// phase 1 accepts it, so this test cannot silently degrade
+			// into a second bundle.Parse test.
+			if _, err := bundle.Parse(mustAssembleBundleJSON(t, "myns", node)); err != nil {
+				t.Fatalf("fixture does not survive bundle.Parse, so it never reaches Validate: %v", err)
+			}
+
+			_, err := buildBundle("myns", node, fixedNow())
+			if err == nil {
+				t.Fatal("buildBundle succeeded, want a phase-2 validation error")
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want it to wrap %v", err, tt.wantErr)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tt.nodeID) {
+				t.Errorf("error %q does not name the node", msg)
+			}
+			if !strings.Contains(msg, tt.wantMsg) {
+				t.Errorf("error %q does not explain the failure (%q)", msg, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// mustAssembleBundleJSON produces the same inner bundle JSON
+// buildBundle feeds to bundle.Parse, so a test can confirm a fixture
+// passes phase 1 independently of buildBundle itself.
+func mustAssembleBundleJSON(t *testing.T, namespace string, node *store.Node) []byte {
+	t.Helper()
+	data, err := json.Marshal(assembledBundle{
+		Version:   1,
+		Namespace: namespace,
+		NodeID:    node.NodeID,
+		Timestamp: fixedNow().Unix(),
+		WG:        node.WG,
+		Stunmesh:  node.Stunmesh,
+	})
+	if err != nil {
+		t.Fatalf("assemble bundle JSON: %v", err)
+	}
+	return data
+}
+
 func TestBuildBundle_ValidNodeProducesValidatedBundle(t *testing.T) {
 	node := testNode(t, "alpha", filledWGYAML, "interfaces: {}\n")
 
@@ -192,5 +287,11 @@ func TestBuildBundle_OversizedBundleIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "alpha") {
 		t.Errorf("error %q does not name the node", err.Error())
+	}
+	// Without this, the test would still pass if the fixture ever
+	// started failing validation (or parsing) for an unrelated reason,
+	// silently stopping any coverage of the size limit.
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error %q is not the size-limit rejection", err.Error())
 	}
 }
