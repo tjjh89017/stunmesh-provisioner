@@ -2,10 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
 func TestRunFetch_MissingFlagsReportsExitError(t *testing.T) {
@@ -19,26 +26,27 @@ func TestRunFetch_MissingFlagsReportsExitError(t *testing.T) {
 	}
 }
 
-func TestRunFetch_ValidFlagsReachTheStubSeam(t *testing.T) {
+func TestRunFetch_ValidFlagsReachRealDoFetchBody(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
 	args := []string{
 		"--namespace", "ns",
 		"--node-id", "n1",
 		"--controller-pubkey", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		"--identity-key", "/tmp/id.key",
+		"--identity-key", "/tmp/no-such-stunmesh-agent-test-identity-key",
 		"--lock", lockPath,
 	}
 	code := runFetch(newEnv(strings.NewReader(""), &stdout, &stderr), args)
 	// Validation must pass with these flags (proving the flags and
-	// defaults resolved correctly); doFetch is an unimplemented stub
-	// in this item, so it reports failure -- that is the seam later
-	// items replace.
+	// defaults resolved correctly). doFetch's first real step past the
+	// lock is reading the identity key, a local file that does not
+	// exist here: this proves runFetch reached doFetch's real body,
+	// not a validation error, without needing any network fake.
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
-	if !strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, want it to reach the doFetch stub, not a validation error", stderr.String())
+	if !strings.Contains(stderr.String(), "identity key") {
+		t.Errorf("stderr = %q, want it to reach doFetch's identity key read", stderr.String())
 	}
 }
 
@@ -76,13 +84,13 @@ func TestRunFetch_ConfigFilePrecedenceEndToEnd(t *testing.T) {
 	code := runFetch(newEnv(strings.NewReader(""), &stdout, &stderr), args)
 	// The flag-supplied namespace must win, leaving node_id and the
 	// rest to come from the file; the whole thing then reaches
-	// doFetch's stub, so the failure here is "not implemented", not a
-	// validation error -- proving both the merge and the precedence
-	// worked end to end through runFetch.
+	// doFetch's real body (identity key read, on a path that does not
+	// exist), not a validation error -- proving both the merge and the
+	// precedence worked end to end through runFetch.
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
-	if !strings.Contains(stderr.String(), "not implemented") {
+	if !strings.Contains(stderr.String(), "identity key") {
 		t.Errorf("stderr = %q, want the config-merged flags to pass validation", stderr.String())
 	}
 }
@@ -115,7 +123,7 @@ func validFetchConfig(lockPath string) *Config {
 		NodeID:             "n1",
 		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		Proxies:            []string{"https://dhtproxy.example"},
-		IdentityKeyPath:    "/tmp/id.key",
+		IdentityKeyPath:    "/tmp/no-such-stunmesh-agent-test-identity-key",
 		LastPath:           "/tmp/last.json",
 		LockPath:           lockPath,
 		StunmeshConfigPath: "/tmp/stunmesh.yaml",
@@ -145,12 +153,12 @@ func TestDoFetch_SecondConcurrentHolderExitsOKWithOneLogLine(t *testing.T) {
 	if !strings.Contains(stderr.String(), lockPath) {
 		t.Errorf("stderr = %q, want it to name the lock path", stderr.String())
 	}
-	if strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, doFetch must not fall through to the stub when the lock is held", stderr.String())
+	if strings.Contains(stderr.String(), "identity key") {
+		t.Errorf("stderr = %q, doFetch must not fall through past the lock when it is held", stderr.String())
 	}
 }
 
-func TestDoFetch_AcquiresLockThenFallsThroughToStub(t *testing.T) {
+func TestDoFetch_AcquiresLockThenReadsIdentityKey(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
 
 	var stdout, stderr bytes.Buffer
@@ -158,10 +166,10 @@ func TestDoFetch_AcquiresLockThenFallsThroughToStub(t *testing.T) {
 	code := doFetch(env, validFetchConfig(lockPath))
 
 	if code != ExitError {
-		t.Errorf("code = %d, want %d (stub still reports failure)", code, ExitError)
+		t.Errorf("code = %d, want %d (identity key file does not exist)", code, ExitError)
 	}
-	if !strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, want it to reach the doFetch stub", stderr.String())
+	if !strings.Contains(stderr.String(), "identity key") {
+		t.Errorf("stderr = %q, want it to reach the identity key read", stderr.String())
 	}
 
 	// The lock must be released: a second call must be able to take it
@@ -169,7 +177,7 @@ func TestDoFetch_AcquiresLockThenFallsThroughToStub(t *testing.T) {
 	var stdout2, stderr2 bytes.Buffer
 	env2 := newEnv(strings.NewReader(""), &stdout2, &stderr2)
 	code2 := doFetch(env2, validFetchConfig(lockPath))
-	if code2 != ExitError || !strings.Contains(stderr2.String(), "not implemented") {
+	if code2 != ExitError || !strings.Contains(stderr2.String(), "identity key") {
 		t.Errorf("second doFetch = code %d, stderr %q, want the lock to have been released", code2, stderr2.String())
 	}
 }
@@ -188,5 +196,187 @@ func TestDoFetch_BadLockPathIsExitError(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "already locked") {
 		t.Errorf("stderr = %q, a bad path must not be reported as an ordinary held lock", stderr.String())
+	}
+}
+
+// fetchTestConfig builds a Config with a real, freshly generated
+// identity key file and controller key pair, so a test can exercise
+// doFetch's decrypt-and-select path end to end without touching a
+// real network (proxies is normally an httptest.Server URL; a test
+// still must set env.HTTPClient to that server's client, since
+// newDHTProxyClient only reads env.HTTPClient, not proxies' scheme).
+func fetchTestConfig(t *testing.T, lockPath string, proxies []string) (cfg *Config, controllerPriv, identityPub crypto.Key) {
+	t.Helper()
+
+	identityPriv, identityPub, err := crypto.Keygen()
+	if err != nil {
+		t.Fatalf("Keygen (identity): %v", err)
+	}
+	controllerPriv, controllerPub, err := crypto.Keygen()
+	if err != nil {
+		t.Fatalf("Keygen (controller): %v", err)
+	}
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "identity.key")
+	if err := os.WriteFile(keyPath, []byte(identityPriv.String()+"\n"), 0o600); err != nil {
+		t.Fatalf("write identity key: %v", err)
+	}
+
+	cfg = &Config{
+		Namespace:          "ns",
+		NodeID:             "n1",
+		ControllerPubkey:   controllerPub.String(),
+		Proxies:            proxies,
+		IdentityKeyPath:    keyPath,
+		LastPath:           filepath.Join(dir, "last.json"),
+		LockPath:           lockPath,
+		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+	}
+	return cfg, controllerPriv, identityPub
+}
+
+// dhtLine renders one dhtproxy newline-delimited-JSON response line
+// carrying raw as its base64 "data" field.
+func dhtLine(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	line, err := json.Marshal(map[string]string{"data": base64.StdEncoding.EncodeToString(raw)})
+	if err != nil {
+		t.Fatalf("marshal dht line: %v", err)
+	}
+	return append(line, '\n')
+}
+
+func TestDoFetch_NoValuesExitsOKWithOneLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, _, _ := fetchTestConfig(t, lockPath, []string{srv.URL})
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no value found") {
+		t.Errorf("stderr = %q, want the no-value log line", stderr.String())
+	}
+}
+
+func TestDoFetch_UndecryptableValuesExitOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(dhtLine(t, []byte("third party junk, not sealed for this node")))
+	}))
+	defer srv.Close()
+
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, _, _ := fetchTestConfig(t, lockPath, []string{srv.URL})
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "none decrypted") {
+		t.Errorf("stderr = %q, want the no-valid-value log line", stderr.String())
+	}
+}
+
+func TestDoFetch_DecryptableValueHandsOffToNextItem(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, controllerPriv, identityPub := fetchTestConfig(t, lockPath, nil)
+
+	plain := []byte(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
+	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(dhtLine(t, sealed))
+	}))
+	defer srv.Close()
+	cfg.Proxies = []string{srv.URL}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	// checkAndApply, the seam the next item fills in, is still a stub
+	// that always reports failure; reaching it (rather than the
+	// no-value or none-decrypted paths) proves decrypt-and-select
+	// worked end to end.
+	if code != ExitError {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitError, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not implemented") {
+		t.Errorf("stderr = %q, want it to reach the checkAndApply seam", stderr.String())
+	}
+}
+
+func TestDoFetch_PartialOutageLogsAndIsTreatedAsNoValues(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	// The first proxy is unreachable (nothing listens on this address);
+	// the second answers, reachable but empty. dhtproxy.Get reports
+	// this as a *PartialError alongside an empty Result.
+	cfg, _, _ := fetchTestConfig(t, lockPath, []string{"http://127.0.0.1:1", srv.URL})
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "failed on") {
+		t.Errorf("stderr = %q, want the partial-outage line", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no value found") {
+		t.Errorf("stderr = %q, want the partial outage still treated as no values", stderr.String())
+	}
+}
+
+func TestDoFetch_MoreThanCapValuesLogsWarning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		// One more than internal/dhtproxy's default 64-value cap
+		// (PLAN.md 4.6); every line is distinct so none are Skipped as
+		// duplicates or malformed.
+		for i := 0; i < 65; i++ {
+			buf.Write(dhtLine(t, []byte(fmt.Sprintf("junk-%d", i))))
+		}
+		w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, _, _ := fetchTestConfig(t, lockPath, []string{srv.URL})
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "more values than the cap") {
+		t.Errorf("stderr = %q, want the too-many-values warning", stderr.String())
 	}
 }
