@@ -11,12 +11,34 @@ import (
 )
 
 // sealTestBundle builds a minimal, well-formed bundle JSON with the
-// given timestamp and seals it from senderPriv to recipientPub, as
-// stunmesh-provd publish_cmd.go does (controller is the sender, node
-// identity is the recipient).
+// given timestamp, namespace "ns" and node_id "n1" (the values every
+// test in this file uses for the receiving node), and seals it from
+// senderPriv to recipientPub, as stunmesh-provd publish_cmd.go does
+// (controller is the sender, node identity is the recipient).
 func sealTestBundle(t *testing.T, timestamp int64, senderPriv, recipientPub crypto.Key) []byte {
 	t.Helper()
-	plain := []byte(fmt.Sprintf(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":%d,"wg":{},"stunmesh":""}`, timestamp))
+	return sealTestBundleFor(t, "ns", "n1", timestamp, senderPriv, recipientPub)
+}
+
+// sealTestBundleFor is sealTestBundle with an explicit namespace and
+// node_id, for tests that need a bundle addressed to a different node
+// than the receiving one under test.
+func sealTestBundleFor(t *testing.T, namespace, nodeID string, timestamp int64, senderPriv, recipientPub crypto.Key) []byte {
+	t.Helper()
+	plain := []byte(fmt.Sprintf(`{"version":1,"namespace":%q,"node_id":%q,"timestamp":%d,"wg":{},"stunmesh":""}`, namespace, nodeID, timestamp))
+	sealed, err := crypto.Seal(plain, recipientPub, senderPriv)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	return sealed
+}
+
+// sealTestBundleInvalidField builds a bundle JSON that parses (phase 1
+// passes) but fails a phase 2 check: listen_port out of range
+// (docs/format.md 6, check 13).
+func sealTestBundleInvalidField(t *testing.T, timestamp int64, senderPriv, recipientPub crypto.Key) []byte {
+	t.Helper()
+	plain := []byte(fmt.Sprintf(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":%d,"wg":{"wg0":{"private_key":"x","addresses":["10.0.0.1/24"],"listen_port":70000,"peers":{}}},"stunmesh":""}`, timestamp))
 	sealed, err := crypto.Seal(plain, recipientPub, senderPriv)
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -35,7 +57,7 @@ func TestDecryptAndSelect_KeepsNewestAmongMultiple(t *testing.T) {
 		sealTestBundle(t, 200, senderPriv, recipientPub),
 	}
 
-	best, stats := decryptAndSelect(values, senderPub, recipientPriv)
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
 	if best == nil {
 		t.Fatalf("decryptAndSelect returned nil, want the value with timestamp 300")
 	}
@@ -63,7 +85,7 @@ func TestDecryptAndSelect_SkipsValuesThatFailToDecrypt(t *testing.T) {
 		sealTestBundle(t, 150, senderPriv, recipientPub),
 	}
 
-	best, stats := decryptAndSelect(values, senderPub, recipientPriv)
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
 	if best == nil {
 		t.Fatalf("decryptAndSelect returned nil, want the one value sealed for this node")
 	}
@@ -90,7 +112,7 @@ func TestDecryptAndSelect_SkipsValuesThatDecryptButDoNotParse(t *testing.T) {
 		sealTestBundle(t, 50, senderPriv, recipientPub),
 	}
 
-	best, stats := decryptAndSelect(values, senderPub, recipientPriv)
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
 	if best == nil {
 		t.Fatalf("decryptAndSelect returned nil, want the one parseable value")
 	}
@@ -110,7 +132,7 @@ func TestDecryptAndSelect_TieKeepsFirstEncountered(t *testing.T) {
 	first := sealTestBundle(t, 100, senderPriv, recipientPub)
 	second := sealTestBundle(t, 100, senderPriv, recipientPub)
 
-	best, _ := decryptAndSelect([][]byte{first, second}, senderPub, recipientPriv)
+	best, _ := decryptAndSelect([][]byte{first, second}, senderPub, recipientPriv, "ns", "n1")
 	if best == nil {
 		t.Fatalf("decryptAndSelect returned nil")
 	}
@@ -129,7 +151,7 @@ func TestDecryptAndSelect_NoValuesReturnsNil(t *testing.T) {
 	senderPriv, _, _ := crypto.Keygen()
 	senderPub := crypto.Public(senderPriv)
 
-	best, stats := decryptAndSelect(nil, senderPub, recipientPriv)
+	best, stats := decryptAndSelect(nil, senderPub, recipientPriv, "ns", "n1")
 	if best != nil {
 		t.Errorf("best = %+v, want nil", best)
 	}
@@ -151,12 +173,80 @@ func TestDecryptAndSelect_NoValueDecryptsReturnsNil(t *testing.T) {
 	}
 	_ = recipientPub
 
-	best, stats := decryptAndSelect(values, senderPub, recipientPriv)
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
 	if best != nil {
 		t.Errorf("best = %+v, want nil", best)
 	}
 	if stats.Undecrypted != 1 {
 		t.Errorf("stats.Undecrypted = %d, want 1", stats.Undecrypted)
+	}
+}
+
+func TestDecryptAndSelect_RejectsValueForAnotherNamespace(t *testing.T) {
+	senderPriv, _, _ := crypto.Keygen()
+	recipientPriv, recipientPub, _ := crypto.Keygen()
+	senderPub := crypto.Public(senderPriv)
+
+	values := [][]byte{
+		// Decrypts (sealed for this node's key) but the namespace does
+		// not match: phase 2 check 8 (docs/format.md 6) must reject it.
+		sealTestBundleFor(t, "other-ns", "n1", 999, senderPriv, recipientPub),
+	}
+
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
+	if best != nil {
+		t.Errorf("best = %+v, want nil (wrong namespace must be rejected)", best)
+	}
+	if stats.Rejected != 1 {
+		t.Errorf("stats.Rejected = %d, want 1", stats.Rejected)
+	}
+}
+
+func TestDecryptAndSelect_RejectsValueThatFailsAFieldRule(t *testing.T) {
+	senderPriv, _, _ := crypto.Keygen()
+	recipientPriv, recipientPub, _ := crypto.Keygen()
+	senderPub := crypto.Public(senderPriv)
+
+	values := [][]byte{
+		// Parses (phase 1 passes) but listen_port is out of range:
+		// phase 2 check 13 must reject it.
+		sealTestBundleInvalidField(t, 500, senderPriv, recipientPub),
+	}
+
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
+	if best != nil {
+		t.Errorf("best = %+v, want nil (an out-of-range field must be rejected)", best)
+	}
+	if stats.Rejected != 1 {
+		t.Errorf("stats.Rejected = %d, want 1", stats.Rejected)
+	}
+}
+
+// TestDecryptAndSelect_OlderValidBeatsNewerInvalid pins the key
+// decision of this item (see decryptAndSelect's doc comment): a newer
+// value that fails a PLAN.md 4.4 check must never be selected over an
+// older value that passes every check, even though PLAN.md 4.6 says
+// "keep the largest timestamp" in isolation.
+func TestDecryptAndSelect_OlderValidBeatsNewerInvalid(t *testing.T) {
+	senderPriv, _, _ := crypto.Keygen()
+	recipientPriv, recipientPub, _ := crypto.Keygen()
+	senderPub := crypto.Public(senderPriv)
+
+	values := [][]byte{
+		sealTestBundle(t, 100, senderPriv, recipientPub), // older, valid
+		// newer, but wrong namespace: must be rejected, not selected.
+		sealTestBundleFor(t, "other-ns", "n1", 900, senderPriv, recipientPub),
+	}
+
+	best, stats := decryptAndSelect(values, senderPub, recipientPriv, "ns", "n1")
+	if best == nil {
+		t.Fatalf("decryptAndSelect returned nil, want the older valid value")
+	}
+	if best.Timestamp != 100 {
+		t.Errorf("best.Timestamp = %d, want 100 (the older, valid value)", best.Timestamp)
+	}
+	if stats.Rejected != 1 {
+		t.Errorf("stats.Rejected = %d, want 1", stats.Rejected)
 	}
 }
 

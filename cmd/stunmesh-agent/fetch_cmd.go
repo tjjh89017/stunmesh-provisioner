@@ -86,15 +86,22 @@ const fetchTimeout = 30 * time.Second
 // and errLockHeld); doFetch logs one line and returns ExitOK. Any
 // other failure to acquire the lock is ExitError.
 //
-// This item (stage 3 item 4, first half) implements the rest of
-// "get, decrypt, select": read the identity key, get the DHT values
-// through internal/dhtproxy, decrypt and select the newest with
-// decryptAndSelect, and log the PLAN.md 4.6 boundary cases. No value
-// at all, or no value that decrypts: doFetch logs one line and
-// returns ExitOK, changing nothing (PLAN.md stage 3 item 4). Once a
-// bundle is selected, doFetch hands off to checkAndApply, the seam
-// the next item (PLAN.md 4.4 phase 2 checks, last.json comparison,
-// diff, UCI apply) fills in.
+// Stage 3 item 4, first half, implemented the rest of "get, decrypt,
+// select": read the identity key, get the DHT values through
+// internal/dhtproxy, and hand them to decryptAndSelect.
+//
+// This item (stage 3 item 4, second half) makes decryptAndSelect run
+// the full PLAN.md 4.4 check set -- phase 1 (bundle.Parse) and phase
+// 2 (bundle.Validate(cfg.Namespace, cfg.NodeID)) -- on every candidate
+// before it compares Timestamps (PLAN.md 4.6; see decryptAndSelect's
+// doc comment for why checking-before-comparing is the correct
+// reading). No value at all, or no value that passes every check:
+// doFetch logs one line naming how many values were seen and broadly
+// why each one was skipped, and returns ExitOK, changing nothing
+// (PLAN.md stage 3 item 4). Once decryptAndSelect returns a bundle,
+// that bundle has already passed every PLAN.md 4.4 check, so doFetch
+// hands it to checkAndApply, the seam the next item (last.json
+// comparison, diff, UCI apply) fills in.
 func doFetch(env *Env, cfg *Config) int {
 	lock, err := acquireLock(cfg.LockPath)
 	if err != nil {
@@ -178,9 +185,19 @@ func doFetch(env *Env, cfg *Config) int {
 		return ExitOK
 	}
 
-	best, stats := decryptAndSelect(result.Values, controllerPub, identityPriv)
+	best, stats := decryptAndSelect(result.Values, controllerPub, identityPriv, cfg.Namespace, cfg.NodeID)
 	if best == nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: %d value(s) found but none decrypted for this node, nothing to do\n", stats.Undecrypted+stats.Unparsed)
+		// One line, wide enough for an operator to debug without
+		// leaking anything private: no bundle content, no key
+		// material, no stunmesh text, and no DHT key. The three
+		// counts say broadly why each value was skipped (did not
+		// decrypt with this node's key, decrypted but did not parse
+		// as JSON, or parsed but failed a PLAN.md 4.4 phase 2 check
+		// such as namespace or node_id) without naming which check or
+		// showing any value.
+		fmt.Fprintf(env.Stderr,
+			"stunmesh-agent: fetch: %d value(s) found, none usable (%d undecrypted, %d unparsed, %d rejected by node checks), nothing to do\n",
+			len(result.Values), stats.Undecrypted, stats.Unparsed, stats.Rejected)
 		return ExitOK
 	}
 
@@ -204,12 +221,14 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 }
 
 // checkAndApply is the seam the next stage 3 item fills in: the
-// PLAN.md 4.4 phase 2 checks (version, namespace, node_id, timestamp
-// range, and the field rules of 4.3) on the bundle doFetch selected,
-// the last.json comparison (4.5), the per-interface diff, the UCI
-// batch, and the apply (PLAN.md 6). b is the newest bundle that
-// decrypted for this node; it has not yet been validated against
-// cfg.Namespace or cfg.NodeID.
+// last.json comparison (PLAN.md 4.5), the per-interface diff, the UCI
+// batch, and the apply (PLAN.md 6). b is the bundle with the largest
+// Timestamp among the values that passed every PLAN.md 4.4 check --
+// both phase 1 (bundle.Parse) and phase 2
+// (bundle.Validate(cfg.Namespace, cfg.NodeID)) already ran inside
+// decryptAndSelect, so checkAndApply's caller (doFetch) never reaches
+// this seam with an unchecked bundle. checkAndApply itself does not
+// need to call Validate again.
 //
 // This item's body is a stub: it does no work and always reports
 // failure, which is correct until the next item replaces it -- there

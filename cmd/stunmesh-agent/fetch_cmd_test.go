@@ -286,8 +286,47 @@ func TestDoFetch_UndecryptableValuesExitOK(t *testing.T) {
 	if code != ExitOK {
 		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "none decrypted") {
+	if !strings.Contains(stderr.String(), "none usable") {
 		t.Errorf("stderr = %q, want the no-valid-value log line", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "1 undecrypted") {
+		t.Errorf("stderr = %q, want it to say how many values were undecrypted", stderr.String())
+	}
+}
+
+func TestDoFetch_ValueThatFailsPhase2ChecksExitsOKAsNothingUsable(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, controllerPriv, identityPub := fetchTestConfig(t, lockPath, nil)
+
+	// Decrypts and parses fine (phase 1), but the namespace does not
+	// match this node's configured namespace ("ns"): a phase 2 check
+	// (docs/format.md 6, check 8) must reject it.
+	plain := []byte(`{"version":1,"namespace":"wrong-ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
+	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(dhtLine(t, sealed))
+	}))
+	defer srv.Close()
+	cfg.Proxies = []string{srv.URL}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "none usable") || !strings.Contains(stderr.String(), "1 rejected by node checks") {
+		t.Errorf("stderr = %q, want the no-valid-value log line to count the phase 2 rejection", stderr.String())
+	}
+	// It must not have gone anywhere near checkAndApply.
+	if strings.Contains(stderr.String(), "not implemented") {
+		t.Errorf("stderr = %q, a phase 2 rejected value must not reach checkAndApply", stderr.String())
 	}
 }
 
