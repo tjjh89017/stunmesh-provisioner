@@ -134,10 +134,44 @@ install_cron() {
 # delimiter choice is also a character sed treats as significant, so
 # a tag that contains it breaks the pattern. awk's index() takes
 # CRON_TAG as inert data, so this holds no matter what the tag text is.
+#
+# The replacement is built and checked in a private temp file before
+# it ever touches $CRONTAB, and $CRONTAB is only ever read, never
+# written directly, until the very last step:
+#   - "mktemp" creates the temp file next to $CRONTAB, so the final
+#     "mv" is a same-filesystem rename: atomic, and never a partial
+#     write.
+#   - "cp -p" seeds it with $CRONTAB's own content and mode. A failed
+#     copy (for example an unreadable $CRONTAB) is caught here, before
+#     anything is filtered, and leaves $CRONTAB untouched.
+#   - awk's filtered output is written into that same temp file. A
+#     redirection onto a file that already exists replaces its
+#     content, not its mode, so the mode "cp -p" set survives. If awk
+#     fails partway (an unreadable $CRONTAB, or a write error on the
+#     temp file), its nonzero exit is checked before anything is
+#     promoted, so a truncated or empty result never reaches
+#     $CRONTAB.
+#   - Only then does "mv" promote the temp file onto $CRONTAB.
+# On every failure path the temp file is removed and $CRONTAB is left
+# exactly as it was: original content, original mode, no stray temp
+# file behind.
 remove_cron() {
 	[ -f "$CRONTAB" ] || return 0
-	awk -v tag="$CRON_TAG" 'index($0, tag) == 0' "$CRONTAB" > "$CRONTAB.tmp"
-	mv "$CRONTAB.tmp" "$CRONTAB"
+
+	local tmp
+	tmp="$(mktemp "$CRONTAB.XXXXXX")" || return 0
+
+	if ! cp -p "$CRONTAB" "$tmp"; then
+		rm -f "$tmp"
+		return 0
+	fi
+
+	if ! awk -v tag="$CRON_TAG" 'index($0, tag) == 0' "$CRONTAB" > "$tmp"; then
+		rm -f "$tmp"
+		return 0
+	fi
+
+	mv "$tmp" "$CRONTAB"
 	/etc/init.d/cron reload >/dev/null 2>&1
 }
 
