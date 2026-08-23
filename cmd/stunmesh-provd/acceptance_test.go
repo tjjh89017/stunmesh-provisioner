@@ -283,8 +283,9 @@ func TestAcceptance_PublishNeverModifiesOperatorFiles(t *testing.T) {
 
 	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
 	addPublishTestNode(t, env, namespace, "alpha")
-	// Set the republish interval to 0s now, as a simulated operator
-	// edit, before the "before" snapshot below: this test's own setup
+	// Set the republish interval to its smallest value now, as a
+	// simulated operator edit, before the "before" snapshot below: so
+	// the loop rounds below fire immediately. This test's own setup
 	// writes provd.yaml, so it must not be mistaken for a write made by
 	// publish or the loop.
 	setRepublishInterval(t, env, namespace, "1ns")
@@ -325,6 +326,24 @@ func TestAcceptance_PublishNeverModifiesOperatorFiles(t *testing.T) {
 		t.Fatalf("runPublish --once (2nd): code=%d", code)
 	}
 	runLoopRounds(t, env, "", 3, nil)
+
+	// Guard against a vacuous pass. Every check below is "nothing
+	// changed", which is trivially true if the rounds above published
+	// nothing at all: if node discovery ever regressed to finding zero
+	// nodes, runPublish would still return ExitOK ("nothing to
+	// publish") and the loop rounds would be no-ops, so the file
+	// comparison would stay green while proving nothing about criterion
+	// (c). Pin that the rounds really did reach the DHT: 2 `--once`
+	// invocations + 3 loop rounds against the single node alpha.
+	key, err := dhtkey.Key(namespace, "alpha")
+	if err != nil {
+		t.Fatalf("dhtkey.Key: %v", err)
+	}
+	if got, want := len(proxy.dataFieldsFor(key)), 5; got != want {
+		t.Fatalf("proxy received %d puts for key %s, want %d (2 `publish --once` invocations + 3 republish loop rounds); "+
+			"without this the checks below would be vacuous -- a run that published nothing "+
+			"also modifies no operator files and would pass criterion (c) for the wrong reason", got, key, want)
+	}
 
 	for _, p := range paths {
 		after := snap(p)
