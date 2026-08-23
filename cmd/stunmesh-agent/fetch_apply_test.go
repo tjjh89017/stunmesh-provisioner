@@ -63,6 +63,15 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 	}
 
 	want := []execx.Call{
+		// clearListOptions (fetch_apply.go) checks and clears each list
+		// option before the create batch runs, so a retried create's "uci
+		// add_list" cannot append onto a list an earlier, partly-applied
+		// create already populated (applyDiff's doc comment "Retrying a
+		// create after a successful commit").
+		{Name: "uci", Args: []string{"get", "network.wg0.addresses"}},
+		{Name: "uci", Args: []string{"delete", "network.wg0.addresses"}},
+		{Name: "uci", Args: []string{"get", "network.wg0_p_bravo.allowed_ips"}},
+		{Name: "uci", Args: []string{"delete", "network.wg0_p_bravo.allowed_ips"}},
 		{Name: "uci", Args: []string{"set", "network.wg0=interface"}},
 		{Name: "uci", Args: []string{"set", "network.wg0.proto=wireguard"}},
 		{Name: "uci", Args: []string{"set", "network.wg0.private_key=wg0-key"}},
@@ -132,6 +141,13 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"delete", "network.wg0_p_bravo"}},
 		{Name: "uci", Args: []string{"get", "network.wg0"}},
 		{Name: "uci", Args: []string{"delete", "network.wg0"}},
+		// clearListOptions (fetch_apply.go): clear each list option
+		// before the create batch runs. See TestApplyDiff_NewInterface's
+		// "want" for why.
+		{Name: "uci", Args: []string{"get", "network.wg0.addresses"}},
+		{Name: "uci", Args: []string{"delete", "network.wg0.addresses"}},
+		{Name: "uci", Args: []string{"get", "network.wg0_p_bravo.allowed_ips"}},
+		{Name: "uci", Args: []string{"delete", "network.wg0_p_bravo.allowed_ips"}},
 		{Name: "uci", Args: []string{"set", "network.wg0=interface"}},
 		{Name: "uci", Args: []string{"set", "network.wg0.proto=wireguard"}},
 		{Name: "uci", Args: []string{"set", "network.wg0.private_key=wg0-key-2"}},
@@ -305,11 +321,19 @@ func TestApplyDiff_StunmeshOnlyChange(t *testing.T) {
 func TestApplyDiff_FailurePartwayThroughLeavesLastJSONUnwritten(t *testing.T) {
 	cfg := applyTestConfig(t)
 	env := newEnv(strings.NewReader(""), new(strings.Builder), new(strings.Builder))
-	// The third uci call (index 2: create network.wg0.private_key) fails.
-	// Calls 0 and 1 default to success (execx.Fake's "past the end of
-	// results" rule does not apply here since we script index 2
-	// explicitly; indices 0 and 1 use the zero Result, which is success).
+	// writeUCI's sequence for this interface (no peers, so
+	// clearListOptions has only "wg0.addresses" to check, see
+	// createInterface, fetch_apply.go): "uci get
+	// network.wg0.addresses" (index 0), "uci delete
+	// network.wg0.addresses" (index 1), then BuildInterface's own
+	// batch starting with "uci set network.wg0=interface" (index 2),
+	// "uci set network.wg0.proto=wireguard" (index 3), and "uci set
+	// network.wg0.private_key=..." (index 4), which fails. Indices 0-3
+	// default to success (execx.Fake's "past the end of results" rule
+	// does not apply here since we script index 4 explicitly).
 	fake := execx.NewFake(
+		execx.Result{},
+		execx.Result{},
 		execx.Result{},
 		execx.Result{},
 		execx.Result{Err: errors.New("boom"), Stdout: ""},
@@ -340,8 +364,8 @@ func TestApplyDiff_FailurePartwayThroughLeavesLastJSONUnwritten(t *testing.T) {
 	// safeguard (see applyDiff's doc comment): the next fetch starts
 	// clean instead of retrying on top of a stray staged change.
 	calls := fake.Calls()
-	if len(calls) != 4 {
-		t.Fatalf("len(Calls()) = %d, want 4 (2 successful uci calls, 1 failing uci call, 1 revert); got %+v", len(calls), calls)
+	if len(calls) != 6 {
+		t.Fatalf("len(Calls()) = %d, want 6 (2 clear-list uci calls, 2 successful create uci calls, 1 failing uci call, 1 revert); got %+v", len(calls), calls)
 	}
 	lastCall := calls[len(calls)-1]
 	want := execx.Call{Name: "uci", Args: []string{"revert", "network"}}
@@ -354,7 +378,12 @@ func TestApplyDiff_ErrorNeverLeaksSecrets(t *testing.T) {
 	cfg := applyTestConfig(t)
 	var stdout, stderr strings.Builder
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	fake := execx.NewFake(execx.Result{Err: errors.New("boom")})
+	// The first call ("uci get network.wg0.addresses", clearListOptions
+	// checking whether the list needs clearing) must succeed so the
+	// path is treated as present; the following "uci delete" then
+	// fails, so applyDiff still fails on the first call clearListOptions
+	// does not tolerate.
+	fake := execx.NewFake(execx.Result{}, execx.Result{Err: errors.New("boom")})
 	env.Runner = fake
 
 	newIface := testInterface(t, `{"private_key":"top-secret-key","addresses":["10.0.0.1/24"],`+

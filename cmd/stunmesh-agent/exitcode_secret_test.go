@@ -206,16 +206,19 @@ func sentinels() []string {
 	return []string{"sentinel-tunnel-privkey-6a1f", "sentinel-psk-6a1f", "sentinel-stunmesh-text-6a1f"}
 }
 
-// wg0Interface's BuildInterface batch (see sentinelDiff): create,
-// proto, private_key, addresses -- 4 uci calls, no peers section here
-// since the peer is exercised as part of the same batch below.
-// bravo peer: create, description, public_key, preshared_key,
-// allowed_ips, route_allowed_ips -- 6 more uci calls. Total 10 uci
-// calls in writeUCI, then "uci commit network" (index 10), then
-// "ubus call network reload" (index 11).
+// wg0Interface's writeUCI sequence (see sentinelDiff): clearListOptions
+// first -- a "uci get" then "uci delete" pair for "wg0.addresses" and
+// another for "wg0_p_bravo.allowed_ips" (createInterface, fetch_apply.go)
+// -- 4 uci calls. Then BuildInterface's own batch: create, proto,
+// private_key, addresses -- 4 uci calls, no peers section here since
+// the peer is exercised as part of the same batch below. bravo peer:
+// create, description, public_key, preshared_key, allowed_ips,
+// route_allowed_ips -- 6 more uci calls. Total 14 uci calls in
+// writeUCI, then "uci commit network" (index 14), then "ubus call
+// network reload" (index 15).
 const (
-	sentinelCommitIndex = 10
-	sentinelReloadIndex = 11
+	sentinelCommitIndex = 14
+	sentinelReloadIndex = 15
 )
 
 func TestApplyDiff_CommitFailureIsExitErrorNoLeak(t *testing.T) {
@@ -464,8 +467,13 @@ func TestDoFetch_FullPipelineApplyFailureNeverLeaksSecrets(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	env.HTTPClient = srv.Client()
-	// The very first uci call fails, so the apply step fails immediately.
-	env.Runner = execx.NewFake(execx.Result{Err: errors.New("boom")})
+	// The very first uci call ("uci get network.wg0.addresses",
+	// clearListOptions checking whether the list needs clearing) must
+	// succeed so the path is treated as present; the second call (the
+	// "uci delete" that follows) then fails, so the apply step still
+	// fails immediately, on the first call clearListOptions does not
+	// tolerate.
+	env.Runner = execx.NewFake(execx.Result{}, execx.Result{Err: errors.New("boom")})
 
 	code := doFetch(env, cfg)
 	if code != ExitError {

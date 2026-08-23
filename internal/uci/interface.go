@@ -51,6 +51,28 @@ func BuildInterface(name string, iface bundle.Interface) Batch {
 	return b
 }
 
+// ListOptions returns every "<section>.<option>" path that
+// BuildInterface(name, iface) populates through "uci add_list": the
+// interface's own "addresses", and each peer's "allowed_ips". The
+// peer order matches BuildInterface's (sorted by peer name, see the
+// package doc "Ordering").
+//
+// "uci add_list" appends to a list option; it does not replace one.
+// A caller that reruns BuildInterface's commands after an earlier run
+// already applied them once must first clear each path ListOptions
+// names, or the rerun's "add_list" calls double every entry instead
+// of leaving the list as BuildInterface alone describes it. See
+// fetch_apply.go's clearListOptions and applyDiff's doc comment
+// "Retrying a create after a successful commit".
+func ListOptions(name string, iface bundle.Interface) []string {
+	options := make([]string, 0, 1+len(iface.Peers))
+	options = append(options, name+".addresses")
+	for _, peerName := range sortedKeys(iface.Peers) {
+		options = append(options, peerSectionName(name, peerName)+".allowed_ips")
+	}
+	return options
+}
+
 // buildRoute builds the UCI batch for one route section,
 // "<iface>_r_<n>" (PLAN.md 6 "UCI layout"). n is the route's index in
 // iface.Routes, in bundle order (bundle.Interface.Routes is a slice,

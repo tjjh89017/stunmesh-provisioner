@@ -156,6 +156,24 @@ func uciDeleteCalls(sections last.Sections) []execx.Call {
 	return calls
 }
 
+// uciClearListCalls builds the exact command sequence writeUCI's
+// clearListOptions (fetch_apply.go) runs for options: a "uci get"
+// check immediately before each "uci delete", one pair per
+// "<section>.<option>" path, in the order uci.ListOptions returns
+// them. See applyDiff's doc comment "Retrying a create after a
+// successful commit" for why clearListOptions checks first instead of
+// deleting unconditionally.
+func uciClearListCalls(options []string) []execx.Call {
+	var calls []execx.Call
+	for _, option := range options {
+		calls = append(calls,
+			execx.Call{Name: "uci", Args: []string{"get", "network." + option}},
+			execx.Call{Name: "uci", Args: []string{"delete", "network." + option}},
+		)
+	}
+	return calls
+}
+
 var (
 	commitCall = execx.Call{Name: "uci", Args: []string{"commit", "network"}}
 	reloadCall = execx.Call{Name: "ubus", Args: []string{"call", "network", "reload"}}
@@ -269,8 +287,12 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Fatalf("code = %d, want %d (ExitOK); stderr=%q", code, ExitOK, stderr)
 		}
 
-		want := uciCalls(uci.BuildInterface("wg0", testInterface(t, wg0JSON("alpha-pub"))))
-		want = append(want, uciCalls(uci.BuildInterface("wg1", testInterface(t, wg1JSON)))...)
+		wg0Iface := testInterface(t, wg0JSON("alpha-pub"))
+		wg1Iface := testInterface(t, wg1JSON)
+		want := uciClearListCalls(uci.ListOptions("wg0", wg0Iface))
+		want = append(want, uciCalls(uci.BuildInterface("wg0", wg0Iface))...)
+		want = append(want, uciClearListCalls(uci.ListOptions("wg1", wg1Iface))...)
+		want = append(want, uciCalls(uci.BuildInterface("wg1", wg1Iface))...)
 		want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
@@ -374,8 +396,10 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Fatalf("code = %d, want %d (ExitOK); stderr=%q", code, ExitOK, stderr)
 		}
 
+		wg0IfaceV2 := testInterface(t, wg0JSON("alpha-pub-v2"))
 		want := uciDeleteCalls(wg0Sections)
-		want = append(want, uciCalls(uci.BuildInterface("wg0", testInterface(t, wg0JSON("alpha-pub-v2"))))...)
+		want = append(want, uciClearListCalls(uci.ListOptions("wg0", wg0IfaceV2))...)
+		want = append(want, uciCalls(uci.BuildInterface("wg0", wg0IfaceV2))...)
 		// stunmesh text is unchanged (still stunmeshV1), but wg0 changed,
 		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
 		// stunmesh changed OR any interface changed).

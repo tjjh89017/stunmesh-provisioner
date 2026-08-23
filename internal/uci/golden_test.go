@@ -214,6 +214,54 @@ func TestBuildInterface_Determinism(t *testing.T) {
 	}
 }
 
+// TestListOptions_InterfaceAndPeers covers an interface with several
+// peers, whose map iteration order is randomized per process (see
+// TestBuildInterface_Determinism), to pin that ListOptions names the
+// interface's own "addresses" first, then each peer's "allowed_ips"
+// sorted by peer name -- the same order BuildInterface itself uses
+// (the package doc "Ordering").
+func TestListOptions_InterfaceAndPeers(t *testing.T) {
+	iface := bundle.Interface{
+		PrivateKey: "wg0-private-key",
+		Addresses:  []string{"10.0.0.1/24"},
+		Peers: map[string]bundle.Peer{
+			"charlie": {PublicKey: "charlie-key", AllowedIPs: []string{"10.0.0.4/32"}},
+			"alfa":    {PublicKey: "alfa-key", AllowedIPs: []string{"10.0.0.2/32"}},
+			"bravo":   {PublicKey: "bravo-key", AllowedIPs: []string{"10.0.0.3/32"}},
+		},
+	}
+	got := uci.ListOptions("wg0", iface)
+	want := []string{
+		"wg0.addresses",
+		"wg0_p_alfa.allowed_ips",
+		"wg0_p_bravo.allowed_ips",
+		"wg0_p_charlie.allowed_ips",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ListOptions = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListOptions = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestListOptions_NoPeers covers an interface with no peers: only the
+// interface's own "addresses" needs clearing.
+func TestListOptions_NoPeers(t *testing.T) {
+	iface := bundle.Interface{
+		PrivateKey: "wg0-private-key",
+		Addresses:  []string{"10.0.0.1/24"},
+		Peers:      map[string]bundle.Peer{},
+	}
+	got := uci.ListOptions("wg0", iface)
+	want := []string{"wg0.addresses"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("ListOptions = %v, want %v", got, want)
+	}
+}
+
 // TestBuildDelete_Full covers an interface with an interface section,
 // route sections, and peer sections all recorded.
 func TestBuildDelete_Full(t *testing.T) {

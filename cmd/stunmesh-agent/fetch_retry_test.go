@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/execx"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/uci"
 )
 
 // failMatching wraps an *execx.Fake and makes every call that match
@@ -213,5 +215,145 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 	}
 	if _, ok := st.WG["wg0"]; ok {
 		t.Errorf("last.json still records wg0 after run 3 removed it: %+v", st.WG)
+	}
+}
+
+// TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails is the
+// reproduction test for the create half of the same failure window
+// TestFetch_RetryAfterCommitSucceedsButLaterStepFails covers for the
+// delete half. See that test's doc comment for the general shape of
+// the window: "uci commit network" succeeds, a later step (here,
+// "ubus call network reload") fails, and last.json stays unwritten
+// (PLAN.md 6: write last.json only after every step is OK).
+//
+// Before the fix, the next fetch recomputed the same diff against the
+// same, stale last.json (still not recording wg0 at all, since run 1
+// never got to write it) and reran wg0's create commands from
+// scratch. "uci set" overwrites, so that half of the retry is
+// harmless. "uci add_list" appends: run 1's own successful commit
+// already added every entry of wg0's "addresses" and wg0_p_bravo's
+// "allowed_ips" once, so a plain retried create would add every entry
+// a second time, without any command failing and without any log
+// output -- the silent corruption this test pins.
+//
+// This test drives two real doFetch calls, the same way
+// TestFetch_RetryAfterCommitSucceedsButLaterStepFails does, and
+// asserts run 2's exact command sequence: after the fix, writeUCI
+// clears each list option (a tolerant "uci get" + "uci delete" pair,
+// the same idiom deleteIfPresent already uses for a whole section)
+// immediately before recreating wg0, so the retried "uci add_list"
+// calls start from an empty list every time, not from whatever an
+// earlier, partially applied create left behind.
+func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
+	identityPriv, identityPub, err := crypto.Keygen()
+	if err != nil {
+		t.Fatalf("Keygen (identity): %v", err)
+	}
+	controllerPriv, controllerPub, err := crypto.Keygen()
+	if err != nil {
+		t.Fatalf("Keygen (controller): %v", err)
+	}
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "identity.key")
+	if err := os.WriteFile(keyPath, []byte(identityPriv.String()+"\n"), 0o600); err != nil {
+		t.Fatalf("write identity key: %v", err)
+	}
+
+	proxy := newSwitchableProxy()
+	defer proxy.srv.Close()
+
+	const namespace, nodeID = "retry-create-ns", "retry-create-node"
+	cfg := &Config{
+		Namespace:          namespace,
+		NodeID:             nodeID,
+		ControllerPubkey:   controllerPub.String(),
+		Proxies:            []string{proxy.srv.URL},
+		IdentityKeyPath:    keyPath,
+		LastPath:           filepath.Join(dir, "last.json"),
+		LockPath:           filepath.Join(dir, "agent.lock"),
+		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+	}
+
+	publish := func(t *testing.T, plain []byte) {
+		t.Helper()
+		sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
+		if err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+		proxy.set(t, sealed)
+	}
+
+	runWith := func(t *testing.T, runner callRecorder) (code int, calls []execx.Call, stderr string) {
+		t.Helper()
+		var stdout, stderrBuf bytes.Buffer
+		env := newEnv(strings.NewReader(""), &stdout, &stderrBuf)
+		env.HTTPClient = proxy.srv.Client()
+		env.Runner = runner
+		code = doFetch(env, cfg)
+		return code, runner.Calls(), stderrBuf.String()
+	}
+
+	// wg0 has one address and one peer (bravo) with one allowed_ips
+	// entry -- the minimum needed to exercise both list options
+	// BuildInterface uses add_list for (PLAN.md 6 "UCI layout").
+	const wg0 = `{"private_key":"wg0-priv","addresses":["10.0.0.1/24"],` +
+		`"peers":{"bravo":{"public_key":"bravo-pub","allowed_ips":["10.0.0.2/32"]}}}`
+
+	// --- Run 1: create wg0 (InterfaceNew). "ubus call network reload"
+	// fails right after "uci commit network" succeeds, so wg0's
+	// sections, including their list entries, are genuinely live in
+	// UCI once run 1 returns, even though last.json was never written.
+	publish(t, integrationBundleJSON(namespace, nodeID, 100, `"wg0":`+wg0, stunmeshV1))
+
+	fake1 := &failMatching{
+		fake: execx.NewFake(),
+		match: func(name string, args []string) bool {
+			return name == "ubus" && len(args) == 3 && args[0] == "call" && args[1] == "network" && args[2] == "reload"
+		},
+	}
+
+	code, calls1, stderr := runWith(t, fake1)
+	if code != ExitError {
+		t.Fatalf("run 1: code = %d, want %d (ExitError); calls=%+v stderr=%q", code, ExitError, calls1, stderr)
+	}
+	foundCommit := false
+	for _, c := range calls1 {
+		if c.Name == "uci" && len(c.Args) == 2 && c.Args[0] == "commit" && c.Args[1] == "network" {
+			foundCommit = true
+		}
+	}
+	if !foundCommit {
+		t.Fatalf("run 1 never reached \"uci commit network\": calls=%+v", calls1)
+	}
+	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
+		t.Fatalf("last.json was written after run 1's failure, want it absent (PLAN.md 6: write last.json only after every step is OK): err=%v", err)
+	}
+
+	// --- Run 2: the retry, same bundle as run 1. last.json still does
+	// not record wg0 at all, so computeDiff classifies wg0 as
+	// InterfaceNew again, exactly as run 1 did. The fix must clear
+	// wg0's list options before recreating them, so this run's "uci
+	// add_list" calls land on an empty list rather than appending onto
+	// what run 1's own commit already put there.
+	code, calls2, stderr := runWith(t, execx.NewFake())
+	if code != ExitOK {
+		t.Fatalf("run 2 (retry): code = %d, want %d (ExitOK); calls=%+v stderr=%q", code, ExitOK, calls2, stderr)
+	}
+
+	newIface := testInterface(t, wg0)
+	want := uciClearListCalls(uci.ListOptions("wg0", newIface))
+	want = append(want, uciCalls(uci.BuildInterface("wg0", newIface))...)
+	want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
+	if !reflect.DeepEqual(calls2, want) {
+		t.Fatalf("run 2 (retry) Calls() =\n%+v\nwant\n%+v", calls2, want)
+	}
+
+	st, err := last.Read(cfg.LastPath)
+	if err != nil {
+		t.Fatalf("last.Read after run 2: %v", err)
+	}
+	if _, ok := st.WG["wg0"]; !ok {
+		t.Fatalf("last.json has no wg0 entry after run 2: %+v", st.WG)
 	}
 }

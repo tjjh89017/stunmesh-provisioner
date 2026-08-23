@@ -112,6 +112,28 @@ func runnerFor(env *Env) execx.Runner {
 // uci binary) does not stay hidden: the same underlying problem
 // surfaces immediately at the delete or create call that follows,
 // which deleteSections does not tolerate.
+//
+// # Retrying a create after a successful commit
+//
+// A retry's create step reruns the same "uci set" and "uci add_list"
+// calls the earlier, partly-applied run already issued once. "uci
+// set" only overwrites, so rerunning it is harmless. "uci add_list"
+// appends: it does not check whether the value is already there. A
+// plain, unconditional rerun of the create commands would silently
+// double every entry of every list option -- "addresses" on the
+// interface, "allowed_ips" on each peer -- and keep doubling them on
+// every following retry, with no failing command and nothing in the
+// log to point at.
+//
+// writeUCI avoids this through clearListOptions: immediately before
+// it runs an interface's create batch, it clears every list option
+// uci.ListOptions names for that interface, the same tolerant
+// "uci get" then "uci delete" pattern deleteIfPresent already uses
+// for a whole section, applied to one "<section>.<option>" path at a
+// time. A path that is not there yet (a genuine first-time create) is
+// left alone -- there is nothing to clear -- and the create batch
+// then populates it from empty, exactly as it would have without a
+// prior failed attempt.
 func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	runner := runnerFor(env)
 
@@ -178,6 +200,12 @@ func revertUCI(runner execx.Runner) {
 // The delete half goes through deleteSections, not a plain batch run:
 // see applyDiff's doc comment "Retrying a delete after a successful
 // commit" for why a delete must tolerate an already-absent section.
+//
+// The create half clears each interface's list options first, through
+// clearListOptions, before running its create batch: see applyDiff's
+// doc comment "Retrying a create after a successful commit" for why a
+// create must not let "uci add_list" append onto a list an earlier,
+// partly-applied create already populated.
 func writeUCI(runner execx.Runner, diff *Diff) error {
 	for _, id := range diff.Interfaces {
 		switch id.Change {
@@ -189,16 +217,49 @@ func writeUCI(runner execx.Runner, diff *Diff) error {
 			if err := deleteSections(runner, id.Sections); err != nil {
 				return fmt.Errorf("delete %s: %w", id.Name, err)
 			}
-			if err := runUCIBatch(runner, uci.BuildInterface(id.Name, *id.Content)); err != nil {
-				return fmt.Errorf("create %s: %w", id.Name, err)
+			if err := createInterface(runner, id.Name, *id.Content); err != nil {
+				return err
 			}
 		case InterfaceNew:
-			if err := runUCIBatch(runner, uci.BuildInterface(id.Name, *id.Content)); err != nil {
-				return fmt.Errorf("create %s: %w", id.Name, err)
+			if err := createInterface(runner, id.Name, *id.Content); err != nil {
+				return err
 			}
 		case InterfaceUnchanged:
 			// Nothing to do: PLAN.md 6's change table has no row for
 			// an unchanged interface.
+		}
+	}
+	return nil
+}
+
+// createInterface clears name's list options (clearListOptions), then
+// runs its create batch (uci.BuildInterface). See applyDiff's doc
+// comment "Retrying a create after a successful commit" for why the
+// clear must run first.
+func createInterface(runner execx.Runner, name string, iface bundle.Interface) error {
+	if err := clearListOptions(runner, uci.ListOptions(name, iface)); err != nil {
+		return fmt.Errorf("clear lists %s: %w", name, err)
+	}
+	if err := runUCIBatch(runner, uci.BuildInterface(name, iface)); err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+	return nil
+}
+
+// clearListOptions deletes each "network.<path>" in options if it is
+// currently there, through deleteIfPresent -- the same tolerant check
+// deleteIfPresent already runs for a whole section, applied here to
+// one "<section>.<option>" path at a time. See applyDiff's doc
+// comment "Retrying a create after a successful commit" for why a
+// create must clear a list option before repopulating it, and why
+// this reuses deleteIfPresent rather than a second idiom: the
+// underlying command pattern -- "uci get" first, "uci delete" only if
+// that succeeds -- is exactly the same regardless of whether the name
+// after "network." is a whole section or one of its options.
+func clearListOptions(runner execx.Runner, options []string) error {
+	for _, option := range options {
+		if err := deleteIfPresent(runner, option); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -236,17 +297,21 @@ func deleteSections(runner execx.Runner, sections last.Sections) error {
 	return nil
 }
 
-// deleteIfPresent deletes UCI section "network.<name>" only if it is
-// currently there. It runs "uci get network.<name>" first. A failed
-// "uci get" here means the section is not there: deleteIfPresent
+// deleteIfPresent deletes UCI path "network.<name>" only if it is
+// currently there. name may name a whole section ("wg0") or one
+// option inside a section ("wg0.addresses"); "uci get" and "uci
+// delete" both accept either form, so deleteIfPresent needs no
+// separate case for the two. It runs "uci get network.<name>" first.
+// A failed "uci get" here means the path is not there: deleteIfPresent
 // returns nil without attempting the delete. See applyDiff's doc
-// comment "Retrying a delete after a successful commit" for why
-// reading the failure this way does not need execx to expose why the
-// command failed.
+// comments "Retrying a delete after a successful commit" and
+// "Retrying a create after a successful commit" for why reading the
+// failure this way does not need execx to expose why the command
+// failed.
 //
 // When "uci get" succeeds, deleteIfPresent runs "uci delete
 // network.<name>" and returns that call's result unchanged: a real
-// failure to delete a section that is there is not tolerated.
+// failure to delete a path that is there is not tolerated.
 func deleteIfPresent(runner execx.Runner, name string) error {
 	if _, err := runner.Run("uci", "get", "network."+name); err != nil {
 		return nil
