@@ -117,14 +117,25 @@ run_fetch() {
 
 # install_cron writes one cron line that runs fetch every
 # fetch_interval minutes, replacing any line this script wrote before.
+#
+# It appends only after remove_cron confirms the old line is gone. If
+# remove_cron cannot confirm that (see its own comment), appending
+# anyway risks a second, duplicate CRON_TAG line -- so install_cron
+# skips the append, logs, and returns 1 instead. Returns 0 once the
+# new line is written.
 install_cron() {
-	remove_cron
+	if ! remove_cron; then
+		log "could not confirm removal of the existing cron line; leaving crontab as-is instead of risking a duplicate"
+		return 1
+	fi
+
 	mkdir -p /etc/crontabs
 	echo "*/$fetch_interval * * * * $BIN $args >/dev/null 2>&1 $CRON_TAG" >> "$CRONTAB"
 	# crond notices a crontab whose mtime changed within about a
 	# minute on its own; nudge it now so a fresh install does not
 	# wait a full poll interval for its first scheduled run.
 	/etc/init.d/cron reload >/dev/null 2>&1
+	return 0
 }
 
 # remove_cron deletes only the line install_cron wrote (matched by the
@@ -151,28 +162,43 @@ install_cron() {
 #     temp file), its nonzero exit is checked before anything is
 #     promoted, so a truncated or empty result never reaches
 #     $CRONTAB.
-#   - Only then does "mv" promote the temp file onto $CRONTAB.
+#   - Only then does "mv" promote the temp file onto $CRONTAB. Its
+#     exit status is checked too: a same-filesystem rename can still
+#     fail, for example onto an immutable target.
 # On every failure path the temp file is removed and $CRONTAB is left
 # exactly as it was: original content, original mode, no stray temp
 # file behind.
+#
+# Return value is a promise, not just a log-worthy detail: 0 means the
+# CRON_TAG line is confirmed absent from $CRONTAB (either it never had
+# one, or this call just removed it). 1 means removal could not be
+# confirmed -- $CRONTAB is untouched, but if it had a CRON_TAG line
+# before the call, that line may still be there. Callers that need the
+# trigger gone (install_cron, stop_service) must treat 1 as "still
+# possibly installed", not as "nothing to worry about".
 remove_cron() {
 	[ -f "$CRONTAB" ] || return 0
 
 	local tmp
-	tmp="$(mktemp "$CRONTAB.XXXXXX")" || return 0
+	tmp="$(mktemp "$CRONTAB.XXXXXX")" || return 1
 
 	if ! cp -p "$CRONTAB" "$tmp"; then
 		rm -f "$tmp"
-		return 0
+		return 1
 	fi
 
 	if ! awk -v tag="$CRON_TAG" 'index($0, tag) == 0' "$CRONTAB" > "$tmp"; then
 		rm -f "$tmp"
-		return 0
+		return 1
 	fi
 
-	mv "$tmp" "$CRONTAB"
+	if ! mv "$tmp" "$CRONTAB"; then
+		rm -f "$tmp"
+		return 1
+	fi
+
 	/etc/init.d/cron reload >/dev/null 2>&1
+	return 0
 }
 
 boot() {
@@ -192,9 +218,21 @@ start_service() {
 	# itself.
 	( sleep "$boot_delay"; run_fetch ) &
 
-	install_cron
+	if ! install_cron; then
+		log "start: cron trigger not installed; fetch will only run from this boot's background job, not on a schedule"
+		return 1
+	fi
 }
 
+# stop_service's job is to make the recurring trigger go away. It
+# reports what actually happened: 0 only when remove_cron confirms the
+# CRON_TAG line is gone, 1 when it cannot confirm that, so "service
+# stunmesh-agent stop" does not claim success while a scheduled fetch
+# can still fire.
 stop_service() {
-	remove_cron
+	if ! remove_cron; then
+		log "stop: could not confirm removal of the cron trigger; it may still be installed"
+		return 1
+	fi
+	return 0
 }
