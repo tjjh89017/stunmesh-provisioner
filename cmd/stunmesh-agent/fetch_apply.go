@@ -81,14 +81,37 @@ func runnerFor(env *Env) execx.Runner {
 // /etc/init.d/stunmesh) leaves UCI committed to the new state but
 // last.json still describing the old one. The next fetch recomputes
 // the same diff against that stale last.json and retries step 1's
-// deletes for sections that this run's commit already removed;
-// on a real uci, deleting an already-absent section fails. This is a
-// known gap in the procedure PLAN.md 6 defines, not something this
-// item introduces or can close within it (see this function's doc
-// comment survey in the implementation report). It is also the less
-// likely failure window in practice: step 1 is many commands and the
-// one most likely to hit a transient error, while commit, reload, the
-// config file write, and init.d are each a single, simple operation.
+// deletes for the same section names.
+//
+// # Retrying a delete after a successful commit
+//
+// A retry's delete step names sections this run's own earlier commit
+// may have already removed. A real uci returns non-zero for deleting
+// a section that is not there, so a plain, unconditional delete would
+// fail again on every following fetch, wedging the node until an
+// operator intervenes by hand.
+//
+// writeUCI avoids this through deleteSections: before it deletes a
+// recorded section, it checks with "uci get" whether the section is
+// still there, and skips the delete when it is not. The exact names
+// it checks and deletes are still only the ones last.json (or, for a
+// section about to be recreated, this same diff) records -- this
+// tolerance changes nothing about PLAN.md 6's "Rules": "The agent
+// deletes sections by the exact names that last.json records. It
+// never deletes by pattern."
+//
+// execx's secret policy (see internal/execx's package doc) does not
+// let deleteSections read a failed "uci get" or "uci delete" call's
+// exit code or output, so it cannot ask "is this failure specifically
+// 'not found'?". It does not need to: "uci get" on one exact,
+// already-known section name has, in practice, exactly one common
+// failure reason -- the section is not there -- so deleteSections
+// reads any failure of that specific, narrow call as "absent, nothing
+// to delete", not as "unknown, proceed anyway". A "uci get" failure
+// for any other underlying reason (a corrupt config file, a missing
+// uci binary) does not stay hidden: the same underlying problem
+// surfaces immediately at the delete or create call that follows,
+// which deleteSections does not tolerate.
 func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	runner := runnerFor(env)
 
@@ -151,15 +174,19 @@ func revertUCI(runner execx.Runner) {
 // runs no network command; PLAN.md 6 step 3/4 ("write UCI... No
 // network command yet") is exactly this function plus the caller's
 // later "uci commit network".
+//
+// The delete half goes through deleteSections, not a plain batch run:
+// see applyDiff's doc comment "Retrying a delete after a successful
+// commit" for why a delete must tolerate an already-absent section.
 func writeUCI(runner execx.Runner, diff *Diff) error {
 	for _, id := range diff.Interfaces {
 		switch id.Change {
 		case InterfaceRemoved:
-			if err := runUCIBatch(runner, uci.BuildDelete(id.Sections)); err != nil {
+			if err := deleteSections(runner, id.Sections); err != nil {
 				return fmt.Errorf("delete %s: %w", id.Name, err)
 			}
 		case InterfaceChanged:
-			if err := runUCIBatch(runner, uci.BuildDelete(id.Sections)); err != nil {
+			if err := deleteSections(runner, id.Sections); err != nil {
 				return fmt.Errorf("delete %s: %w", id.Name, err)
 			}
 			if err := runUCIBatch(runner, uci.BuildInterface(id.Name, *id.Content)); err != nil {
@@ -175,6 +202,57 @@ func writeUCI(runner execx.Runner, diff *Diff) error {
 		}
 	}
 	return nil
+}
+
+// deleteSections runs the delete half of step 1 (PLAN.md 6) for one
+// interface's recorded sections: peer sections, then route sections,
+// then the interface section last, the same order uci.BuildDelete
+// builds (see its doc comment). It deletes only the exact names
+// sections records, never a pattern (PLAN.md 6 "Rules").
+//
+// Unlike a plain uci.BuildDelete batch run through runUCIBatch,
+// deleteSections checks each section with deleteIfPresent first and
+// skips a section that is not there. See applyDiff's doc comment
+// "Retrying a delete after a successful commit" for why: a retry
+// after "uci commit network" already succeeded once names sections
+// that commit may have already removed, and a plain delete would fail
+// on them every time, wedging the node.
+func deleteSections(runner execx.Runner, sections last.Sections) error {
+	for _, peer := range sections.Peers {
+		if err := deleteIfPresent(runner, peer); err != nil {
+			return err
+		}
+	}
+	for _, route := range sections.Routes {
+		if err := deleteIfPresent(runner, route); err != nil {
+			return err
+		}
+	}
+	if sections.Interface != "" {
+		if err := deleteIfPresent(runner, sections.Interface); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteIfPresent deletes UCI section "network.<name>" only if it is
+// currently there. It runs "uci get network.<name>" first. A failed
+// "uci get" here means the section is not there: deleteIfPresent
+// returns nil without attempting the delete. See applyDiff's doc
+// comment "Retrying a delete after a successful commit" for why
+// reading the failure this way does not need execx to expose why the
+// command failed.
+//
+// When "uci get" succeeds, deleteIfPresent runs "uci delete
+// network.<name>" and returns that call's result unchanged: a real
+// failure to delete a section that is there is not tolerated.
+func deleteIfPresent(runner execx.Runner, name string) error {
+	if _, err := runner.Run("uci", "get", "network."+name); err != nil {
+		return nil
+	}
+	_, err := runner.Run("uci", "delete", "network."+name)
+	return err
 }
 
 // runUCIBatch runs every Command in batch, in order, through

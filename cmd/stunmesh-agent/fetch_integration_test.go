@@ -129,6 +129,33 @@ func uciCalls(batch uci.Batch) []execx.Call {
 	return calls
 }
 
+// uciDeleteCalls builds the exact command sequence writeUCI's
+// deleteSections (fetch_apply.go) runs for sections: a "uci get"
+// check immediately before each "uci delete", in the same
+// peers-then-routes-then-interface order uci.BuildDelete uses. See
+// applyDiff's doc comment "Retrying a delete after a successful
+// commit" for why deleteSections checks first instead of just
+// deleting.
+func uciDeleteCalls(sections last.Sections) []execx.Call {
+	var calls []execx.Call
+	add := func(name string) {
+		calls = append(calls,
+			execx.Call{Name: "uci", Args: []string{"get", "network." + name}},
+			execx.Call{Name: "uci", Args: []string{"delete", "network." + name}},
+		)
+	}
+	for _, peer := range sections.Peers {
+		add(peer)
+	}
+	for _, route := range sections.Routes {
+		add(route)
+	}
+	if sections.Interface != "" {
+		add(sections.Interface)
+	}
+	return calls
+}
+
 var (
 	commitCall = execx.Call{Name: "uci", Args: []string{"commit", "network"}}
 	reloadCall = execx.Call{Name: "ubus", Args: []string{"call", "network", "reload"}}
@@ -347,7 +374,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Fatalf("code = %d, want %d (ExitOK); stderr=%q", code, ExitOK, stderr)
 		}
 
-		want := uciCalls(uci.BuildDelete(wg0Sections))
+		want := uciDeleteCalls(wg0Sections)
 		want = append(want, uciCalls(uci.BuildInterface("wg0", testInterface(t, wg0JSON("alpha-pub-v2"))))...)
 		// stunmesh text is unchanged (still stunmeshV1), but wg0 changed,
 		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
@@ -411,7 +438,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Fatalf("code = %d, want %d (ExitOK); stderr=%q", code, ExitOK, stderr)
 		}
 
-		want := uciCalls(uci.BuildDelete(wg1Sections))
+		want := uciDeleteCalls(wg1Sections)
 		want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
@@ -454,7 +481,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Fatalf("code = %d, want %d (ExitOK); stderr=%q", code, ExitOK, stderr)
 		}
 
-		want := uciCalls(uci.BuildDelete(wg0Sections))
+		want := uciDeleteCalls(wg0Sections)
 		want = append(want, commitCall, reloadCall, stunmeshCall("stop"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)

@@ -123,8 +123,14 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
 
+	// Each recorded section gets a "uci get" check before its "uci
+	// delete" (deleteIfPresent, fetch_apply.go): the fake defaults to
+	// success, so both sections here are treated as present and
+	// deleted, the same as before the fix.
 	want := []execx.Call{
+		{Name: "uci", Args: []string{"get", "network.wg0_p_bravo"}},
 		{Name: "uci", Args: []string{"delete", "network.wg0_p_bravo"}},
+		{Name: "uci", Args: []string{"get", "network.wg0"}},
 		{Name: "uci", Args: []string{"delete", "network.wg0"}},
 		{Name: "uci", Args: []string{"set", "network.wg0=interface"}},
 		{Name: "uci", Args: []string{"set", "network.wg0.proto=wireguard"}},
@@ -173,8 +179,11 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 	}
 
 	want := []execx.Call{
+		{Name: "uci", Args: []string{"get", "network.wg1_p_charlie"}},
 		{Name: "uci", Args: []string{"delete", "network.wg1_p_charlie"}},
+		{Name: "uci", Args: []string{"get", "network.wg1_r_0"}},
 		{Name: "uci", Args: []string{"delete", "network.wg1_r_0"}},
+		{Name: "uci", Args: []string{"get", "network.wg1"}},
 		{Name: "uci", Args: []string{"delete", "network.wg1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
@@ -219,6 +228,7 @@ func TestApplyDiff_EmptyWGAndEmptyStunmeshTeardown(t *testing.T) {
 	}
 
 	want := []execx.Call{
+		{Name: "uci", Args: []string{"get", "network.wg0"}},
 		{Name: "uci", Args: []string{"delete", "network.wg0"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
