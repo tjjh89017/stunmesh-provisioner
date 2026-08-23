@@ -127,11 +127,17 @@ install_cron() {
 	/etc/init.d/cron reload >/dev/null 2>&1
 }
 
-# remove_cron deletes only the line install_cron wrote (matched by
-# CRON_TAG), and leaves every other crontab line untouched.
+# remove_cron deletes only the line install_cron wrote (matched by the
+# literal substring CRON_TAG), and leaves every other crontab line
+# untouched. This uses awk's index(), not sed: CRON_TAG itself starts
+# with "#". A sed address needs a delimiter character, and every
+# delimiter choice is also a character sed treats as significant, so
+# a tag that contains it breaks the pattern. awk's index() takes
+# CRON_TAG as inert data, so this holds no matter what the tag text is.
 remove_cron() {
 	[ -f "$CRONTAB" ] || return 0
-	sed -i "\\#$CRON_TAG#d" "$CRONTAB"
+	awk -v tag="$CRON_TAG" 'index($0, tag) == 0' "$CRONTAB" > "$CRONTAB.tmp"
+	mv "$CRONTAB.tmp" "$CRONTAB"
 	/etc/init.d/cron reload >/dev/null 2>&1
 }
 
