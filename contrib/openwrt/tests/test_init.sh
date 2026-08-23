@@ -558,9 +558,22 @@ option lock_file /var/lock/stunmesh-agent.lock
 EOF
 	install_fake_uci
 
+	# order records the real relative timing of the two side effects
+	# start() backgrounds: "sleep $boot_delay" running, then $BIN
+	# actually being invoked. Both the sleep stub and the fake $BIN
+	# below append their own line to this one file, so its content
+	# reflects the order those two things actually happened in this
+	# process -- not just that both eventually happened. This is what
+	# catches "( run_fetch; sleep \"\$boot_delay\" ) &": that inversion
+	# still slept for $DEFAULT_BOOT_DELAY and still invoked \$BIN with
+	# the right arguments (the two assertions this case already had),
+	# it just did the fetch first, which the assertions below alone
+	# would not notice.
+	order="$d/order"
 	record="$d/invoked-with"
 	cat > "$d/stunmesh-agent" <<EOF
 #!/bin/sh
+echo fetch >> "$order"
 echo "\$@" > "$record"
 exit 0
 EOF
@@ -581,7 +594,7 @@ EOF
 	# used -- so a dead override of boot_delay cannot creep back in
 	# unnoticed.
 	sleep_record="$d/sleep-arg"
-	stub sleep "echo \"\$1\" > \"$sleep_record\"; return 0"
+	stub sleep "echo sleep >> \"$order\"; echo \"\$1\" > \"$sleep_record\"; return 0"
 
 	start_service
 	rc=$?
@@ -590,6 +603,7 @@ EOF
 	assert_eq "$rc" "0" "start_service rc" || return 1
 	assert_eq "$(cat "$sleep_record")" "$DEFAULT_BOOT_DELAY" "boot-time fetch slept for the configured boot_delay" || return 1
 	[ -f "$record" ] || { echo "  \$BIN was never invoked by the boot-time fetch" >&2; return 1; }
+	assert_eq "$(cat "$order")" "$(printf 'sleep\nfetch')" "boot-time fetch waits for the sleep to finish before invoking \$BIN, not the other way around" || return 1
 	invoked=$(cat "$record")
 	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN by the boot-time fetch" || return 1
