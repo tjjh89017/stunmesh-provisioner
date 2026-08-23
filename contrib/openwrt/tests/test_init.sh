@@ -23,13 +23,16 @@
 #
 # One real side effect cannot be avoided without editing the script:
 # install_cron and remove_cron both call "/etc/init.d/cron reload" by
-# its absolute path, so it cannot be intercepted via PATH stubbing the
-# way mktemp/cp/mv/awk/mkdir are below. On a host that has that path
-# (this dev machine does), it harmlessly reloads the real system cron
-# daemon's already-unrelated config; on a host that does not (most CI
-# runners), the shell reports "not found" on stderr, which the script
-# already redirects to /dev/null, and its exit status is never
-# checked. Neither case touches this test's scratch crontab files.
+# its absolute path, so it cannot be intercepted the way
+# mktemp/cp/mv/awk/mkdir are below (a shell function only shadows a
+# bare command name; a path containing "/" is always executed
+# directly, function or no function -- see the "stub" comment below).
+# On a host that has that path (this dev machine does), it harmlessly
+# reloads the real system cron daemon's already-unrelated config; on a
+# host that does not (most CI runners), the shell reports "not found"
+# on stderr, which the script already redirects to /dev/null, and its
+# exit status is never checked. Neither case touches this test's
+# scratch crontab files.
 
 set -u
 
@@ -52,21 +55,40 @@ scratch_dir() {
 	echo "$d"
 }
 
-# stub installs a fake executable named $2 in a fresh stub directory
-# under $1, running body $3, and prepends that directory to PATH so
-# the next lookup of $2 finds it instead of the real command.
+# stub overrides the command named $1 with a shell function whose body
+# is $2, for the rest of the current test's subshell (run_test already
+# runs every test in "( "$fn" )", so the function never leaks into the
+# next test).
+#
+# This used to install a fake executable ahead of the real one on
+# PATH. That does not work under a BusyBox ash built with the
+# standalone-shell feature (CONFIG_FEATURE_SH_STANDALONE): with it
+# enabled, ash resolves applet names like mktemp/cp/awk/mv/mkdir
+# internally and never consults PATH at all, so a PATH stub is
+# silently bypassed and the real applet runs instead -- see the note
+# at the top of this file for how that was diagnosed. A shell function
+# does not have this problem: POSIX's command lookup order is special
+# builtins, then functions, then everything else (regular builtins and
+# PATH, and -- for BusyBox -- its internal applet dispatch too), so a
+# function always shadows the command whether or not the shell honors
+# PATH for it. This has been verified directly: `busybox ash -c
+# 'mkdir() { ...; }; mkdir -p /etc/...'` runs the function even though
+# `mkdir` is a BusyBox-internal applet with no separate file on PATH
+# at all -- there is no PATH lookup for the function-override path to
+# bypass in the first place.
+#
+# Body must use "return", not "exit": most of these commands are
+# called directly (not inside a command substitution), and "exit"
+# inside a function called directly would exit the whole test
+# subshell instead of just failing that one command.
 stub() {
-	dir="$1"
-	cmdname="$2"
-	body="$3"
-	stubdir="$dir/stub"
-	mkdir -p "$stubdir"
-	{
-		echo "#!/bin/sh"
-		echo "$body"
-	} > "$stubdir/$cmdname"
-	chmod +x "$stubdir/$cmdname"
-	PATH="$stubdir:$PATH"
+	cmdname="$1"
+	body="$2"
+	eval "
+$cmdname() {
+	$body
+}
+"
 }
 
 # --- remove_cron -----------------------------------------------------
@@ -132,7 +154,7 @@ test_remove_cron_temp_file_create_failure() {
 	CRONTAB="$d/crontab"
 	printf '%s\n' "*/5 * * * * /usr/sbin/stunmesh-agent fetch $CRON_TAG" > "$CRONTAB"
 	original=$(cat "$CRONTAB")
-	stub "$d" mktemp 'exit 1'
+	stub mktemp 'return 1'
 
 	remove_cron
 	rc=$?
@@ -150,7 +172,7 @@ test_remove_cron_temp_file_write_failure() {
 	original=$(cat "$CRONTAB")
 	# cp succeeds (real cp); awk -- the step that writes the filtered
 	# content into the temp file -- fails.
-	stub "$d" awk 'exit 1'
+	stub awk 'return 1'
 
 	remove_cron
 	rc=$?
@@ -166,7 +188,7 @@ test_remove_cron_copy_failure() {
 	CRONTAB="$d/crontab"
 	printf '%s\n' "*/5 * * * * /usr/sbin/stunmesh-agent fetch $CRON_TAG" > "$CRONTAB"
 	original=$(cat "$CRONTAB")
-	stub "$d" cp 'exit 1'
+	stub cp 'return 1'
 
 	remove_cron
 	rc=$?
@@ -182,7 +204,7 @@ test_remove_cron_rename_failure() {
 	CRONTAB="$d/crontab"
 	printf '%s\n' "*/5 * * * * /usr/sbin/stunmesh-agent fetch $CRON_TAG" > "$CRONTAB"
 	original=$(cat "$CRONTAB")
-	stub "$d" mv 'exit 1'
+	stub mv 'return 1'
 
 	remove_cron
 	rc=$?
@@ -201,7 +223,7 @@ test_install_cron_writes_expected_line() {
 	BIN="/usr/sbin/stunmesh-agent"
 	args="fetch --namespace test --node-id n1"
 	fetch_interval=7
-	stub "$d" mkdir 'exit 0'
+	stub mkdir 'return 0'
 
 	install_cron
 	rc=$?
@@ -219,7 +241,7 @@ test_install_cron_repeated_start_no_duplicates() {
 	BIN="/usr/sbin/stunmesh-agent"
 	args="fetch --namespace test"
 	fetch_interval=5
-	stub "$d" mkdir 'exit 0'
+	stub mkdir 'return 0'
 
 	install_cron >/dev/null
 	rc1=$?
@@ -246,7 +268,7 @@ test_install_cron_returns_1_when_removal_unconfirmed() {
 	BIN="/usr/sbin/stunmesh-agent"
 	args="fetch --namespace test"
 	fetch_interval=5
-	stub "$d" mktemp 'exit 1'
+	stub mktemp 'return 1'
 
 	install_cron
 	rc=$?
@@ -281,7 +303,7 @@ test_stop_service_returns_1_when_removal_unconfirmed() {
 	CRONTAB="$d/crontab"
 	printf '%s\n' "*/5 * * * * /usr/sbin/stunmesh-agent fetch $CRON_TAG" > "$CRONTAB"
 	original=$(cat "$CRONTAB")
-	stub "$d" mv 'exit 1'
+	stub mv 'return 1'
 
 	stop_service
 	rc=$?
