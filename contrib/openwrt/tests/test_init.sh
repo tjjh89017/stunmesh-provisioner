@@ -566,20 +566,34 @@ exit 0
 EOF
 	chmod +x "$d/stunmesh-agent"
 	BIN="$d/stunmesh-agent"
-	boot_delay=0
-	fetch_interval=5
 	stub mkdir 'return 0'
+	# The fixture above sets neither boot_delay nor fetch_interval, so
+	# read_config (start_service's first statement) applies
+	# DEFAULT_BOOT_DELAY/DEFAULT_FETCH_INTERVAL. This test deliberately
+	# does not pre-assign either variable: start_service always
+	# overwrites them via read_config before they are ever used, so a
+	# pre-assignment here would be dead code -- exactly the mistake
+	# that once left this case sleeping DEFAULT_BOOT_DELAY (15) real
+	# seconds. sleep is stubbed to record the delay it was asked for
+	# and return immediately, so the case runs at full speed no matter
+	# what that default is, and the assertion below pins the delay
+	# start_service actually used -- not one the test merely hoped it
+	# used -- so a dead override of boot_delay cannot creep back in
+	# unnoticed.
+	sleep_record="$d/sleep-arg"
+	stub sleep "echo \"\$1\" > \"$sleep_record\"; return 0"
 
 	start_service
 	rc=$?
 	wait
 
 	assert_eq "$rc" "0" "start_service rc" || return 1
+	assert_eq "$(cat "$sleep_record")" "$DEFAULT_BOOT_DELAY" "boot-time fetch slept for the configured boot_delay" || return 1
 	[ -f "$record" ] || { echo "  \$BIN was never invoked by the boot-time fetch" >&2; return 1; }
 	invoked=$(cat "$record")
 	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN by the boot-time fetch" || return 1
-	expected_cron="*/5 * * * * $BIN $expected >/dev/null 2>&1 $CRON_TAG"
+	expected_cron="*/$DEFAULT_FETCH_INTERVAL * * * * $BIN $expected >/dev/null 2>&1 $CRON_TAG"
 	assert_eq "$(cat "$CRONTAB")" "$expected_cron" "installed cron line matches the args built from config"
 }
 
@@ -598,8 +612,11 @@ exit 0
 EOF
 	chmod +x "$d/stunmesh-agent"
 	BIN="$d/stunmesh-agent"
-	boot_delay=0
-	fetch_interval=5
+	# No boot_delay/fetch_interval pre-assignment here either: this
+	# path returns from start_service at "read_config || return 0"
+	# before either variable would be read, so any such assignment
+	# would be dead code (see the sibling test above for the case
+	# where it mattered).
 
 	start_service
 	rc=$?
