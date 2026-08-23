@@ -121,10 +121,48 @@ func TestRunKeygen_UnknownFlagIsExitError(t *testing.T) {
 // when doFetch is driven directly with a Config that
 // Config.ValidateFetch would have rejected (the same pattern
 // validFetchConfig-based tests in fetch_cmd_test.go already use). ---
+//
+// validFetchConfig itself is unsuitable here: its IdentityKeyPath
+// deliberately names a file that does not exist, so that the other
+// validFetchConfig-based tests in fetch_cmd_test.go
+// (TestDoFetch_SecondConcurrentHolderExitsOKWithOneLogLine,
+// TestDoFetch_AcquiresLockThenReadsIdentityKey,
+// TestDoFetch_BadLockPathIsExitError) can pin doFetch's identity-key
+// read failing. loadIdentityKey runs before the controller-pubkey
+// parse, dhtkey.Key, and dhtproxy.New (fetch_cmd.go), so a Config
+// built that way never reaches any of those three branches: every
+// test below would exit ExitError on the identity key read alone,
+// regardless of what it set on cfg.ControllerPubkey, cfg.Namespace, or
+// cfg.Proxies. validFetchConfigWithRealIdentity (below) reuses the
+// full-pipeline tests' crypto.Keygen()+os.WriteFile approach so
+// loadIdentityKey succeeds and doFetch actually reaches the branch
+// each test names.
+
+// validFetchConfigWithRealIdentity builds a Config identical to
+// validFetchConfig, except IdentityKeyPath names a real key file (a
+// freshly generated identity key, written to a temp file) instead of a
+// path that never exists. Callers that then set an invalid
+// ControllerPubkey, Namespace, or Proxies value are guaranteed to
+// reach doFetch's validation of that field, not an earlier identity
+// key failure.
+func validFetchConfigWithRealIdentity(t *testing.T, lockPath string) *Config {
+	t.Helper()
+	priv, _, err := crypto.Keygen()
+	if err != nil {
+		t.Fatalf("Keygen: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "identity.key")
+	if err := os.WriteFile(keyPath, []byte(priv.String()+"\n"), 0o600); err != nil {
+		t.Fatalf("write identity key: %v", err)
+	}
+	cfg := validFetchConfig(lockPath)
+	cfg.IdentityKeyPath = keyPath
+	return cfg
+}
 
 func TestDoFetch_BadControllerPubkeyDirectIsExitErrorNoLeak(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
-	cfg := validFetchConfig(lockPath)
+	cfg := validFetchConfigWithRealIdentity(t, lockPath)
 	cfg.ControllerPubkey = "sentinel-bad-pubkey-not-base64-at-all!!"
 
 	var stdout, stderr bytes.Buffer
@@ -134,12 +172,15 @@ func TestDoFetch_BadControllerPubkeyDirectIsExitErrorNoLeak(t *testing.T) {
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
+	if !strings.Contains(stderr.String(), "--controller-pubkey") {
+		t.Errorf("stderr = %q, want it to name the controller-pubkey branch (proves the branch was reached)", stderr.String())
+	}
 	assertNoSecrets(t, stdout.String()+stderr.String(), cfg.ControllerPubkey)
 }
 
 func TestDoFetch_NamespaceWithSlashIsExitErrorNoLeak(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
-	cfg := validFetchConfig(lockPath)
+	cfg := validFetchConfigWithRealIdentity(t, lockPath)
 	// dhtkey.Key rejects a namespace containing "/" (PLAN.md 2.5); an
 	// operator-facing sentinel makes sure neither the namespace nor
 	// node_id value is echoed, only the field name (dhtkey's own doc
@@ -153,12 +194,15 @@ func TestDoFetch_NamespaceWithSlashIsExitErrorNoLeak(t *testing.T) {
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
+	if !strings.Contains(stderr.String(), "namespace") {
+		t.Errorf("stderr = %q, want it to name the field that failed (proves the branch was reached)", stderr.String())
+	}
 	assertNoSecrets(t, stdout.String()+stderr.String(), cfg.Namespace)
 }
 
 func TestDoFetch_BadProxyURLIsExitErrorNoLeak(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
-	cfg := validFetchConfig(lockPath)
+	cfg := validFetchConfigWithRealIdentity(t, lockPath)
 	cfg.Proxies = []string{"://sentinel-not-a-valid-url"}
 
 	var stdout, stderr bytes.Buffer
@@ -168,10 +212,15 @@ func TestDoFetch_BadProxyURLIsExitErrorNoLeak(t *testing.T) {
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
-	// The bad URL itself is not a secret (dhtproxy.New's own error
-	// names it, PLAN.md's secret list is limited to key material, the
-	// bundle, the stunmesh text, and the full DHT key); this test only
-	// pins the exit code for this branch.
+	if !strings.Contains(stderr.String(), "dht proxy") {
+		t.Errorf("stderr = %q, want it to name the dht proxy branch (proves the branch was reached)", stderr.String())
+	}
+	// The bad URL itself is not a secret: dhtproxy.New's own error
+	// names it by design (internal/dhtproxy.New's doc comment), so an
+	// operator can see which configured proxy URL is malformed.
+	// PLAN.md's secret list is limited to key material, the bundle, the
+	// stunmesh text, and the full DHT key; this test pins the exit code
+	// and confirms the branch actually ran.
 }
 
 // --- applyDiff's remaining failure branches (steps 2-6): step 1
