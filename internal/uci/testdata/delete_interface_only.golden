@@ -1,0 +1,1 @@
+uci delete network.wg0

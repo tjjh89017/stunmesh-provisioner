@@ -1,0 +1,5 @@
+uci delete network.wg0_p_bravo
+uci delete network.wg0_p_charlie
+uci delete network.wg0_r_0
+uci delete network.wg0_r_1
+uci delete network.wg0

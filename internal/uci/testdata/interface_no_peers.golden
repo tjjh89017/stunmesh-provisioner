@@ -1,0 +1,4 @@
+uci set network.wg0=interface
+uci set network.wg0.proto=wireguard
+uci set network.wg0.private_key=wg0-private-key
+uci add_list network.wg0.addresses=10.0.0.1/24
