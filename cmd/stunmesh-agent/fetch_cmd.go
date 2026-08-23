@@ -12,6 +12,7 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtproxy"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
 )
 
 // runFetch implements `stunmesh-agent fetch`'s flag parsing and
@@ -220,7 +221,7 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 	return dhtproxy.New(proxies, opts...)
 }
 
-// checkAndApply is the seam the next stage 3 item fills in: the
+// checkAndApply is the seam stage 3 item 5 onward fills in: the
 // last.json comparison (PLAN.md 4.5), the per-interface diff, the UCI
 // batch, and the apply (PLAN.md 6). b is the bundle with the largest
 // Timestamp among the values that passed every PLAN.md 4.4 check --
@@ -230,10 +231,36 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 // this seam with an unchecked bundle. checkAndApply itself does not
 // need to call Validate again.
 //
-// This item's body is a stub: it does no work and always reports
-// failure, which is correct until the next item replaces it -- there
-// is nothing yet for a caller to treat as success.
+// This item (stage 3 item 5) implements the last.json comparison: read
+// last.json (a missing file reads as empty, PLAN.md 4.5 "Missing
+// last.json"), compare its content with b's content (sameContent), and
+// exit ExitNoChange, writing nothing, when they are equal. A read
+// failure other than "missing" (last.ErrCorrupt) is a hard failure
+// (ExitError); see internal/last's package doc "Corrupt or unreadable
+// file" for why the agent must not guess at a corrupt last.json's
+// content.
+//
+// When the content differs, checkAndApply hands off to applyChanges,
+// the seam the next item (the per-interface diff) fills in.
 func checkAndApply(env *Env, cfg *Config, b *bundle.Bundle) int {
-	fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: not implemented yet")
-	return ExitError
+	state, err := last.Read(cfg.LastPath)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: %v\n", err)
+		return ExitError
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		// sameContent's error comes from bundle.Canonical, which never
+		// includes field values in its own errors (see internal/bundle's
+		// doc); safe to print as-is.
+		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: compare with last.json: %v\n", err)
+		return ExitError
+	}
+	if equal {
+		fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: no change since last apply")
+		return ExitNoChange
+	}
+
+	return applyChanges(env, cfg, b, state)
 }

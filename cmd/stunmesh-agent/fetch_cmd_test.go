@@ -334,7 +334,12 @@ func TestDoFetch_DecryptableValueHandsOffToNextItem(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
 	cfg, controllerPriv, identityPub := fetchTestConfig(t, lockPath, nil)
 
-	plain := []byte(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
+	// wg is non-empty so this bundle's content differs from the (missing,
+	// so empty) last.json: checkAndApply (stage 3 item 5) now compares
+	// the two for real, and only a genuine content difference reaches
+	// applyChanges, the still-unimplemented seam the next item fills in.
+	plain := []byte(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,` +
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":""}`)
 	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -351,15 +356,15 @@ func TestDoFetch_DecryptableValueHandsOffToNextItem(t *testing.T) {
 	env.HTTPClient = srv.Client()
 
 	code := doFetch(env, cfg)
-	// checkAndApply, the seam the next item fills in, is still a stub
+	// applyChanges, the seam the next item fills in, is still a stub
 	// that always reports failure; reaching it (rather than the
-	// no-value or none-decrypted paths) proves decrypt-and-select
-	// worked end to end.
+	// no-value, none-decrypted, or no-change paths) proves decrypt-and-
+	// select and the last.json comparison both worked end to end.
 	if code != ExitError {
 		t.Errorf("code = %d, want %d; stderr=%q", code, ExitError, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "not implemented") {
-		t.Errorf("stderr = %q, want it to reach the checkAndApply seam", stderr.String())
+		t.Errorf("stderr = %q, want it to reach the applyChanges seam", stderr.String())
 	}
 }
 

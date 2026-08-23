@@ -1,0 +1,327 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
+)
+
+// parseTestBundle parses raw JSON into a *bundle.Bundle for a test,
+// failing the test on any parse error. It never validates: some tests
+// deliberately build a bundle whose namespace/node_id do not matter to
+// the comparison under test.
+func parseTestBundle(t *testing.T, raw string) *bundle.Bundle {
+	t.Helper()
+	b, err := bundle.Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("bundle.Parse: %v", err)
+	}
+	return b
+}
+
+func TestSameContent_IdenticalContentIsEqual(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	state := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: b.WG["wg0"]}},
+		Stunmesh: "text",
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if !equal {
+		t.Errorf("equal = false, want true for identical content")
+	}
+}
+
+func TestSameContent_TimestampOnlyDifferenceIsEqual(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":999999,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	state := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: b.WG["wg0"]}},
+		Stunmesh: "text",
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if !equal {
+		t.Errorf("equal = false, want true: timestamp must not affect the outcome")
+	}
+}
+
+func TestSameContent_RealChangeIsNotEqual(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk-new","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	old := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk-old","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	state := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: old.WG["wg0"]}},
+		Stunmesh: "text",
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if equal {
+		t.Errorf("equal = true, want false: private_key changed")
+	}
+}
+
+func TestSameContent_StunmeshOnlyChangeIsNotEqual(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{},"stunmesh":"new text"}`)
+
+	state := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{},
+		Stunmesh: "old text",
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if equal {
+		t.Errorf("equal = true, want false: stunmesh text changed")
+	}
+}
+
+func TestSameContent_MissingLastTreatsEveryInterfaceAsNew(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	dir := t.TempDir()
+	state, err := last.Read(filepath.Join(dir, "does-not-exist.json"))
+	if err != nil {
+		t.Fatalf("last.Read: %v", err)
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if equal {
+		t.Errorf("equal = true, want false: a missing last.json must not read as matching a non-empty bundle")
+	}
+}
+
+func TestSameContent_MissingLastMatchesAnEmptyBundle(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{},"stunmesh":""}`)
+
+	dir := t.TempDir()
+	state, err := last.Read(filepath.Join(dir, "does-not-exist.json"))
+	if err != nil {
+		t.Fatalf("last.Read: %v", err)
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if !equal {
+		t.Errorf("equal = false, want true: an empty last.json and an empty bundle are the same content")
+	}
+}
+
+// TestSameContent_AbsentVsExplicitEmptyAreDifferent pins PLAN.md 4.3/
+// 4.5: an absent key and an explicit empty container are different
+// content. It uses the `options` field of an interface, which is
+// *map[string]string with no `omitempty` semantics baked into
+// presence: nil means absent, a non-nil empty map means `"options":{}`
+// was present.
+func TestSameContent_AbsentVsExplicitEmptyAreDifferent(t *testing.T) {
+	// The new bundle has an interface with an explicit, empty `options`.
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"options":{},"peers":{}}},"stunmesh":""}`)
+
+	// last.json recorded the same interface but without an `options`
+	// key at all (absent, not empty).
+	old := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":""}`)
+
+	state := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: old.WG["wg0"]}},
+		Stunmesh: "",
+	}
+
+	equal, err := sameContent(state, b)
+	if err != nil {
+		t.Fatalf("sameContent: %v", err)
+	}
+	if equal {
+		t.Errorf("equal = true, want false: absent options must not compare equal to explicit empty options")
+	}
+
+	// Round-tripping the "absent options" state through last.json's own
+	// Read/Write must preserve the distinction: this guards against a
+	// future change to last.Interface's JSON tags silently collapsing
+	// absent and explicit-empty into the same encoded form.
+	path := filepath.Join(t.TempDir(), "last.json")
+	if err := last.Write(path, state); err != nil {
+		t.Fatalf("last.Write: %v", err)
+	}
+	reread, err := last.Read(path)
+	if err != nil {
+		t.Fatalf("last.Read: %v", err)
+	}
+	if reread.WG["wg0"].Content.Options != nil {
+		t.Errorf("Options = %#v after round trip, want nil (absent)", reread.WG["wg0"].Content.Options)
+	}
+	equal2, err := sameContent(reread, b)
+	if err != nil {
+		t.Fatalf("sameContent (post round trip): %v", err)
+	}
+	if equal2 {
+		t.Errorf("equal = true after round trip, want false: presence must survive last.json's own Read/Write")
+	}
+}
+
+func TestCheckAndApply_EqualContentExitsNoChangeAndWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	lastPath := filepath.Join(dir, "last.json")
+
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	initial := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: b.WG["wg0"]}},
+		Stunmesh: "text",
+	}
+	if err := last.Write(lastPath, initial); err != nil {
+		t.Fatalf("last.Write: %v", err)
+	}
+	before, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read last.json: %v", err)
+	}
+
+	cfg := &Config{LastPath: lastPath}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+
+	code := checkAndApply(env, cfg, b)
+	if code != ExitNoChange {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitNoChange, stderr.String())
+	}
+
+	after, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read last.json after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("last.json changed on a no-op run")
+	}
+}
+
+func TestCheckAndApply_EqualContentNeverLogsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	lastPath := filepath.Join(dir, "last.json")
+
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"top-secret-private-key","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"secret stunmesh text"}`)
+
+	initial := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: b.WG["wg0"]}},
+		Stunmesh: "secret stunmesh text",
+	}
+	if err := last.Write(lastPath, initial); err != nil {
+		t.Fatalf("last.Write: %v", err)
+	}
+
+	cfg := &Config{LastPath: lastPath}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+
+	code := checkAndApply(env, cfg, b)
+	if code != ExitNoChange {
+		t.Fatalf("code = %d, want %d", code, ExitNoChange)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "top-secret-private-key") ||
+		strings.Contains(stdout.String()+stderr.String(), "secret stunmesh text") {
+		t.Errorf("output leaked secret content: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCheckAndApply_DifferentContentHandsOffToNextSeam(t *testing.T) {
+	dir := t.TempDir()
+	lastPath := filepath.Join(dir, "last.json")
+	// No last.json written: every interface reads as new.
+
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	cfg := &Config{LastPath: lastPath}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+
+	code := checkAndApply(env, cfg, b)
+	// applyChanges, the next item's seam, is still a stub that reports
+	// failure; reaching it (rather than ExitNoChange) proves the
+	// comparison correctly decided "different".
+	if code != ExitError {
+		t.Errorf("code = %d, want %d (the apply-seam stub); stderr=%q", code, ExitError, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not implemented") {
+		t.Errorf("stderr = %q, want it to reach the apply seam", stderr.String())
+	}
+}
+
+func TestCheckAndApply_CorruptLastJSONIsExitError(t *testing.T) {
+	dir := t.TempDir()
+	lastPath := filepath.Join(dir, "last.json")
+	if err := os.WriteFile(lastPath, []byte("not json"), 0o600); err != nil {
+		t.Fatalf("write corrupt last.json: %v", err)
+	}
+
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{},"stunmesh":""}`)
+
+	cfg := &Config{LastPath: lastPath}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+
+	code := checkAndApply(env, cfg, b)
+	if code != ExitError {
+		t.Errorf("code = %d, want %d", code, ExitError)
+	}
+}
+
+// sanity check that our hand-rolled JSON in the tests above actually
+// parses the way each test assumes (catches a malformed literal early
+// with a clear message rather than a confusing sameContent failure).
+func TestParseTestBundleHelperSanity(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
+	data, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"namespace":"ns"`)) {
+		t.Errorf("Marshal = %s, want it to contain the namespace", data)
+	}
+}
