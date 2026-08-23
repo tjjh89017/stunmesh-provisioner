@@ -16,6 +16,70 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
 )
 
+// TestDoFetch_RejectedBundleWithSecretsNeverLeaksSecrets pins the gap
+// found in review of stage 3 item 10: the "none usable" branch in
+// doFetch (fetch_cmd.go, the `if best == nil` block) is reached after
+// decryptAndSelect has fully decrypted and parsed a bundle -- so a
+// real WireGuard private key, a preshared key, and stunmesh config
+// text are sitting in memory there -- for a value that then fails
+// bundle.Validate (PLAN.md 4.4 phase 2), for example a stale
+// republish from another namespace. The one existing test that drives
+// this branch, TestDoFetch_ValueThatFailsPhase2ChecksExitsOKAsNothingUsable,
+// carries an empty "wg" map, so it cannot detect a leak of decrypted
+// secret material on this path even if one were introduced. This test
+// uses a bundle that decrypts for real and carries sentinel secrets in
+// exactly the fields real secrets live in, so a future change that
+// logs the rejected bundle (for example, adding it to selectStats and
+// printing it with %+v in the "none usable" block, as review
+// demonstrated) is caught here.
+func TestDoFetch_RejectedBundleWithSecretsNeverLeaksSecrets(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg, controllerPriv, identityPub := fetchTestConfig(t, lockPath, nil)
+
+	// Decrypts and parses fine (phase 1: crypto.Open then bundle.Parse
+	// both succeed), but the namespace does not match this node's
+	// configured namespace ("ns", set by fetchTestConfig) -- a phase 2
+	// check (bundle.Validate) must reject it. The wg section carries a
+	// real-shaped tunnel private key, preshared key, and stunmesh text,
+	// all sentinels, so the fully decrypted and parsed *bundle.Bundle
+	// that exists in memory on this path carries something worth
+	// leaking.
+	plain := []byte(`{"version":1,"namespace":"wrong-ns","node_id":"n1","timestamp":100,` +
+		`"wg":{"wg0":{"private_key":"sentinel-rejected-privkey-9c2e","addresses":["10.0.0.1/24"],` +
+		`"peers":{"bravo":{"public_key":"bravo-pub","preshared_key":"sentinel-rejected-psk-9c2e","allowed_ips":["10.0.0.2/32"]}}}},` +
+		`"stunmesh":"sentinel-rejected-stunmesh-9c2e"}`)
+	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(dhtLine(t, sealed))
+	}))
+	defer srv.Close()
+	cfg.Proxies = []string{srv.URL}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	env.HTTPClient = srv.Client()
+
+	code := doFetch(env, cfg)
+
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	// Proves the "none usable" / phase-2-reject branch was actually
+	// reached, not an earlier one (undecrypted or unparsed).
+	if !strings.Contains(stderr.String(), "none usable") || !strings.Contains(stderr.String(), "1 rejected by node checks") {
+		t.Errorf("stderr = %q, want the no-valid-value log line to count the phase 2 rejection", stderr.String())
+	}
+	assertNoSecrets(t, stdout.String()+stderr.String(),
+		"sentinel-rejected-privkey-9c2e",
+		"sentinel-rejected-psk-9c2e",
+		"sentinel-rejected-stunmesh-9c2e",
+	)
+}
+
 // This file closes two kinds of gap stage 3 item 10 asks for:
 //
 //   - Exit code pins for terminating paths that fetch_cmd_test.go,
