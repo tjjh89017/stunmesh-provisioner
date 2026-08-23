@@ -25,8 +25,11 @@ import (
 //     -h/--help), a bad controller public key or a namespace/node_id
 //     that dhtkey.Key rejects when doFetch is driven directly (the
 //     way many existing tests already do, bypassing
-//     Config.ValidateFetch), a proxy URL dhtproxy.New rejects, and
-//     every apply-step-2-through-6 failure branch in applyDiff (uci
+//     Config.ValidateFetch), a proxy URL dhtproxy.New rejects, a
+//     total DHT outage (every configured proxy fails outright at
+//     request time, so dhtproxy.Client.Get returns its plain joined
+//     error instead of a *PartialError), and every
+//     apply-step-2-through-6 failure branch in applyDiff (uci
 //     commit, network reload, the stunmesh config file, /etc/init.d/
 //     stunmesh, and last.json).
 //
@@ -198,6 +201,49 @@ func TestDoFetch_NamespaceWithSlashIsExitErrorNoLeak(t *testing.T) {
 		t.Errorf("stderr = %q, want it to name the field that failed (proves the branch was reached)", stderr.String())
 	}
 	assertNoSecrets(t, stdout.String()+stderr.String(), cfg.Namespace)
+}
+
+// TestDoFetch_TotalDHTOutageIsExitErrorNoLeak pins doFetch's handling
+// of dhtproxy.Client.Get's plain, non-*PartialError error: every
+// configured proxy fails outright at request time, so Get never gets
+// a chance to set its "empty" result and returns a plain error
+// joining every per-host failure instead (see
+// internal/dhtproxy.Client.Get's doc comment -- a *PartialError
+// requires at least one base URL to have answered, even emptily).
+// This is a different case from TestDoFetch_PartialOutageLogsAndIsTreatedAsNoValues,
+// which drives the sibling branch (some proxies fail, at least one
+// answers empty, treated as ExitOK "no values"): PLAN.md 2.4 treats
+// "the DHT has no values" as a non-failure, but a total outage is not
+// that -- it must be ExitError, not silently folded into "nothing to
+// do".
+func TestDoFetch_TotalDHTOutageIsExitErrorNoLeak(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "agent.lock")
+	cfg := validFetchConfigWithRealIdentity(t, lockPath)
+	// Nothing listens on either address: both configured proxies fail
+	// outright (connection refused) rather than answering with a 404
+	// or an empty 2xx body, so dhtproxy.Client.Get's "empty" result is
+	// never set and it returns its plain joined error, not a
+	// *PartialError.
+	cfg.Proxies = []string{"http://127.0.0.1:1", "http://127.0.0.1:2"}
+	dhtKey, err := dhtkey.Key(cfg.Namespace, cfg.NodeID)
+	if err != nil {
+		t.Fatalf("dhtkey.Key: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	code := doFetch(env, cfg)
+
+	if code != ExitError {
+		t.Errorf("code = %d, want %d (a total DHT outage is a failure, not \"no values\")", code, ExitError)
+	}
+	if !strings.Contains(stderr.String(), "get:") {
+		t.Errorf("stderr = %q, want it to name the get failure branch (proves the branch was reached, not an earlier one)", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "no value found") || strings.Contains(stderr.String(), "already locked") {
+		t.Errorf("stderr = %q, a total outage must not be reported as \"no values\" or an earlier lock/identity/pubkey failure", stderr.String())
+	}
+	assertNoSecrets(t, stdout.String()+stderr.String(), dhtKey)
 }
 
 func TestDoFetch_BadProxyURLIsExitErrorNoLeak(t *testing.T) {
