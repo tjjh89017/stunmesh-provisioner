@@ -1,0 +1,199 @@
+# Probe workflow.
+#
+# This workflow measures what a GitHub-hosted runner can actually do. Later
+# OpenWrt VM e2e work depends on KVM acceleration. Guessing that capability
+# from local knowledge is not allowed, so this workflow runs the real checks
+# on the real runner images and records the evidence in the job summary.
+#
+# This workflow is operator-triggered only. It burns runner minutes and
+# installs qemu, so it must never run on push or pull_request.
+#
+# The enable-KVM udev rule and the qemu install steps are candidates for
+# extraction into `.github/actions/*` once a second workflow needs them.
+# They stay inline here because this workflow is exploratory.
+
+name: Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04]
+    steps:
+      - name: Report runner identity and capacity
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Runner identity and capacity (${MATRIX_OS})"
+            echo
+            echo '```'
+            uname -a
+            echo
+            cat /etc/os-release
+            echo
+            echo "nproc: $(nproc)"
+            echo
+            free -h
+            echo
+            df -h /
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check CPU virtualization flags
+        run: |
+          set -euo pipefail
+          {
+            echo "## CPU virtualization flags"
+            echo
+            if grep -Eq 'vmx|svm' /proc/cpuinfo; then
+              echo "Found: $(grep -Eo 'vmx|svm' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+            else
+              echo "NONE FOUND. This runner cannot do hardware virtualization."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check /dev/kvm before any udev rule
+        run: |
+          set -euo pipefail
+          {
+            echo "## /dev/kvm before the enable-KVM udev rule"
+            echo
+            if [ -e /dev/kvm ]; then
+              echo '```'
+              ls -l /dev/kvm
+              stat -c 'owner=%U group=%G mode=%a' /dev/kvm
+              echo '```'
+            else
+              echo "/dev/kvm does not exist yet."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # This is the standard rule GitHub-hosted-runner guides use to make
+      # /dev/kvm usable by the unprivileged runner user. It is a candidate
+      # for extraction into .github/actions/enable-kvm.
+      - name: Install enable-KVM udev rule
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Report /dev/kvm after the udev rule
+        run: |
+          set -euo pipefail
+          {
+            echo "## /dev/kvm after the enable-KVM udev rule"
+            echo
+            if [ ! -e /dev/kvm ]; then
+              echo "/dev/kvm STILL DOES NOT EXIST. This runner has no KVM device."
+              exit 1
+            fi
+            echo '```'
+            ls -l /dev/kvm
+            stat -c 'owner=%U group=%G mode=%a' /dev/kvm
+            echo '```'
+            echo
+            # A readable/writable device file is necessary but not proof
+            # that acceleration engages. Record it anyway, since it is the
+            # step operators usually stop at, and the point below where
+            # that assumption breaks matters.
+            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+              echo "The runner user can open /dev/kvm read-write."
+            else
+              echo "The runner user CANNOT open /dev/kvm read-write."
+              exit 1
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install qemu-system-x86_64
+        run: |
+          set -euo pipefail
+          {
+            echo "## qemu install"
+            echo
+            start_epoch=$(date +%s)
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq qemu-system-x86 qemu-utils
+            end_epoch=$(date +%s)
+            echo "apt install took $(( end_epoch - start_epoch )) seconds."
+            echo
+            echo '```'
+            qemu-system-x86_64 --version
+            echo '```'
+            echo
+            echo "### Accelerators this qemu build lists"
+            echo
+            echo '```'
+            qemu-system-x86_64 -accel help
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Positive proof that KVM acceleration engages.
+      #
+      # A plain "-accel kvm" run is not proof: QEMU's `-accel` list falls
+      # through to the next entry when one fails to init, and a boot with
+      # no working display or serial console can exit 0 either way. So
+      # this step boots a minimal kernel-less guest under "-accel kvm"
+      # (no fallback accelerator listed) with a serial console wired to
+      # stdout, and greps QEMU's own monitor output for the KVM identity
+      # string that only appears when the KVM accelerator actually
+      # initialized. If KVM does not engage, QEMU either exits non-zero
+      # (no other accelerator to fall back to) or the info string never
+      # appears, and the grep -q fails the step either way.
+      - name: Prove KVM acceleration actually engages
+        run: |
+          set -euo pipefail
+          {
+            echo "## KVM acceleration proof"
+            echo
+            start_epoch=$(date +%s)
+
+            # -S freezes the vCPU at startup, -no-shutdown keeps QEMU alive
+            # so the monitor stays reachable, and -monitor stdio exposes
+            # the QEMU monitor where "info kvm" reports whether the KVM
+            # accelerator is in use for this running VM (not just present
+            # on the host). -nographic drops the need for a display.
+            output=$(
+              printf 'info kvm\nquit\n' | timeout 30 qemu-system-x86_64 \
+                -accel kvm \
+                -machine pc \
+                -cpu host \
+                -m 128 \
+                -nographic \
+                -no-reboot \
+                -S \
+                -monitor stdio || true
+            )
+
+            echo '```'
+            echo "$output"
+            echo '```'
+
+            end_epoch=$(date +%s)
+            echo
+            echo "Acceleration proof took $(( end_epoch - start_epoch )) seconds."
+            echo
+
+            if echo "$output" | grep -qi 'kvm support: enabled'; then
+              echo "KVM acceleration CONFIRMED ENGAGED."
+            else
+              echo "KVM acceleration DID NOT ENGAGE. Failing the job."
+              exit 1
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
