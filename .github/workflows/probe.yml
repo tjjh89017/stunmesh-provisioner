@@ -52,7 +52,7 @@ jobs:
             echo
             df -h /
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check CPU virtualization flags
         run: |
@@ -65,7 +65,7 @@ jobs:
             else
               echo "NONE FOUND. This runner cannot do hardware virtualization."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check /dev/kvm before any udev rule
         run: |
@@ -81,7 +81,7 @@ jobs:
             else
               echo "/dev/kvm does not exist yet."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # This is the standard rule GitHub-hosted-runner guides use to make
       # /dev/kvm usable by the unprivileged runner user. It is a candidate
@@ -119,7 +119,7 @@ jobs:
               echo "The runner user CANNOT open /dev/kvm read-write."
               exit 1
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install qemu-system-x86_64
         run: |
@@ -142,7 +142,7 @@ jobs:
             echo '```'
             qemu-system-x86_64 -accel help
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Positive proof that KVM acceleration engages.
       #
@@ -150,12 +150,12 @@ jobs:
       # through to the next entry when one fails to init, and a boot with
       # no working display or serial console can exit 0 either way. So
       # this step boots a minimal kernel-less guest under "-accel kvm"
-      # (no fallback accelerator listed) with a serial console wired to
-      # stdout, and greps QEMU's own monitor output for the KVM identity
-      # string that only appears when the KVM accelerator actually
-      # initialized. If KVM does not engage, QEMU either exits non-zero
-      # (no other accelerator to fall back to) or the info string never
-      # appears, and the grep -q fails the step either way.
+      # (no fallback accelerator listed) with the QEMU monitor wired to
+      # stdio, and greps the monitor's own "info kvm" reply for the KVM
+      # identity string that only appears when the KVM accelerator
+      # actually initialized. If KVM does not engage, QEMU either exits
+      # non-zero (no other accelerator to fall back to) or the info
+      # string never appears, and the grep -q fails the step either way.
       - name: Prove KVM acceleration actually engages
         run: |
           set -euo pipefail
@@ -164,18 +164,30 @@ jobs:
             echo
             start_epoch=$(date +%s)
 
-            # -S freezes the vCPU at startup, -no-shutdown keeps QEMU alive
-            # so the monitor stays reachable, and -monitor stdio exposes
-            # the QEMU monitor where "info kvm" reports whether the KVM
+            # -S freezes the vCPU at startup so nothing runs before the
+            # monitor asks "info kvm". -monitor stdio exposes the QEMU
+            # monitor there, and "info kvm" reports whether the KVM
             # accelerator is in use for this running VM (not just present
-            # on the host). -nographic drops the need for a display.
+            # on the host).
+            #
+            # This step boots no guest (-kernel is never given), so no
+            # serial console is needed. -display none removes the need
+            # for a display backend, and -serial none stops QEMU from
+            # attaching a default serial device to stdio. That leaves
+            # stdio claimed by exactly one character device, the
+            # monitor, so QEMU does not refuse to start. Feeding the
+            # commands through a pipe and wrapping the whole call in
+            # `timeout` rules out a hang: the monitor reads "info kvm"
+            # and "quit" from the pipe, "quit" ends QEMU, and stdin EOF
+            # after that closes the pipe even if "quit" were dropped.
             output=$(
               printf 'info kvm\nquit\n' | timeout 30 qemu-system-x86_64 \
                 -accel kvm \
                 -machine pc \
                 -cpu host \
                 -m 128 \
-                -nographic \
+                -display none \
+                -serial none \
                 -no-reboot \
                 -S \
                 -monitor stdio || true
@@ -196,4 +208,4 @@ jobs:
               echo "KVM acceleration DID NOT ENGAGE. Failing the job."
               exit 1
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
