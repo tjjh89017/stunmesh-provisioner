@@ -8,7 +8,7 @@ inputs:
   embedca:
     description: 'Embed the Mozilla CA bundle when not 0, passed to make as EMBED_CA'
     required: false
-    default: '0'
+    default: '1'
 
 runs:
   using: 'composite'

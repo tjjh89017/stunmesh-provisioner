@@ -19,9 +19,14 @@ TRIMPATH ?= 1
 UPX ?= 0
 # EXTRA_MIN=1 forces the smallest binary: strip, trimpath, and upx all on.
 EXTRA_MIN ?= 0
-# EMBED_CA=1 adds the embedca build tag. This repository has no embedca code
-# yet; the tag is a placeholder for a future Mozilla root bundle embed.
-EMBED_CA ?= 0
+# EMBED_CA=1 adds the embedca build tag, which embeds the Mozilla root
+# bundle (golang.org/x/crypto/x509roots/fallback) in both binaries. It is
+# the default: both binaries reach the dhtproxy over HTTPS, and the roots
+# activate only when the system provides no certificate store, so they are
+# inert on an image that has ca-bundle and cost about 128 KiB of a mips
+# binary (see the size table in README.md). Set EMBED_CA=0 to leave them
+# out.
+EMBED_CA ?= 1
 # PREFIX and BINDIR name the install location, used by the install target
 # below.
 PREFIX ?= /usr/local
@@ -128,14 +133,15 @@ test-openwrt:
 	sh contrib/openwrt/tests/run.sh
 
 # vet runs go vet for the host GOOS/GOARCH, plus a second pass for
-# linux/mips (softfloat). go vet compiles every package it checks,
+# linux/mips (softfloat). Both passes carry the same build tags as a
+# build, so the files behind EMBED_CA's embedca tag are checked too. go vet compiles every package it checks,
 # including test-free ones that `go build` alone would not reach, so
 # this catches 32-bit build breaks (e.g. an untyped 64-bit constant
 # overflowing `int`) that only show up under a 32-bit GOARCH.
 .PHONY: vet
 vet:
-	go vet ./...
-	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go vet ./...
+	go vet $(TAGS_FLAGS) ./...
+	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go vet $(TAGS_FLAGS) ./...
 
 # fmt-check fails if any file is not gofmt-formatted. It changes no file.
 .PHONY: fmt-check
