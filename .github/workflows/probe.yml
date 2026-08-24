@@ -239,8 +239,15 @@ jobs:
     # The boot/SSH probe job needs the resolved version to name the
     # artifact it downloads, so this job publishes it as a job output
     # rather than making that job resolve the version a second time.
+    # The stock-image comparison job also needs these three timings, to
+    # compare the ImageBuilder path's total cost against the stock-image
+    # path's total cost using real numbers from the same run rather than
+    # numbers copied from a different run.
     outputs:
       openwrt_version: ${{ steps.resolve.outputs.version }}
+      download_seconds: ${{ steps.download.outputs.download_seconds }}
+      extract_seconds: ${{ steps.extract.outputs.extract_seconds }}
+      make_image_seconds: ${{ steps.build.outputs.make_image_seconds }}
     steps:
       # The releases index lists every release line OpenWrt ever
       # published, release candidates and betas included. A plain
@@ -296,6 +303,7 @@ jobs:
       # run. The timings below give the operator the real evidence for
       # revisiting this decision later.
       - name: Download the ImageBuilder and its sha256sums
+        id: download
         run: |
           set -euo pipefail
           {
@@ -321,6 +329,7 @@ jobs:
               echo "IMAGEBUILDER_SIZE=${ib_size}"
               echo "IMAGEBUILDER_DOWNLOAD_SECONDS=${download_seconds}"
             } >> "$GITHUB_ENV"
+            echo "download_seconds=${download_seconds}" >> "$GITHUB_OUTPUT"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the ImageBuilder checksum
@@ -350,6 +359,7 @@ jobs:
           sudo apt-get install -y -qq zstd
 
       - name: Extract the ImageBuilder
+        id: extract
         run: |
           set -euo pipefail
           {
@@ -362,6 +372,7 @@ jobs:
             extract_seconds=$(( end_epoch - start_epoch ))
             echo "Extraction took ${extract_seconds} seconds."
             echo "EXTRACT_SECONDS=${extract_seconds}" >> "$GITHUB_ENV"
+            echo "extract_seconds=${extract_seconds}" >> "$GITHUB_OUTPUT"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # ext4-combined, not squashfs-combined-efi: OpenWrt 25.12's
@@ -378,6 +389,7 @@ jobs:
       # this job exists to record, goes to the summary. The full log
       # still reaches the job log through the normal step output.
       - name: Build the image with make image
+        id: build
         run: |
           set -euo pipefail
           {
@@ -393,6 +405,7 @@ jobs:
           make_image_seconds=$(( end_epoch - start_epoch ))
 
           echo "MAKE_IMAGE_SECONDS=${make_image_seconds}" >> "$GITHUB_ENV"
+          echo "make_image_seconds=${make_image_seconds}" >> "$GITHUB_OUTPUT"
           echo "make image took ${make_image_seconds} seconds." | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Record the built image size
@@ -549,18 +562,49 @@ jobs:
           loop_dev=$(sudo losetup -fP --show openwrt.img)
           trap 'sudo losetup -d "$loop_dev" 2>/dev/null || true' EXIT
 
-          # The writable rootfs partition is not guaranteed to be the
-          # same partition number across OpenWrt releases, so find it by
-          # filesystem type instead of hardcoding a partition index.
+          # Diagnostics before mounting: the previous run of this step
+          # failed with only a single "No such file or directory" line
+          # from `tee`, which was not enough to see why. Print the
+          # partition table and blkid output for every partition so a
+          # future failure shows what was actually on the image.
+          {
+            echo "### Partition table and blkid (before mount)"
+            echo
+            echo '```'
+            sudo fdisk -l "$loop_dev" || true
+            echo
+            sudo blkid "$loop_dev"p* || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # The OpenWrt x86-64 combined image has more than one ext4
+          # partition: the boot partition is ext4 too, not just the
+          # rootfs. Selecting "the ext4 partition" by filesystem type
+          # alone can therefore pick the boot partition instead, which
+          # is what happened on the prior run (it has no /etc at all).
+          # Select by content instead: mount each candidate read-only
+          # and check for a file that only the OpenWrt rootfs has.
           rootfs_part=""
           for part in "$loop_dev"p*; do
-            if sudo blkid -o value -s TYPE "$part" 2>/dev/null | grep -qx ext4; then
-              rootfs_part="$part"
-              break
+            fstype=$(sudo blkid -o value -s TYPE "$part" 2>/dev/null || true)
+            if [ "$fstype" != "ext4" ]; then
+              continue
             fi
+            probe_dir=$(mktemp -d)
+            if sudo mount -o ro "$part" "$probe_dir" 2>/dev/null; then
+              if [ -f "$probe_dir/etc/openwrt_release" ] || [ -x "$probe_dir/sbin/init" ]; then
+                sudo umount "$probe_dir"
+                rmdir "$probe_dir"
+                rootfs_part="$part"
+                break
+              fi
+              sudo umount "$probe_dir"
+            fi
+            rmdir "$probe_dir"
           done
           if [ -z "$rootfs_part" ]; then
-            echo "Found no ext4 partition on openwrt.img. Failing." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Found no partition with /etc/openwrt_release or /sbin/init on openwrt.img. Failing." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -568,6 +612,26 @@ jobs:
           sudo mount "$rootfs_part" "$mount_dir"
           trap 'sudo umount "$mount_dir" 2>/dev/null || true; sudo losetup -d "$loop_dev" 2>/dev/null || true' EXIT
 
+          # More diagnostics: which partition was picked, and what is
+          # actually on it, so a future failure has evidence to look at
+          # instead of a single tee error line.
+          {
+            echo "### Rootfs partition chosen"
+            echo
+            echo "Selected ${rootfs_part} (matched by /etc/openwrt_release or /sbin/init)."
+            echo
+            echo '```'
+            ls -la "$mount_dir"
+            echo
+            ls -la "$mount_dir/etc"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # A stock image ships no /etc/config/network file at all, and
+          # /etc/config itself may not exist yet either: /etc/board.d
+          # only creates both on first boot. So this writes the file
+          # rather than editing one, and creates the directory first.
+          sudo mkdir -p "$mount_dir/etc/config"
           sudo tee "$mount_dir/etc/config/network" >/dev/null <<'NETCONF'
           config interface 'loopback'
           	option device 'lo'
@@ -820,5 +884,372 @@ jobs:
         with:
           name: probe-boot-ssh-logs
           path: boot-*.log
+          retention-days: 3
+          if-no-files-found: warn
+
+  # This job answers a different question than probe-boot-ssh: can the
+  # ImageBuilder and the loop-mount be skipped entirely, by booting the
+  # plain stock release image and configuring the guest over SSH at run
+  # time instead of before boot? It downloads the same release the
+  # ImageBuilder job resolved, so the two legs are compared on the same
+  # OpenWrt version, and it never modifies the image before boot: the
+  # whole point is to measure the untouched path.
+  #
+  # This job's single point of failure is unproven going in: does
+  # dropbear on a stock image accept an empty-password root login at
+  # all? Step "Boot the stock image..." below establishes that with
+  # evidence and fails the job if the answer is no, because a stock
+  # image this workflow cannot log into is not a viable e2e approach.
+  probe-stock-ssh:
+    name: Probe stock image SSH (no injection)
+    needs: probe-imagebuilder
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENWRT_TARGET: x86
+      OPENWRT_SUBTARGET: "64"
+      OPENWRT_VERSION: ${{ needs.probe-imagebuilder.outputs.openwrt_version }}
+    steps:
+      # Same rule as the other two jobs. Duplicated for the same reason:
+      # each job gets its own fresh runner. Extraction candidate, same
+      # as noted at the top of this file.
+      - name: Enable /dev/kvm for the runner user
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "/dev/kvm is not read-write for the runner user. Failing." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      # sshpass feeds the empty password non-interactively. Without it,
+      # ssh has no way to answer dropbear's password prompt from a
+      # non-interactive CI shell, empty password or not.
+      - name: Install qemu-system-x86_64 and sshpass
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils sshpass
+          qemu-system-x86_64 --version | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # This is the plain release image, not an ImageBuilder output: no
+      # PACKAGES, no PROFILE, nothing built. Same target directory the
+      # probe-imagebuilder job's resolve step already validated exists
+      # for this version.
+      - name: Download the stock OpenWrt image and its sha256sums
+        id: download
+        run: |
+          set -euo pipefail
+          {
+            echo "## Download the stock image"
+            echo
+            base_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}"
+            img_file="openwrt-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-generic-ext4-combined.img.gz"
+            echo "Stock image file: ${img_file}"
+
+            start_epoch=$(date +%s)
+            curl -fsSL -o "$img_file" "${base_url}/${img_file}"
+            curl -fsSL -o sha256sums "${base_url}/sha256sums"
+            end_epoch=$(date +%s)
+
+            download_seconds=$(( end_epoch - start_epoch ))
+            img_size=$(stat -c%s "$img_file")
+
+            echo "Download took ${download_seconds} seconds."
+            echo "Stock image size: ${img_size} bytes ($(awk "BEGIN{printf \"%.1f\", ${img_size}/1024/1024}") MiB)."
+
+            {
+              echo "STOCK_IMAGE_FILE=${img_file}"
+              echo "STOCK_DOWNLOAD_SECONDS=${download_seconds}"
+            } >> "$GITHUB_ENV"
+            echo "download_seconds=${download_seconds}" >> "$GITHUB_OUTPUT"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the stock image checksum
+        run: |
+          set -euo pipefail
+          {
+            echo "## Checksum verification"
+            echo
+            line=$(grep -F " *${STOCK_IMAGE_FILE}" sha256sums || true)
+            if [ -z "$line" ]; then
+              echo "No sha256sums entry for ${STOCK_IMAGE_FILE}. Failing."
+              exit 1
+            fi
+            echo "Official entry: ${line}"
+            if echo "$line" | sha256sum -c -; then
+              echo "Checksum OK."
+            else
+              echo "CHECKSUM MISMATCH. Failing the job."
+              exit 1
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # No loop-mount, no injection: this decompress is the only thing
+      # done to the file before boot, and it is required just to hand
+      # QEMU a raw disk. The image's content is untouched.
+      - name: Decompress the stock image
+        id: decompress
+        run: |
+          set -euo pipefail
+          {
+            echo "## Decompress"
+            echo
+            start_epoch=$(date +%s)
+            gunzip -c "$STOCK_IMAGE_FILE" > stock.img
+            end_epoch=$(date +%s)
+            decompress_seconds=$(( end_epoch - start_epoch ))
+            echo "Decompressed ${STOCK_IMAGE_FILE} to stock.img ($(stat -c%s stock.img) bytes) in ${decompress_seconds} seconds."
+            echo "STOCK_DECOMPRESS_SECONDS=${decompress_seconds}" >> "$GITHUB_ENV"
+            echo "decompress_seconds=${decompress_seconds}" >> "$GITHUB_OUTPUT"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Extracted to a script for the same reason as boot_and_probe.sh
+      # above: it is easier to read as a standalone sequence than
+      # inlined into a `run:` block, and it is a second extraction
+      # candidate alongside that one.
+      #
+      # Two things differ from boot_and_probe.sh on purpose:
+      #
+      # 1. Networking: an unmodified stock image gets its network config
+      #    from /etc/board.d on first boot, which puts "lan" on static
+      #    192.168.1.1. QEMU's default user-mode subnet (10.0.2.0/24)
+      #    cannot reach that address through a plain hostfwd. Putting
+      #    slirp on the guest's own subnet instead
+      #    (net=192.168.1.0/24,host=192.168.1.2) and forwarding to
+      #    192.168.1.1 is the candidate under test.
+      # 2. Authentication: no key is injected, because injecting one
+      #    would require the loop-mount this leg exists to avoid. Login
+      #    is by the stock empty root password instead, through sshpass.
+      #
+      # The wait logic is split into two bounded phases so a failure
+      # names the right cause: first wait for the SSH port to answer at
+      # all (proves the networking candidate), then wait for an
+      # empty-password login to succeed (proves or disproves the
+      # dropbear assumption this whole approach rests on). A boot that
+      # never opens the port and a boot that opens the port but refuses
+      # every login look identical from outside without this split.
+      - name: Write the stock-image boot-and-probe script
+        run: |
+          set -euo pipefail
+          cat > stock_boot_and_probe.sh <<'SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          log_file="$1"
+          port="$2"
+
+          BOOT_TIMEOUT_SECONDS=180
+          PORT_WAIT_ATTEMPTS=90
+          AUTH_WAIT_ATTEMPTS=15
+          WAIT_INTERVAL_SECONDS=2
+
+          timeout "$BOOT_TIMEOUT_SECONDS" qemu-system-x86_64 \
+            -accel kvm \
+            -machine pc \
+            -cpu host \
+            -m 256 \
+            -smp 2 \
+            -drive file=stock.img,format=raw,if=virtio \
+            -netdev "user,id=net0,net=192.168.1.0/24,host=192.168.1.2,hostfwd=tcp::${port}-192.168.1.1:22" \
+            -device virtio-net-pci,netdev=net0 \
+            -display none \
+            -serial "file:${log_file}" \
+            -monitor none \
+            -no-reboot &
+          qemu_pid=$!
+
+          start_epoch=$(date +%s)
+
+          port_up=0
+          attempt=1
+          while [ "$attempt" -le "$PORT_WAIT_ATTEMPTS" ]; do
+            if ! kill -0 "$qemu_pid" 2>/dev/null; then
+              echo "QEMU exited before the SSH port came up." >&2
+              break
+            fi
+            if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+              exec 3<&- 3>&- || true
+              port_up=1
+              break
+            fi
+            sleep "$WAIT_INTERVAL_SECONDS"
+            attempt=$((attempt + 1))
+          done
+
+          if [ "$port_up" -ne 1 ]; then
+            echo "SSH port ${port} never opened. The slirp 192.168.1.0/24 networking candidate did not reach the guest." >&2
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null || true
+            exit 2
+          fi
+
+          port_epoch=$(date +%s)
+          echo "PORT_UP_SECONDS=$((port_epoch - start_epoch))"
+
+          auth_up=0
+          attempt=1
+          while [ "$attempt" -le "$AUTH_WAIT_ATTEMPTS" ]; do
+            if ! kill -0 "$qemu_pid" 2>/dev/null; then
+              echo "QEMU exited while waiting for empty-password auth." >&2
+              break
+            fi
+            if sshpass -p '' ssh \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o PreferredAuthentications=password \
+                -o PubkeyAuthentication=no \
+                -o ConnectTimeout=3 \
+                -p "$port" root@127.0.0.1 true 2>/dev/null; then
+              auth_up=1
+              break
+            fi
+            sleep "$WAIT_INTERVAL_SECONDS"
+            attempt=$((attempt + 1))
+          done
+          end_epoch=$(date +%s)
+          boot_seconds=$((end_epoch - start_epoch))
+
+          if [ "$auth_up" -ne 1 ]; then
+            echo "Empty-password root login was REFUSED (or never answered) even though the SSH port was reachable." >&2
+            echo "This disproves the stock-image approach's key assumption." >&2
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null || true
+            exit 3
+          fi
+
+          echo "BOOT_SECONDS=${boot_seconds}"
+
+          apk_start=$(date +%s)
+          if ! sshpass -p '' ssh \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password \
+              -o PubkeyAuthentication=no \
+              -p "$port" root@127.0.0.1 \
+              'set -e; apk update && apk add kmod-wireguard wireguard-tools'; then
+            echo "apk update/add failed inside the stock guest." >&2
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null || true
+            exit 4
+          fi
+          apk_end=$(date +%s)
+          echo "APK_SECONDS=$((apk_end - apk_start))"
+
+          kill "$qemu_pid" 2>/dev/null || true
+          wait "$qemu_pid" 2>/dev/null || true
+          SCRIPT_EOF
+          chmod +x stock_boot_and_probe.sh
+
+      - name: Boot the stock image and attempt empty-password SSH
+        id: boot
+        run: |
+          set -euo pipefail
+          {
+            echo "## Boot proof: stock image, no injection"
+            echo
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          boot_exit=0
+          ./stock_boot_and_probe.sh boot-stock.log 2222 2>&1 \
+            | tee stock-boot.out | tee -a "$GITHUB_STEP_SUMMARY" || boot_exit=$?
+
+          {
+            echo '```'
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          port_up_seconds=$(grep -oE '^PORT_UP_SECONDS=[0-9]+' stock-boot.out | tail -1 | cut -d= -f2 || true)
+          boot_seconds=$(grep -oE '^BOOT_SECONDS=[0-9]+' stock-boot.out | tail -1 | cut -d= -f2 || true)
+          apk_seconds=$(grep -oE '^APK_SECONDS=[0-9]+' stock-boot.out | tail -1 | cut -d= -f2 || true)
+
+          case "$boot_exit" in
+            0)
+              {
+                echo "**Empty-password root login WORKS on a stock image.**"
+                echo
+                echo "SSH port reachable after ${port_up_seconds:-unknown} seconds."
+                echo "Empty-password login usable after ${boot_seconds:-unknown} seconds total."
+                echo "apk update && apk add kmod-wireguard wireguard-tools took ${apk_seconds:-unknown} seconds and SUCCEEDED."
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            2)
+              echo "**FAILING: the slirp 192.168.1.0/24 networking candidate never reached the guest (SSH port never opened).**" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            3)
+              echo "**FAILING: empty-password root login on a stock image DOES NOT WORK. This disproves the stock-image approach's load-bearing assumption.**" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            4)
+              echo "**FAILING: SSH login worked but apk update/apk add kmod-wireguard wireguard-tools failed inside the guest.**" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "**FAILING: stock boot script exited ${boot_exit} for an unrecognized reason.**" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+          {
+            echo "PORT_UP_SECONDS=${port_up_seconds:-0}"
+            echo "STOCK_BOOT_SECONDS=${boot_seconds:-0}"
+            echo "STOCK_APK_SECONDS=${apk_seconds:-0}"
+          } >> "$GITHUB_ENV"
+
+          if [ "$boot_exit" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Report timing comparison against the ImageBuilder path
+        env:
+          IB_DOWNLOAD_SECONDS: ${{ needs.probe-imagebuilder.outputs.download_seconds }}
+          IB_EXTRACT_SECONDS: ${{ needs.probe-imagebuilder.outputs.extract_seconds }}
+          IB_MAKE_IMAGE_SECONDS: ${{ needs.probe-imagebuilder.outputs.make_image_seconds }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Timing comparison: stock-image path vs ImageBuilder path"
+            echo
+            stock_total=$(( STOCK_DOWNLOAD_SECONDS + STOCK_DECOMPRESS_SECONDS + STOCK_BOOT_SECONDS + STOCK_APK_SECONDS ))
+            ib_total=$(( IB_DOWNLOAD_SECONDS + IB_EXTRACT_SECONDS + IB_MAKE_IMAGE_SECONDS ))
+
+            echo "| Step | Stock-image path (seconds) | ImageBuilder path (seconds) |"
+            echo "|---|---|---|"
+            echo "| Download | ${STOCK_DOWNLOAD_SECONDS} | ${IB_DOWNLOAD_SECONDS} |"
+            echo "| Decompress / extract | ${STOCK_DECOMPRESS_SECONDS} | ${IB_EXTRACT_SECONDS} |"
+            echo "| Boot to controllable login | ${STOCK_BOOT_SECONDS} | n/a (make image instead) |"
+            echo "| make image | n/a (no build) | ${IB_MAKE_IMAGE_SECONDS} |"
+            echo "| apk add kmod-wireguard wireguard-tools | ${STOCK_APK_SECONDS} | 0 (baked in by make image) |"
+            echo "| **Total: nothing to WireGuard-capable guest** | **${stock_total}** | **${ib_total}** |"
+            echo
+            if [ "$stock_total" -lt "$ib_total" ]; then
+              echo "The stock-image path measured faster end to end on this run" \
+                " (${stock_total}s vs ${ib_total}s)."
+            else
+              echo "The ImageBuilder path measured faster or equal end to end on" \
+                " this run (${ib_total}s vs ${stock_total}s)."
+            fi
+            echo
+            echo "This is one run's numbers, not a trend line. The bigger"
+            echo "difference is qualitative: the stock-image path relies on"
+            echo "an empty-password SSH login and a non-standard slirp subnet,"
+            echo "both proven or disproven above, while the ImageBuilder path"
+            echo "relies on offline file injection this workflow already"
+            echo "proved works in probe-boot-ssh."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Same rationale as the boot-ssh job's log upload: a hung or failed
+      # boot leaves its only evidence in this log.
+      - name: Upload the stock-image boot log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: probe-stock-ssh-logs
+          path: boot-stock.log
           retention-days: 3
           if-no-files-found: warn
