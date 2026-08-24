@@ -91,15 +91,38 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # This is the standard rule GitHub-hosted-runner guides use to make
-      # /dev/kvm usable by the unprivileged runner user. It is a candidate
-      # for extraction into .github/actions/enable-kvm.
-      - name: Install enable-KVM udev rule
+      # /dev/kvm usable by the unprivileged runner user. `udevadm trigger`
+      # only asks udev to re-evaluate the rule. It returns before udev has
+      # finished applying it, so a read-write check right after it races
+      # the rule and can lose. `udevadm settle` waits for udev's queue to
+      # drain, but that alone is not a guarantee on every runner, so this
+      # step also polls the device mode directly with a bounded timeout.
+      #
+      # This block is self-contained on purpose. It is the destination
+      # for .github/actions/enable-kvm/action.yml once it gets extracted,
+      # so it must lift out verbatim, as a move and not a rewrite.
+      - name: Install enable-KVM udev rule and wait for it to apply
         run: |
           set -euo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle --timeout=30 || true
+
+          timeout_seconds=30
+          start_time=$(date +%s)
+          while [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; do
+            waited=$(( $(date +%s) - start_time ))
+            if [ "$waited" -ge "$timeout_seconds" ]; then
+              echo "/dev/kvm did not become read-write within ${timeout_seconds}s. Failing." \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            sleep 0.5
+          done
+          waited=$(( $(date +%s) - start_time ))
+          echo "/dev/kvm became read-write after ${waited}s." | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Report /dev/kvm after the udev rule
         run: |
@@ -481,6 +504,17 @@ jobs:
       # each one starts with /dev/kvm at mode 660. This block and the
       # one in the `probe` job are the same extraction candidate noted
       # at the top of this file.
+      #
+      # `udevadm trigger` only asks udev to re-evaluate the rule. It
+      # returns before udev has finished applying it, so a read-write
+      # check right after it races the rule and can lose. `udevadm
+      # settle` waits for udev's queue to drain, but that alone is not a
+      # guarantee on every runner, so this step also polls the device
+      # mode directly with a bounded timeout.
+      #
+      # This block is self-contained on purpose. It is the destination
+      # for .github/actions/enable-kvm/action.yml once it gets extracted,
+      # so it must lift out verbatim, as a move and not a rewrite.
       - name: Enable /dev/kvm for the runner user
         run: |
           set -euo pipefail
@@ -488,10 +522,21 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
-            echo "/dev/kvm is not read-write for the runner user. Failing." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          sudo udevadm settle --timeout=30 || true
+
+          timeout_seconds=30
+          start_time=$(date +%s)
+          while [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; do
+            waited=$(( $(date +%s) - start_time ))
+            if [ "$waited" -ge "$timeout_seconds" ]; then
+              echo "/dev/kvm did not become read-write within ${timeout_seconds}s. Failing." \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            sleep 0.5
+          done
+          waited=$(( $(date +%s) - start_time ))
+          echo "/dev/kvm became read-write after ${waited}s." | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install qemu-system-x86_64 and helpers
         run: |
@@ -913,6 +958,17 @@ jobs:
       # Same rule as the other two jobs. Duplicated for the same reason:
       # each job gets its own fresh runner. Extraction candidate, same
       # as noted at the top of this file.
+      #
+      # `udevadm trigger` only asks udev to re-evaluate the rule. It
+      # returns before udev has finished applying it, so a read-write
+      # check right after it races the rule and can lose. `udevadm
+      # settle` waits for udev's queue to drain, but that alone is not a
+      # guarantee on every runner, so this step also polls the device
+      # mode directly with a bounded timeout.
+      #
+      # This block is self-contained on purpose. It is the destination
+      # for .github/actions/enable-kvm/action.yml once it gets extracted,
+      # so it must lift out verbatim, as a move and not a rewrite.
       - name: Enable /dev/kvm for the runner user
         run: |
           set -euo pipefail
@@ -920,10 +976,21 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
-            echo "/dev/kvm is not read-write for the runner user. Failing." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          sudo udevadm settle --timeout=30 || true
+
+          timeout_seconds=30
+          start_time=$(date +%s)
+          while [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; do
+            waited=$(( $(date +%s) - start_time ))
+            if [ "$waited" -ge "$timeout_seconds" ]; then
+              echo "/dev/kvm did not become read-write within ${timeout_seconds}s. Failing." \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            sleep 0.5
+          done
+          waited=$(( $(date +%s) - start_time ))
+          echo "/dev/kvm became read-write after ${waited}s." | tee -a "$GITHUB_STEP_SUMMARY"
 
       # sshpass feeds the empty password non-interactively. Without it,
       # ssh has no way to answer dropbear's password prompt from a
