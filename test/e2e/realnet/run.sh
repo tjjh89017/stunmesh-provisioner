@@ -191,12 +191,41 @@ summary_line ""
 summary_line "| Proxy | HTTP status | Content-Type | Lines | Every line has a base64 \`data\` field |"
 summary_line "|---|---|---|---|---|"
 
-# fetch_and_measure PROXY -- GETs PUBLISHED_KEY from PROXY, retrying a
-# curl-level (connection) failure up to 3 times, and prints one summary
-# table row plus the raw body to the job log. Exits via fail_network on
-# a persistent connection failure, or fail_contract when the body does
-# not match the newline-delimited-JSON-with-base64-data shape
-# internal/dhtproxy's package doc describes.
+# fetch_and_measure PROXY -- GETs PUBLISHED_KEY from PROXY, up to 3
+# attempts with a 3s fixed backoff, and prints one summary table row
+# plus the raw body to the job log.
+#
+# All 3 attempts share one retry budget, whatever kind of "not a good
+# answer yet" the previous attempt hit: a connection failure, a
+# non-2xx status, or a 2xx with no usable value. 3 attempts and a 3s
+# sleep are not new numbers invented for this loop: they are the exact
+# numbers this same function already used for its connection-level
+# retry, and that preflight.sh (in this same directory) already uses
+# for its own reachability retries. Reusing them keeps one retry idiom
+# for the whole leg instead of a second, separately-justified one.
+#
+# Why a non-2xx or an empty 2xx gets retried at all: internal/dhtproxy's
+# package doc says a 404, a 5xx, and a connection error are all
+# treated the same way when reading a key -- none of them is trusted as
+# the final answer, because Put can partially fail and a later proxy
+# (or a later moment, here, against the same proxy) may still have the
+# value. preflight.sh's header makes the same point for a single 5xx:
+# "still proves the host is up". publish --once already succeeded
+# before this function ever runs, which only happens once both
+# proxies accepted the value -- so a non-2xx or empty GET right after
+# is far more likely to be replication lag than a real defect.
+#
+# What turns a retry into a real finding: the SAME bad answer 3 times
+# in a row, 6 seconds apart, right after our own publish to this same
+# proxy succeeded. preflight.sh already ruled out "proxy is down"
+# moments earlier, and a value that still is not visible 6+ seconds
+# after a successful PUT to the very host being asked is not the kind
+# of transient blip the production client was built to shrug off --
+# it is a mismatch between what we assume the proxy does and what it
+# actually does, so it is reported via fail_contract, not
+# fail_network. A connection failure on all 3 attempts, by contrast,
+# never got an answer to judge at all -- that stays fail_network,
+# unchanged from before.
 fetch_and_measure() {
 	local proxy="$1" attempt headers body status content_type lines shape_ok line data_field decoded_len
 
@@ -204,47 +233,68 @@ fetch_and_measure() {
 	body="${WORK}/body-$(basename "$proxy")"
 
 	for attempt in 1 2 3; do
-		if status=$(curl -sS -D "$headers" -o "$body" -w '%{http_code}' -m 20 "${proxy}/${PUBLISHED_KEY}" 2>"${WORK}/curl-err"); then
-			break
+		if ! status=$(curl -sS -D "$headers" -o "$body" -w '%{http_code}' -m 20 "${proxy}/${PUBLISHED_KEY}" 2>"${WORK}/curl-err"); then
+			if [[ "$attempt" == 3 ]]; then
+				fail_network "GET ${proxy}/<key> did not connect after 3 attempts: $(cat "${WORK}/curl-err")"
+			fi
+			log "GET ${proxy}: attempt ${attempt}/3 did not connect, retrying in 3s..."
+			sleep 3
+			continue
 		fi
-		if [[ "$attempt" == 3 ]]; then
-			fail_network "GET ${proxy}/<key> did not connect after 3 attempts: $(cat "${WORK}/curl-err")"
+
+		content_type=$(grep -i '^content-type:' "$headers" | head -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//')
+		lines=$(grep -c . "$body" || true)
+
+		log "GET ${proxy}/${PUBLISHED_KEY} -> HTTP ${status}, Content-Type: ${content_type:-<none>}, ${lines} line(s) (attempt ${attempt}/3)"
+		log "Raw body from ${proxy}:"
+		log "$(cat "$body")"
+
+		if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+			if [[ "$attempt" == 3 ]]; then
+				fail_contract "GET ${proxy}/<key> returned HTTP ${status} on all 3 attempts (3s apart) right after a successful publish. internal/dhtproxy treats a single non-2xx as transient and moves on, but the same non-2xx 3 times in a row this soon after our own publish succeeded to this same proxy is not that -- it is a real mismatch between what we assume the proxy does and what it actually did."
+			fi
+			log "GET ${proxy}: attempt ${attempt}/3 returned HTTP ${status}, retrying in 3s (a single non-2xx is treated as transient, same as internal/dhtproxy does)..."
+			sleep 3
+			continue
 		fi
-		log "GET ${proxy}: attempt ${attempt}/3 did not connect, retrying in 3s..."
-		sleep 3
+
+		# A 2xx with no non-blank lines is an empty body: no values at
+		# all for a key this run just published. That is a real,
+		# distinct failure from a malformed line (checked below), so it
+		# is detected before the line loop instead of being silently
+		# skipped by a loop that never runs.
+		if [[ "$lines" == 0 ]]; then
+			shape_ok="no (2xx with an empty body -- no values for a key this run just published)"
+		else
+			shape_ok="yes"
+			while IFS= read -r line; do
+				[[ -z "$line" ]] && continue
+				data_field=$(echo "$line" | grep -oE '"data" *: *"[A-Za-z0-9+/=]*"' | sed -E 's/.*"([A-Za-z0-9+\/=]*)"$/\1/')
+				if [[ -z "$data_field" ]]; then
+					shape_ok="no (line has no base64 \`data\` field)"
+					break
+				fi
+				if ! decoded_len=$(printf '%s' "$data_field" | base64 -d 2>/dev/null | wc -c); then
+					shape_ok="no (\`data\` field does not decode as base64)"
+					break
+				fi
+				log "  line data field: ${#data_field} base64 chars, decodes to ${decoded_len} bytes"
+			done <"$body"
+		fi
+
+		if [[ "$shape_ok" != "yes" ]]; then
+			if [[ "$attempt" == 3 ]]; then
+				summary_line "| ${proxy} | ${status} | ${content_type:-<none>} | ${lines} | ${shape_ok} |"
+				fail_contract "${proxy}/<key>'s response does not match internal/dhtproxy's assumed shape on all 3 attempts (3s apart): ${shape_ok}. A shape mismatch this soon after our own publish succeeded to this same proxy, and repeated 3 times, is not replication lag -- it is a real mismatch between what internal/dhtproxy assumes and what the proxy actually returned."
+			fi
+			log "GET ${proxy}: attempt ${attempt}/3 got HTTP ${status} but ${shape_ok}, retrying in 3s (could still be replication lag right after publish)..."
+			sleep 3
+			continue
+		fi
+
+		summary_line "| ${proxy} | ${status} | ${content_type:-<none>} | ${lines} | ${shape_ok} |"
+		return 0
 	done
-
-	content_type=$(grep -i '^content-type:' "$headers" | head -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//')
-	lines=$(grep -c . "$body" || true)
-
-	log "GET ${proxy}/${PUBLISHED_KEY} -> HTTP ${status}, Content-Type: ${content_type:-<none>}, ${lines} line(s)"
-	log "Raw body from ${proxy}:"
-	log "$(cat "$body")"
-
-	if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
-		fail_contract "GET ${proxy}/<key> returned HTTP ${status} right after a successful publish; internal/dhtproxy expects 2xx for a key that was just PUT."
-	fi
-
-	shape_ok="yes"
-	while IFS= read -r line; do
-		[[ -z "$line" ]] && continue
-		data_field=$(echo "$line" | grep -oE '"data" *: *"[A-Za-z0-9+/=]*"' | sed -E 's/.*"([A-Za-z0-9+\/=]*)"$/\1/')
-		if [[ -z "$data_field" ]]; then
-			shape_ok="no (line has no base64 \`data\` field)"
-			break
-		fi
-		if ! decoded_len=$(printf '%s' "$data_field" | base64 -d 2>/dev/null | wc -c); then
-			shape_ok="no (\`data\` field does not decode as base64)"
-			break
-		fi
-		log "  line data field: ${#data_field} base64 chars, decodes to ${decoded_len} bytes"
-	done <"$body"
-
-	summary_line "| ${proxy} | ${status} | ${content_type:-<none>} | ${lines} | ${shape_ok} |"
-
-	if [[ "$shape_ok" != "yes" ]]; then
-		fail_contract "${proxy}/<key>'s response does not match internal/dhtproxy's assumed shape: ${shape_ok}."
-	fi
 }
 
 fetch_and_measure "$PROXY2"
