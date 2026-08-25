@@ -24,9 +24,9 @@ runs:
     # drain, but that alone is not a guarantee on every runner, so this
     # step also polls the device mode directly with a bounded timeout.
     #
-    # Lifted verbatim from .github/workflows/probe.yml, which measured it
-    # on a real GitHub-hosted runner. probe.yml still carries its own
-    # copy of this step; it is not yet refactored to call this action.
+    # This wait was measured as necessary on a real GitHub-hosted runner:
+    # without it, the read-write check below races the udev rule and can
+    # lose.
     - name: Install enable-KVM udev rule and wait for it to apply
       shell: bash
       run: |

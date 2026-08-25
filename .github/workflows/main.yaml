@@ -9,11 +9,10 @@
 #
 # Chain: check -> build (matrix) -> build-required -> e2e -> e2e-realnet ->
 # E2E (e2e-required below, the single check branch protection names).
-# e2e runs on every push and pull_request, not workflow_dispatch-only like
-# probe.yml: probe.yml is exploratory and only ever burns minutes on demand,
-# while a required check that only runs on manual dispatch never blocks a
-# merge. That trade costs real runner minutes on every push, but it is the
-# one this job exists to make.
+# e2e runs on every push and pull_request, not workflow_dispatch-only: a
+# required check that only runs on manual dispatch never blocks a merge.
+# That trade costs real runner minutes on every push, but it is the one
+# this job exists to make.
 
 name: CI
 

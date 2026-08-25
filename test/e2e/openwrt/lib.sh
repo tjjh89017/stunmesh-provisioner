@@ -4,9 +4,9 @@
 # Sourced by run.sh. Every function here does one proven step: resolve the
 # release, download and verify the ImageBuilder, build the image, inject
 # files by loop-mounting the rootfs, boot QEMU under KVM, wait for SSH, and
-# run a command in the guest. The mechanics are lifted verbatim from
-# .github/workflows/probe.yml, which measured them on a real GitHub-hosted
-# runner -- nothing here is re-derived or re-measured.
+# run a command in the guest. These mechanics were measured on a real
+# GitHub-hosted runner before this harness existed -- nothing here is
+# re-derived or re-measured.
 #
 # -accel kvm is hardcoded in boot_guest and never falls back to TCG. A TCG
 # boot is slow enough to hide the timing-sensitive uci/ubus/netifd bugs this
@@ -68,12 +68,11 @@ need_cmd_root() {
 # user by the time it returns. It never falls back to TCG: if this function
 # does not return cleanly, the run stops here rather than booting slow.
 #
-# The udev rule and the poll loop are the exact steps
-# .github/workflows/probe.yml proved necessary: `udevadm trigger` returns
-# before udev finishes applying the rule, so a check right after it races the
-# rule and can lose. `udevadm settle` waits for udev's queue to drain, which
-# helps but is not a guarantee on every host, so this also polls the device
-# mode directly with a bounded timeout.
+# The udev rule and the poll loop are necessary because `udevadm trigger`
+# returns before udev finishes applying the rule, so a check right after it
+# races the rule and can lose. `udevadm settle` waits for udev's queue to
+# drain, which helps but is not a guarantee on every host, so this also
+# polls the device mode directly with a bounded timeout.
 ensure_kvm_available() {
 	if [[ -e /dev/kvm && -r /dev/kvm && -w /dev/kvm ]]; then
 		log "/dev/kvm is present and read-write."

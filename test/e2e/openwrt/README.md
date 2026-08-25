@@ -266,6 +266,16 @@ single function in isolation:
   ambiguous. `inject_guest_files` mounts every ext4 candidate read-only
   and keeps the first one with `/etc/openwrt_release` or an executable
   `/sbin/init`.
+- **This harness builds a custom image with the ImageBuilder and
+  injects files offline, instead of booting a stock image and
+  provisioning it over SSH.** A stock image was measured as a working
+  alternative -- empty-password root login and `apk add
+  kmod-wireguard wireguard-tools` both succeed -- but it depends on a
+  non-standard slirp subnet and an empty-password login that a real
+  OpenWrt user would not run with. The ImageBuilder path relies only
+  on offline file injection, which this harness already needs for
+  `inject_guest_files`, so it carries no extra load-bearing assumption
+  of its own.
 - **`/dev/kvm` needs a bounded wait after the udev rule, not a
   one-shot check.** `udevadm trigger` returns before udev has finished
   applying the rule; `udevadm settle` helps but is not a guarantee on
