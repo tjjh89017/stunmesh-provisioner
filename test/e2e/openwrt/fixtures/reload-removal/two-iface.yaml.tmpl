@@ -1,0 +1,31 @@
+# two-iface.yaml.tmpl -- template for phases/phase-diff-removal.sh's
+# "both interfaces up" and "only wg1's peer changed" bundles.
+#
+# phases/phase-diff-removal.sh renders this twice: once with
+# @WG1_PEER_PUBLIC_KEY@ set to a first peer key (the baseline, both
+# interfaces up) and once with a second, different peer key (only wg1
+# changed). @WG0_PRIVATE_KEY@ and @WG0_PEER_PUBLIC_KEY@ get the same
+# value both times, so wg0's content is byte-for-byte identical across
+# the two renders -- the whole point of the check is to see what
+# `network reload` does to wg0 when nothing about wg0 itself changed.
+#
+# No real key material is committed here on purpose; see
+# fixtures/basic-wg0/wg.yaml.tmpl for why.
+wg0:
+  private_key: @WG0_PRIVATE_KEY@
+  addresses:
+    - 10.90.0.1/24
+  peers:
+    peer0:
+      public_key: @WG0_PEER_PUBLIC_KEY@
+      allowed_ips:
+        - 10.90.0.2/32
+wg1:
+  private_key: @WG1_PRIVATE_KEY@
+  addresses:
+    - 10.91.0.1/24
+  peers:
+    peer1:
+      public_key: @WG1_PEER_PUBLIC_KEY@
+      allowed_ips:
+        - 10.91.0.2/32

@@ -1,0 +1,18 @@
+# wg0-only.yaml.tmpl -- template for phases/phase-diff-removal.sh's
+# "wg1 removed" bundle. @WG0_PRIVATE_KEY@ and @WG0_PEER_PUBLIC_KEY@ get
+# the exact same values the two-iface.yaml.tmpl renders used, so wg0's
+# content stays byte-for-byte identical across this step too: the
+# check is whether removing wg1 disturbs wg0, not whether wg0 itself
+# changed.
+#
+# No real key material is committed here on purpose; see
+# fixtures/basic-wg0/wg.yaml.tmpl for why.
+wg0:
+  private_key: @WG0_PRIVATE_KEY@
+  addresses:
+    - 10.90.0.1/24
+  peers:
+    peer0:
+      public_key: @WG0_PEER_PUBLIC_KEY@
+      allowed_ips:
+        - 10.90.0.2/32
