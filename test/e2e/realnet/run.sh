@@ -70,22 +70,34 @@ summary_line() {
 	fi
 }
 
-# fail_contract MESSAGE -- the run got a real answer from a proxy, and
-# that answer (or the real agent's handling of it) did not match what
-# internal/dhtproxy or docs/format.md assumes. This is the case
-# preflight.sh already ruled out an outage for: it is OUR bug to fix,
-# not a reason to re-run. The "CONTRACT VIOLATION" tag in both the
+# fail_contract MESSAGE [GUIDANCE] -- the run got a real answer from a
+# proxy, and that answer (or the real agent's handling of it) did not
+# match what internal/dhtproxy or docs/format.md assumes. This is the
+# case preflight.sh already ruled out an outage for: it is OUR bug to
+# fix, not a reason to re-run. The "CONTRACT VIOLATION" tag in both the
 # ::error:: annotation (visible on the run summary page without
 # opening any log) and the step summary is what lets a reader tell
 # this apart from fail_network below.
+#
+# GUIDANCE, when given, replaces the default "do not just re-run"
+# closing line. The retry loop in fetch_and_measure passes a softer
+# closing line when the proxy's answer CHANGED across its 3 attempts: a
+# heterogeneous sequence is evidence of a flapping proxy, not of a
+# deterministic mismatch, and the strong default would send a reader
+# hunting for a code bug that one re-run might disprove. Every uniform
+# sequence keeps the strong default.
 fail_contract() {
 	local msg="$1"
+	local guidance="${2:-}"
+	if [[ -z "$guidance" ]]; then
+		guidance="preflight.sh already confirmed both proxies were reachable moments before this ran. This is a mismatch between what stunmesh-provisioner's code assumes and what the real proxy actually did -- fix the code or the docs, do not just re-run."
+	fi
 	summary_line ""
 	summary_line "## e2e-realnet: CONTRACT VIOLATION"
 	summary_line ""
 	summary_line "$msg"
 	summary_line ""
-	summary_line "preflight.sh already confirmed both proxies were reachable moments before this ran. This is a mismatch between what stunmesh-provisioner's code assumes and what the real proxy actually did -- fix the code or the docs, do not just re-run."
+	summary_line "$guidance"
 	echo "::error::e2e-realnet: CONTRACT VIOLATION -- ${msg}"
 	exit 1
 }
@@ -191,6 +203,33 @@ summary_line ""
 summary_line "| Proxy | HTTP status | Content-Type | Lines | Every line has a base64 \`data\` field |"
 summary_line "|---|---|---|---|---|"
 
+# join_seq VALUE... -- joins per-attempt observations into one readable
+# sequence ("attempt 1: HTTP 500; attempt 2: HTTP 503; attempt 3: HTTP
+# 502") for a failure message. The failure messages below quote the
+# sequence actually observed instead of claiming the last attempt's
+# value held "on all 3 attempts" -- a claim this script never verified,
+# and one that would make a flapping proxy read as a reproducible,
+# deterministic defect. Semicolon-separated and attempt-numbered
+# because a shape verdict can itself contain commas.
+join_seq() {
+	local out="" v n=0
+	for v in "$@"; do
+		n=$((n + 1))
+		out+="${out:+; }attempt ${n}: ${v}"
+	done
+	printf '%s' "$out"
+}
+
+# all_same VALUE... -- succeeds when every observation is identical,
+# i.e. when "on all 3 attempts" is actually true and the strong
+# not-transient wording is earned.
+all_same() {
+	local first="$1" v
+	for v in "$@"; do
+		[[ "$v" == "$first" ]] || return 1
+	done
+}
+
 # fetch_and_measure PROXY -- GETs PUBLISHED_KEY from PROXY, up to 3
 # attempts with a 3s fixed backoff, and prints one summary table row
 # plus the raw body to the job log.
@@ -215,27 +254,43 @@ summary_line "|---|---|---|---|---|"
 # proxies accepted the value -- so a non-2xx or empty GET right after
 # is far more likely to be replication lag than a real defect.
 #
-# What turns a retry into a real finding: the SAME bad answer 3 times
-# in a row, 6 seconds apart, right after our own publish to this same
-# proxy succeeded. preflight.sh already ruled out "proxy is down"
-# moments earlier, and a value that still is not visible 6+ seconds
-# after a successful PUT to the very host being asked is not the kind
-# of transient blip the production client was built to shrug off --
-# it is a mismatch between what we assume the proxy does and what it
-# actually does, so it is reported via fail_contract, not
-# fail_network. A connection failure on all 3 attempts, by contrast,
-# never got an answer to judge at all -- that stays fail_network,
-# unchanged from before.
+# What turns a retry into a real finding: a bad answer 3 times in a
+# row, 6 seconds apart, right after our own publish to this same proxy
+# succeeded. preflight.sh already ruled out "proxy is down" moments
+# earlier, and a value that still is not visible 6+ seconds after a
+# successful PUT to the very host being asked is not the kind of
+# transient blip the production client was built to shrug off -- it is
+# reported via fail_contract, not fail_network. A last-attempt
+# connection failure, by contrast, never got an answer to judge at all
+# -- that stays fail_network, unchanged from before.
+#
+# The failure message reports the sequence of per-attempt observations
+# actually recorded (see `observed` below), never a blanket "on all 3
+# attempts" inferred from the last attempt alone. When the 3
+# observations are identical the message keeps the strong "this is
+# not transient, do not just re-run" guidance; when they differ, the
+# closing guidance is softened, because a proxy that answers 500, then
+# 503, then 502 is flapping, and one re-run to check reproducibility
+# is cheaper than hunting for a deterministic bug that may not exist.
 fetch_and_measure() {
 	local proxy="$1" attempt headers body status content_type lines shape_ok line data_field decoded_len
+	# One entry per attempt, recording what that attempt actually
+	# observed ("no connection", "HTTP 503", "HTTP 200, shape no
+	# (...)"). The attempt-3 failure messages report this real sequence.
+	local -a observed=()
 
 	headers="${WORK}/headers-$(basename "$proxy")"
 	body="${WORK}/body-$(basename "$proxy")"
 
 	for attempt in 1 2 3; do
 		if ! status=$(curl -sS -D "$headers" -o "$body" -w '%{http_code}' -m 20 "${proxy}/${PUBLISHED_KEY}" 2>"${WORK}/curl-err"); then
+			observed+=("no connection")
 			if [[ "$attempt" == 3 ]]; then
-				fail_network "GET ${proxy}/<key> did not connect after 3 attempts: $(cat "${WORK}/curl-err")"
+				if all_same "${observed[@]}"; then
+					fail_network "GET ${proxy}/<key> did not connect on any of the 3 attempts (3s apart): $(cat "${WORK}/curl-err")"
+				else
+					fail_network "GET ${proxy}/<key> never completed: the 3 attempts (3s apart) observed $(join_seq "${observed[@]}"), and the last attempt did not connect: $(cat "${WORK}/curl-err")"
+				fi
 			fi
 			log "GET ${proxy}: attempt ${attempt}/3 did not connect, retrying in 3s..."
 			sleep 3
@@ -250,8 +305,14 @@ fetch_and_measure() {
 		log "$(cat "$body")"
 
 		if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+			observed+=("HTTP ${status}")
 			if [[ "$attempt" == 3 ]]; then
-				fail_contract "GET ${proxy}/<key> returned HTTP ${status} on all 3 attempts (3s apart) right after a successful publish. internal/dhtproxy treats a single non-2xx as transient and moves on, but the same non-2xx 3 times in a row this soon after our own publish succeeded to this same proxy is not that -- it is a real mismatch between what we assume the proxy does and what it actually did."
+				if all_same "${observed[@]}"; then
+					fail_contract "GET ${proxy}/<key> returned HTTP ${status} on all 3 attempts (3s apart) right after a successful publish. internal/dhtproxy treats a single non-2xx as transient and moves on, but the same non-2xx 3 times in a row this soon after our own publish succeeded to this same proxy is not that -- it is a real mismatch between what we assume the proxy does and what it actually did."
+				else
+					fail_contract "GET ${proxy}/<key> never returned a usable answer right after a successful publish: the 3 attempts (3s apart) observed $(join_seq "${observed[@]}"). internal/dhtproxy treats a single bad answer as transient and moves on; 3 in a row this soon after our own publish succeeded to this same proxy exceeds that tolerance, which is why this is reported instead of retried forever." \
+						"preflight.sh already confirmed both proxies were reachable moments before this ran, but the answer CHANGED between attempts -- a heterogeneous sequence is evidence of a flapping proxy, not of a deterministic mismatch. One re-run to check reproducibility is reasonable here; if it fails again, treat it as a mismatch between what stunmesh-provisioner's code assumes and what the real proxy actually does, and fix the code or the docs rather than re-running further."
+				fi
 			fi
 			log "GET ${proxy}: attempt ${attempt}/3 returned HTTP ${status}, retrying in 3s (a single non-2xx is treated as transient, same as internal/dhtproxy does)..."
 			sleep 3
@@ -283,9 +344,15 @@ fetch_and_measure() {
 		fi
 
 		if [[ "$shape_ok" != "yes" ]]; then
+			observed+=("HTTP ${status}, shape ${shape_ok}")
 			if [[ "$attempt" == 3 ]]; then
 				summary_line "| ${proxy} | ${status} | ${content_type:-<none>} | ${lines} | ${shape_ok} |"
-				fail_contract "${proxy}/<key>'s response does not match internal/dhtproxy's assumed shape on all 3 attempts (3s apart): ${shape_ok}. A shape mismatch this soon after our own publish succeeded to this same proxy, and repeated 3 times, is not replication lag -- it is a real mismatch between what internal/dhtproxy assumes and what the proxy actually returned."
+				if all_same "${observed[@]}"; then
+					fail_contract "${proxy}/<key>'s response does not match internal/dhtproxy's assumed shape on all 3 attempts (3s apart): ${shape_ok}. A shape mismatch this soon after our own publish succeeded to this same proxy, and repeated identically 3 times, is not replication lag -- it is a real mismatch between what internal/dhtproxy assumes and what the proxy actually returned."
+				else
+					fail_contract "${proxy}/<key> never returned the shape internal/dhtproxy assumes right after a successful publish: the 3 attempts (3s apart) observed $(join_seq "${observed[@]}"). 3 unusable answers in a row this soon after our own publish succeeded to this same proxy is beyond the single-blip replication lag the retry budget allows for, which is why this is reported instead of retried forever." \
+						"preflight.sh already confirmed both proxies were reachable moments before this ran, but the answer CHANGED between attempts -- a heterogeneous sequence is evidence of a flapping proxy, not of a deterministic mismatch. One re-run to check reproducibility is reasonable here; if it fails again, treat it as a mismatch between what stunmesh-provisioner's code assumes and what the real proxy actually does, and fix the code or the docs rather than re-running further."
+				fi
 			fi
 			log "GET ${proxy}: attempt ${attempt}/3 got HTTP ${status} but ${shape_ok}, retrying in 3s (could still be replication lag right after publish)..."
 			sleep 3
