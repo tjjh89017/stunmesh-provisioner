@@ -11,7 +11,7 @@
 #   v1  wg0 + wg1, both up (baseline).
 #   v2  wg0 byte-identical to v1; wg1's peer public key changed, and
 #       nothing else about wg1. This is the exact case PLAN.md 6
-#       flags: "Assumption: network reload also restarts a WireGuard
+#       flagged: "Assumption: network reload also restarts a WireGuard
 #       interface when only its wireguard_<iface> peer sections
 #       changed." The apply procedure itself still deletes and
 #       recreates the whole wg1 *section* (PLAN.md 6's change table:
@@ -19,10 +19,15 @@
 #       create all sections again"), but wg1's own option values
 #       (private_key, addresses) come out byte-identical to v1's --
 #       only the wireguard_wg1 peer section's content actually
-#       differs. Whether netifd's `ubus call network reload` notices
-#       that and reconfigures the running kernel interface is a real
-#       netifd question this phase answers by reading `wg show wg1`
-#       after a plain reload, with no explicit `ifup`.
+#       differs. This phase is what found the assumption false: a
+#       plain `ubus call network reload` did not push the new peer
+#       into the running kernel interface. That finding sent
+#       fetch_apply.go's applyDiff an explicit "ifup <iface>" step for
+#       every new or changed interface, run right after the reload
+#       (see ifupChangedInterfaces). v2's checks below read
+#       `wg show wg1` after a fetch that runs both steps, confirming
+#       the full apply pipeline -- reload, then ifup -- delivers wg1's
+#       new peer and drops its old one.
 #   v3  wg1 removed from the bundle; wg0 unchanged. Checks that
 #       `network reload` actually tears the kernel interface down
 #       (not just the UCI section), and that wg0 is not touched at
@@ -136,18 +141,21 @@ phase_diff_removal() {
 	assert_ssh_exit_code "v2: fetch applies wg1's changed peer (exit 0)" "$fetch_cmd" 0
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 
-	# Check 1 (PLAN.md 6's open assumption, stage5 checklist item 8):
-	# does a plain "ubus call network reload" -- with no explicit
-	# "ifup wg1" -- actually make the kernel pick up wg1's new peer?
-	# This is read straight off wg show, not inferred from exit codes:
-	# fetch_apply.go always calls network reload and always exits 0
-	# from that call regardless of what netifd/wg actually did with
-	# it (PLAN.md 6 step 5 has no wg-side check built in), so a
-	# passing "exit 0" above is not, by itself, evidence that the
-	# reload had any real effect on wg1's peer.
-	assert_ssh_output_contains "check 1: network reload alone applies wg1's new peer to the kernel" \
+	# Check 1 (stage5 checklist item 8, PLAN.md 6): does the apply
+	# pipeline -- "ubus call network reload" followed by an explicit
+	# "ifup wg1" (fetch_apply.go's applyDiff step 4,
+	# ifupChangedInterfaces) -- make the kernel pick up wg1's new
+	# peer? The SSH command above runs "stunmesh-agent fetch" once,
+	# which always performs both steps together; it cannot isolate the
+	# reload from the ifup that follows it. This is read straight off
+	# wg show, not inferred from exit codes: fetch_apply.go's reload
+	# call always exits 0 regardless of what netifd/wg actually did
+	# with it (PLAN.md 6 step 5 has no wg-side check built in), so a
+	# passing "exit 0" above is not, by itself, evidence that either
+	# step had a real effect on wg1's peer.
+	assert_ssh_output_contains "check 1: apply (reload + ifup) applies wg1's new peer to the kernel" \
 		"wg show wg1" "$diff_removal_wg1_peer_b_pubkey"
-	assert_ssh_ok "check 1: network reload alone drops wg1's old peer from the kernel" \
+	assert_ssh_ok "check 1: apply (reload + ifup) drops wg1's old peer from the kernel" \
 		"! wg show wg1 | grep -q '${diff_removal_wg1_peer_a_pubkey}'"
 
 	# Check 3 (stage5 checklist item 13): wg0's kernel netdev must be
