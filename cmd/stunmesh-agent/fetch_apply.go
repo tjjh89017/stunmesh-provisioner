@@ -40,12 +40,16 @@ func runnerFor(env *Env) execx.Runner {
 //     order).
 //  2. "uci commit network", once.
 //  3. "ubus call network reload".
-//  4. Write cfg.StunmeshConfigPath (mode 0600), or delete it when the
+//  4. "ifup <iface>" for every new or changed interface, in
+//     diff.Interfaces order. No removed interface gets one; see
+//     ifupChangedInterfaces's doc comment for why step 3 alone is not
+//     enough here, and why a removed interface needs nothing more.
+//  5. Write cfg.StunmeshConfigPath (mode 0600), or delete it when the
 //     new stunmesh text is empty.
-//  5. "/etc/init.d/stunmesh reload" when the stunmesh text or any
+//  6. "/etc/init.d/stunmesh reload" when the stunmesh text or any
 //     interface changed; "/etc/init.d/stunmesh stop" instead, when the
 //     new stunmesh text is empty.
-//  6. Write cfg.LastPath (mode 0600, last.Write), only when every step
+//  7. Write cfg.LastPath (mode 0600, last.Write), only when every step
 //     above succeeded.
 //
 // applyDiff stops at the first failing step and returns ExitError. It
@@ -76,7 +80,7 @@ func runnerFor(env *Env) execx.Runner {
 // Once "uci commit network" succeeds, UCI already reflects the new
 // state; there is nothing staged left to revert, and applyDiff does
 // not call revert again after that point. A failure in a later step
-// (network reload, the stunmesh config file, or
+// (network reload, ifup, the stunmesh config file, or
 // /etc/init.d/stunmesh) leaves UCI committed to the new state but
 // last.json still describing the old one. The next fetch recomputes
 // the same diff against that stale last.json and retries step 1's
@@ -150,6 +154,11 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 
 	if _, err := runner.Run("ubus", "call", "network", "reload"); err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: network reload: %v\n", err)
+		return ExitError
+	}
+
+	if err := ifupChangedInterfaces(runner, diff); err != nil {
+		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: ifup: %v\n", err)
 		return ExitError
 	}
 
@@ -326,6 +335,58 @@ func runUCIBatch(runner execx.Runner, batch uci.Batch) error {
 	for _, cmd := range batch {
 		if _, err := runner.Run("uci", cmd.Args...); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// ifupChangedInterfaces runs step 4 of the apply procedure (see
+// applyDiff's doc comment "Steps"): "ifup <iface>" for every
+// interface in diff.Interfaces whose Change is InterfaceNew or
+// InterfaceChanged, in diff.Interfaces order. It runs after "ubus
+// call network reload" already ran (step 3).
+//
+// PLAN.md 6 flagged this as an open assumption: "network reload also
+// restarts a WireGuard interface when only its wireguard_<iface> peer
+// sections changed. ... If it is false, add ifup <iface> for each
+// changed interface." The e2e harness measured it on a real OpenWrt
+// guest and found the assumption false: after a fetch that changed
+// only one peer of one interface, "uci commit network" and "ubus call
+// network reload" both succeeded, but "wg show" on the running kernel
+// interface still listed the old peer, never the new one. A plain
+// reload restages UCI; it does not, by itself, push a
+// wireguard_<iface> peer change into the kernel. An explicit "ifup
+// <iface>" for the affected interface is what makes netifd
+// reconfigure it for real.
+//
+// InterfaceRemoved gets no ifup. The same e2e measurement found the
+// opposite result for removal: "network reload" alone already tears a
+// removed interface's kernel netdev down, with no extra "ifup" or
+// "ifdown" needed. Adding one here would also be wrong on its own
+// terms: step 1 already deleted the interface's UCI section, so
+// "ifup" on that name has no config left to bring up. Do not add it
+// back; the asymmetry between "changed needs ifup" and "removed does
+// not" is the measured behavior, not an oversight.
+//
+// InterfaceUnchanged gets no ifup either: reload never touches an
+// unchanged interface, and there is nothing new to push into it.
+//
+// A failing "ifup" is fatal, the same as a failing reload immediately
+// before it: ifupChangedInterfaces returns the error, and applyDiff
+// stops and reports ExitError without writing last.json (see
+// applyDiff's doc comment "No revert after uci commit succeeds").
+// UCI is already committed to the new state by this point, so the
+// next fetch recomputes the same diff and retries the same "ifup"
+// call. Unlike step 1's "uci add_list", "ifup" on an interface that
+// is already up is a normal, idempotent netifd operation, not one
+// that needs a tolerant retry path of its own.
+func ifupChangedInterfaces(runner execx.Runner, diff *Diff) error {
+	for _, id := range diff.Interfaces {
+		if id.Change != InterfaceNew && id.Change != InterfaceChanged {
+			continue
+		}
+		if _, err := runner.Run("ifup", id.Name); err != nil {
+			return fmt.Errorf("ifup %s: %w", id.Name, err)
 		}
 	}
 	return nil

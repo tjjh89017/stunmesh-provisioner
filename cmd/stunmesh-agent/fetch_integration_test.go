@@ -183,6 +183,14 @@ func stunmeshCall(action string) execx.Call {
 	return execx.Call{Name: "/etc/init.d/stunmesh", Args: []string{action}}
 }
 
+// ifupCall builds the "ifup <iface>" call ifupChangedInterfaces
+// (fetch_apply.go) issues for a new or changed interface, after
+// reloadCall and before the stunmesh call. A removed interface gets
+// none (see ifupChangedInterfaces's doc comment).
+func ifupCall(iface string) execx.Call {
+	return execx.Call{Name: "ifup", Args: []string{iface}}
+}
+
 // switchableProxy is a real httptest.Server whose response body can
 // be changed between doFetch calls: each of the five scenarios below
 // serves a different sealed DHT value, without needing five separate
@@ -293,7 +301,10 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		want = append(want, uciCalls(uci.BuildInterface("wg0", wg0Iface))...)
 		want = append(want, uciClearListCalls(uci.ListOptions("wg1", wg1Iface))...)
 		want = append(want, uciCalls(uci.BuildInterface("wg1", wg1Iface))...)
-		want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
+		// Both wg0 and wg1 are InterfaceNew: ifupChangedInterfaces gives
+		// each an explicit "ifup", in diff.Interfaces order, after the
+		// reload.
+		want = append(want, commitCall, reloadCall, ifupCall("wg0"), ifupCall("wg1"), stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -402,8 +413,9 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		want = append(want, uciCalls(uci.BuildInterface("wg0", wg0IfaceV2))...)
 		// stunmesh text is unchanged (still stunmeshV1), but wg0 changed,
 		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
-		// stunmesh changed OR any interface changed).
-		want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
+		// stunmesh changed OR any interface changed). wg0 is
+		// InterfaceChanged, so it also gets an explicit "ifup".
+		want = append(want, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}

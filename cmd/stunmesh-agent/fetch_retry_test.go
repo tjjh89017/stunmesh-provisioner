@@ -344,7 +344,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 	newIface := testInterface(t, wg0)
 	want := uciClearListCalls(uci.ListOptions("wg0", newIface))
 	want = append(want, uciCalls(uci.BuildInterface("wg0", newIface))...)
-	want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
+	want = append(want, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
 	if !reflect.DeepEqual(calls2, want) {
 		t.Fatalf("run 2 (retry) Calls() =\n%+v\nwant\n%+v", calls2, want)
 	}

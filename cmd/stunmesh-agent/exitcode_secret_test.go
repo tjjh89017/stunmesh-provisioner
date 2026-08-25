@@ -373,11 +373,13 @@ func sentinels() []string {
 // the peer is exercised as part of the same batch below. bravo peer:
 // create, description, public_key, preshared_key, allowed_ips,
 // route_allowed_ips -- 6 more uci calls. Total 14 uci calls in
-// writeUCI, then "uci commit network" (index 14), then "ubus call
-// network reload" (index 15).
+// writeUCI, then "uci commit network" (index 14), "ubus call network
+// reload" (index 15), and "ifup wg0" (index 16, ifupChangedInterfaces:
+// wg0 is InterfaceNew).
 const (
 	sentinelCommitIndex = 14
 	sentinelReloadIndex = 15
+	sentinelIfupIndex   = 16
 )
 
 func TestApplyDiff_CommitFailureIsExitErrorNoLeak(t *testing.T) {
@@ -451,11 +453,45 @@ func TestApplyDiff_StunmeshConfigWriteFailureIsExitErrorNoLeak(t *testing.T) {
 	}
 }
 
+func TestApplyDiff_IfupFailureIsExitErrorNoLeak(t *testing.T) {
+	cfg := applyTestConfig(t)
+	var stdout, stderr strings.Builder
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	results := make([]execx.Result, sentinelIfupIndex+1)
+	results[sentinelIfupIndex] = execx.Result{Err: errors.New("boom")}
+	env.Runner = execx.NewFake(results...)
+
+	diff, state := sentinelDiff(t)
+	code := applyDiff(env, cfg, diff, state)
+
+	if code != ExitError {
+		t.Fatalf("code = %d, want %d", code, ExitError)
+	}
+	assertNoSecrets(t, stdout.String()+stderr.String(), sentinels()...)
+	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
+		t.Errorf("last.json was written after an ifup failure: err=%v", err)
+	}
+	// ifup runs before the stunmesh config file write (applyDiff's doc
+	// comment "Steps", step 4 before step 5): the file must not exist
+	// yet.
+	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+		t.Errorf("stunmesh config file was written after an ifup failure: err=%v", err)
+	}
+	// No revert after commit succeeded (see applyDiff's doc comment "No
+	// revert after uci commit succeeds"): the last call must be the
+	// failing ifup, not a revert.
+	calls := env.Runner.(*execx.Fake).Calls()
+	lastCall := calls[len(calls)-1]
+	if lastCall.Name != "ifup" {
+		t.Errorf("last call = %+v, want the failing ifup call, no revert after commit", lastCall)
+	}
+}
+
 func TestApplyDiff_InitdFailureIsExitErrorNoLeak(t *testing.T) {
 	cfg := applyTestConfig(t)
 	var stdout, stderr strings.Builder
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	initdIndex := sentinelReloadIndex + 1 // right after the successful reload
+	initdIndex := sentinelIfupIndex + 1 // right after the successful ifup
 	results := make([]execx.Result, initdIndex+1)
 	results[initdIndex] = execx.Result{Err: errors.New("boom")}
 	env.Runner = execx.NewFake(results...)

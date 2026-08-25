@@ -83,6 +83,11 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.route_allowed_ips=1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
+		// ifupChangedInterfaces (fetch_apply.go): wg0 is InterfaceNew, so
+		// it gets an explicit "ifup" after the reload. See
+		// ifupChangedInterfaces's doc comment for why a reload alone is
+		// not measured to be enough.
+		{Name: "ifup", Args: []string{"wg0"}},
 		// diff.Stunmesh is StunmeshEmpty and last.json had no old state:
 		// anyInterfaceChanged is true (a new interface), so step 6 runs
 		// "stop".
@@ -159,6 +164,11 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.route_allowed_ips=1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
+		// ifupChangedInterfaces (fetch_apply.go): wg0 is InterfaceChanged,
+		// so it gets an explicit "ifup" after the reload -- this is the
+		// exact case the e2e harness measured "network reload" alone as
+		// not enough for (a changed peer never reaching the kernel).
+		{Name: "ifup", Args: []string{"wg0"}},
 		// stunmesh unchanged, but the interface changed: step 6 runs
 		// "reload" (not "stop": stunmesh text is not empty).
 		{Name: "/etc/init.d/stunmesh", Args: []string{"reload"}},
@@ -203,6 +213,10 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"delete", "network.wg1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
+		// No "ifup wg1": InterfaceRemoved never gets one
+		// (ifupChangedInterfaces's doc comment) -- the e2e harness
+		// measured that "network reload" alone already tears a removed
+		// interface's kernel netdev down.
 		{Name: "/etc/init.d/stunmesh", Args: []string{"reload"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
@@ -248,6 +262,8 @@ func TestApplyDiff_EmptyWGAndEmptyStunmeshTeardown(t *testing.T) {
 		{Name: "uci", Args: []string{"delete", "network.wg0"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
+		// No "ifup wg0": InterfaceRemoved never gets one (see
+		// TestApplyDiff_RemovedInterface).
 		{Name: "/etc/init.d/stunmesh", Args: []string{"stop"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
@@ -407,5 +423,134 @@ func TestApplyDiff_ErrorNeverLeaksSecrets(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("output leaked secret %q: %s", secret, out)
 		}
+	}
+}
+
+// TestApplyDiff_IfupRunsOnlyForNewAndChangedInterfaces exercises all
+// four InterfaceChange values in a single diff, so it can assert, in
+// one place, that "ifup" is issued only for InterfaceNew and
+// InterfaceChanged, in diff.Interfaces order, and never for
+// InterfaceUnchanged or InterfaceRemoved.
+func TestApplyDiff_IfupRunsOnlyForNewAndChangedInterfaces(t *testing.T) {
+	cfg := applyTestConfig(t)
+	env := newEnv(strings.NewReader(""), new(strings.Builder), new(strings.Builder))
+	fake := execx.NewFake()
+	env.Runner = fake
+
+	newWG0 := testInterface(t, `{"private_key":"wg0-key","addresses":["10.0.0.1/24"],"peers":{}}`)
+	newWG1 := testInterface(t, `{"private_key":"wg1-key","addresses":["10.0.1.1/24"],"peers":{}}`)
+	wg1OldSections := last.Sections{Interface: "wg1"}
+	wg2Sections := last.Sections{Interface: "wg2"}
+	wg3OldSections := last.Sections{Interface: "wg3"}
+
+	diff := &Diff{
+		Interfaces: []InterfaceDiff{
+			{Name: "wg0", Change: InterfaceNew, Content: &newWG0},
+			{Name: "wg1", Change: InterfaceChanged, Content: &newWG1, Sections: wg1OldSections},
+			{Name: "wg2", Change: InterfaceUnchanged},
+			{Name: "wg3", Change: InterfaceRemoved, Sections: wg3OldSections},
+		},
+		Stunmesh:        StunmeshUnchanged,
+		StunmeshContent: "text",
+	}
+	state := &last.State{
+		Version: last.CurrentVersion,
+		WG: map[string]last.Interface{
+			"wg2": {Content: newWG0, Sections: wg2Sections},
+		},
+		Stunmesh: "text",
+	}
+
+	code := applyDiff(env, cfg, diff, state)
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d", code, ExitOK)
+	}
+
+	var ifupCalls []execx.Call
+	for _, call := range fake.Calls() {
+		if call.Name == "ifup" {
+			ifupCalls = append(ifupCalls, call)
+		}
+	}
+
+	want := []execx.Call{
+		{Name: "ifup", Args: []string{"wg0"}},
+		{Name: "ifup", Args: []string{"wg1"}},
+	}
+	if !reflect.DeepEqual(ifupCalls, want) {
+		t.Errorf("ifup calls = %+v, want %+v (wg2 unchanged and wg3 removed must get none)", ifupCalls, want)
+	}
+
+	// "ifup" must run after "ubus call network reload" and before the
+	// stunmesh init.d call (applyDiff's doc comment "Steps", step 4).
+	calls := fake.Calls()
+	reloadIdx, ifupWG0Idx, initdIdx := -1, -1, -1
+	for i, call := range calls {
+		switch {
+		case call.Name == "ubus":
+			reloadIdx = i
+		case call.Name == "ifup" && len(call.Args) == 1 && call.Args[0] == "wg0":
+			ifupWG0Idx = i
+		case call.Name == "/etc/init.d/stunmesh":
+			initdIdx = i
+		}
+	}
+	if !(reloadIdx >= 0 && reloadIdx < ifupWG0Idx && ifupWG0Idx < initdIdx) {
+		t.Errorf("call order = %+v: want reload (%d) < ifup wg0 (%d) < init.d stunmesh (%d)", calls, reloadIdx, ifupWG0Idx, initdIdx)
+	}
+}
+
+// TestApplyDiff_IfupFailureIsFatal asserts that a failing "ifup" stops
+// applyDiff the same way a failing "network reload" does: ExitError,
+// no last.json write, and no later step (the stunmesh config file,
+// the init.d call) runs. UCI is already committed to the new state at
+// this point (see applyDiff's doc comment "No revert after uci commit
+// succeeds"), so there is nothing to revert; the fix is left to the
+// next fetch's retry, not to this run.
+func TestApplyDiff_IfupFailureIsFatal(t *testing.T) {
+	cfg := applyTestConfig(t)
+	env := newEnv(strings.NewReader(""), new(strings.Builder), new(strings.Builder))
+
+	newIface := testInterface(t, `{"private_key":"wg0-key","addresses":["10.0.0.1/24"],"peers":{}}`)
+	diff := &Diff{
+		Interfaces: []InterfaceDiff{
+			{Name: "wg0", Change: InterfaceNew, Content: &newIface},
+		},
+		Stunmesh:        StunmeshChanged,
+		StunmeshContent: "new stunmesh text",
+	}
+	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}}
+
+	// Calls, in order: clearListOptions (get/delete wg0.addresses),
+	// the create batch (set wg0=interface, set wg0.proto=wireguard,
+	// set wg0.private_key=..., add_list wg0.addresses=...), "uci
+	// commit network", "ubus call network reload", then "ifup wg0",
+	// which is the 8th call (index 7) and the one scripted to fail.
+	fake := execx.NewFake(
+		execx.Result{}, execx.Result{}, // clearListOptions
+		execx.Result{}, execx.Result{}, execx.Result{}, execx.Result{}, // create batch
+		execx.Result{},                        // uci commit network
+		execx.Result{},                        // ubus call network reload
+		execx.Result{Err: errors.New("boom")}, // ifup wg0
+	)
+	env.Runner = fake
+
+	code := applyDiff(env, cfg, diff, state)
+	if code != ExitError {
+		t.Fatalf("code = %d, want %d", code, ExitError)
+	}
+
+	calls := fake.Calls()
+	lastCall := calls[len(calls)-1]
+	want := execx.Call{Name: "ifup", Args: []string{"wg0"}}
+	if !reflect.DeepEqual(lastCall, want) {
+		t.Errorf("final call = %+v, want %+v (no revert, no stunmesh config, no init.d call after ifup fails)", lastCall, want)
+	}
+
+	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
+		t.Errorf("last.json was written after a failing ifup: err=%v", err)
+	}
+	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+		t.Errorf("stunmesh config file was written after a failing ifup: err=%v", err)
 	}
 }
