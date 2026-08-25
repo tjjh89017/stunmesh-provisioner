@@ -68,8 +68,22 @@ phase_cron_line() {
 	# must not leave two managed lines.
 	assert_ssh_ok "a repeated service start exits 0" \
 		"service stunmesh-agent start"
+	# `|| true` inside the guest command, not a guest_capture FALLBACK:
+	# `grep -c` already prints the real count (0, on a genuine
+	# zero-managed-lines regression) before it exits 1 for "no match".
+	# guest_capture only ever appends its FALLBACK after CMD's own
+	# stdout, never replaces it, so a FALLBACK of "0" here would land
+	# after grep's own "0" and read as "0\n0", not a clean "0" (see
+	# lib.sh's guest_capture comment). Absorbing the exit with `|| true`
+	# keeps grep's own count as the only output, at the cost of no
+	# longer distinguishing "zero matches" from "the read itself
+	# failed" -- both cases here would just be a wrong tag_count, which
+	# assert_equal reports; phase-lock.sh's `wc -l < file` case is
+	# different: wc's own exit code never fails on an empty file, so its
+	# nonzero exit means the read itself failed, which its "0" FALLBACK
+	# is correct to report as-is.
 	tag_count=$(guest_capture "$SSH_PORT" "$SSH_KEY" \
-		"grep -c -F '${CRON_TAG}' /etc/crontabs/root")
+		"grep -c -F '${CRON_TAG}' /etc/crontabs/root || true")
 	assert_equal "a repeated start left exactly one managed cron line, not two" \
 		"$tag_count" "1"
 

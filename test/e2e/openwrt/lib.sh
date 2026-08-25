@@ -666,8 +666,17 @@ guest_exec() {
 
 # guest_capture PORT KEY CMD [FALLBACK] -- like `var=$(guest_exec ...)`,
 # except a failed CMD (for example, reading a file an earlier failed
-# assertion left missing) returns FALLBACK instead of propagating
-# CMD's nonzero exit.
+# assertion left missing) never propagates CMD's nonzero exit as a
+# script-aborting error. On failure this prints FALLBACK *after*
+# whatever CMD already wrote to stdout, not instead of it -- the two
+# are concatenated, not swapped. FALLBACK is only correct for a CMD
+# that writes nothing on failure (sha256sum or wc on a missing file,
+# for example), so a failed read is the only thing FALLBACK stands in
+# for. A CMD that can print a real, meaningful value and still exit
+# nonzero in a normal case (`grep -c` on no match, for instance) must
+# absorb that exit itself, with its own trailing `|| true`, so the
+# value it already printed reaches the caller unchanged -- a FALLBACK
+# here would land appended after that real value, not in place of it.
 #
 # assert.sh's assertions deliberately never stop the run on failure
 # (see assert.sh's own top comment), so a plain `var=$(guest_exec
