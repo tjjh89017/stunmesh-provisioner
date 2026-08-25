@@ -140,10 +140,10 @@ order).
 - **`phase_diff_removal`** (`phases/phase-diff-removal.sh`) --
   publishes and fetches four bundle revisions on the same guest: (v1)
   a two-interface baseline; (v2) only `wg1`'s peer key changes, wg0
-  untouched -- checks that a plain `network reload`, with no explicit
-  `ifup`, really does push the new peer into the kernel, and that
-  `wg0`'s netdev (by its unchanged `ifindex`) was not restarted; (v3)
-  `wg1` removed from the bundle -- checks its UCI sections and kernel
+  untouched -- checks that the apply pipeline (`network reload`
+  followed by `ifup wg1`) pushes the new peer into the kernel, and
+  that `wg0`'s netdev (by its unchanged `ifindex`) was not restarted;
+  (v3) `wg1` removed from the bundle -- checks its UCI sections and kernel
   netdev are both gone, `wg0` still untouched; (v4) full teardown --
   checks every agent-created UCI section and netdev is gone, the
   `stunmesh` stand-in was told `stop`, and a UCI section this phase
