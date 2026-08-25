@@ -206,6 +206,23 @@ generate_identity_key() {
 	log "Identity key generated."
 }
 
+# generate_wg_keypair -- prints a fresh WireGuard key pair as
+# "PRIVATE_KEY PUBLIC_KEY" on one line, using the real `wg` tool. Every
+# e2e fixture that needs WireGuard key material (the private key of
+# the node's own tunnel, or a peer's public key) calls this instead of
+# a fixed, committed key: a fixed key checked into the repo would be a
+# real (if throwaway) private key sitting in git history forever, and
+# a freshly generated one proves the same thing about the agent's
+# uci/ubus calls without ever needing one. Nothing this prints is
+# logged; the caller is responsible for keeping the private half out
+# of any output the harness itself prints.
+generate_wg_keypair() {
+	local priv pub
+	priv=$(wg genkey) || die "wg genkey failed."
+	pub=$(echo "$priv" | wg pubkey) || die "wg pubkey failed."
+	echo "${priv} ${pub}"
+}
+
 # build_provd_binary -- builds stunmesh-provd for this runner's own
 # platform (it is the controller: it runs on the host, never on the
 # guest) through the repository's own Makefile, the same way

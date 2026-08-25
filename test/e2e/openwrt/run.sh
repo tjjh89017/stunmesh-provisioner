@@ -21,8 +21,12 @@
 # already waiting on the proxy, except nothing has fetched it yet.
 # phases/phase-smoke.sh proves the skeleton itself (boot -> inject -> SSH
 # -> assert); phases/phase-payload.sh proves the payload landed intact.
-# Asserting that the guest's agent actually fetches and applies that
-# bundle is a later item, not this one.
+# phases/phase-fetch-basic.sh publishes a second, realistic bundle (one
+# WireGuard interface, one peer) and runs the real stunmesh-agent fetch
+# in the guest, proving the agent's uci/ubus calls actually produce the
+# intended result on real netifd -- and that a second fetch of the same
+# bundle changes nothing. Removal, teardown, and multi-interface
+# behaviour are later items, not this one.
 #
 # Usage:
 #   run.sh [--image PATH] [--openwrt-version VERSION] [--port PORT] [--keep-work]
@@ -55,8 +59,9 @@
 # Requires: curl, sha256sum, unzstd, make (ImageBuilder path); go, make
 # (agent and provd build); losetup, blkid, mount, umount, sync, sudo
 # (injection); qemu-system-x86_64, timeout, ssh, ssh-keygen (boot and
-# control). Each is checked up front, by name, so a missing tool is
-# reported before any of it runs.
+# control); wg (generating fresh WireGuard key material for a fixture,
+# on the host -- see lib.sh's generate_wg_keypair). Each is checked up
+# front, by name, so a missing tool is reported before any of it runs.
 set -euo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -115,7 +120,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 for cmd in curl sha256sum unzstd make go sync sudo \
-	qemu-system-x86_64 timeout ssh ssh-keygen; do
+	qemu-system-x86_64 timeout ssh ssh-keygen wg; do
 	need_cmd "$cmd"
 done
 # losetup, blkid, mount and umount are invoked via sudo everywhere in this

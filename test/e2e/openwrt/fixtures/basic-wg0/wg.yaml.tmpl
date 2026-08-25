@@ -1,0 +1,22 @@
+# basic-wg0/wg.yaml.tmpl -- template for the "assertions A" e2e
+# fixture (a single WireGuard interface, one peer). Not a plain
+# fixture: phases/phase-fetch-basic.sh renders it before every run,
+# substituting @NODE_PRIVATE_KEY@, @PEER_PUBLIC_KEY@ and @PEER_PSK@
+# with freshly generated WireGuard key material (lib.sh's
+# generate_wg_keypair and `wg genpsk`).
+#
+# No real key material is committed here on purpose. A fixed,
+# checked-in WireGuard private key would be a real (if throwaway)
+# secret sitting in git history forever; a fresh key pair on every
+# run proves the same thing about the agent's uci/ubus calls without
+# ever needing one.
+wg0:
+  private_key: @NODE_PRIVATE_KEY@
+  addresses:
+    - 10.99.0.1/24
+  peers:
+    peer1:
+      public_key: @PEER_PUBLIC_KEY@
+      preshared_key: @PEER_PSK@
+      allowed_ips:
+        - 10.99.0.2/32

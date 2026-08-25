@@ -44,6 +44,40 @@ assert_ssh_output_contains() {
 	fi
 }
 
+# assert_ssh_exit_code DESC CMD CODE -- passes when CMD's exit status
+# in the guest equals CODE exactly. assert_ssh_ok only tells zero from
+# nonzero apart, which is not enough for fetch's exit-code contract
+# (PLAN.md 5: 0 applied or nothing to do, 3 no change, 1 failure) --
+# a claim like "the second fetch exits 3" needs the exact code.
+assert_ssh_exit_code() {
+	local desc="$1" cmd="$2" want="$3" got=0
+	ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+	guest_exec "$SSH_PORT" "$SSH_KEY" "$cmd" >/dev/null 2>&1 || got=$?
+	if [[ "$got" -eq "$want" ]]; then
+		echo "ok - ${desc}"
+	else
+		echo "FAIL - ${desc} (command: ${cmd}, expected exit ${want}, got ${got})"
+		ASSERTIONS_FAILED=$((ASSERTIONS_FAILED + 1))
+	fi
+}
+
+# assert_equal DESC ACTUAL EXPECTED -- passes when ACTUAL equals
+# EXPECTED as a literal string. For a claim that compares two values
+# a phase script already captured (for example, a checksum taken
+# before and after an action that should change nothing), instead of
+# round-tripping both back through a shell command string just to
+# compare them.
+assert_equal() {
+	local desc="$1" actual="$2" expected="$3"
+	ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+	if [[ "$actual" == "$expected" ]]; then
+		echo "ok - ${desc}"
+	else
+		echo "FAIL - ${desc} (expected: ${expected}, got: ${actual})"
+		ASSERTIONS_FAILED=$((ASSERTIONS_FAILED + 1))
+	fi
+}
+
 # assert_ok DESC CMD -- like assert_ssh_ok, but runs CMD on the host
 # (via bash -c) instead of in the guest over SSH. For claims about the
 # host side of the harness -- the controller and the fake dhtproxy --
