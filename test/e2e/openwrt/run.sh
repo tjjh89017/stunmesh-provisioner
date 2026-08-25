@@ -37,10 +37,10 @@
 #
 # Every phase_* function is self-contained: it publishes whatever
 # fixture it needs and does not assume any other phase already ran, or
-# ran before it. This matters because phase functions run in the
-# alphabetical order of their function names (run.sh sorts them through
-# `declare -F`), not the order their comments read in, or the order
-# their files are loaded in.
+# ran before it. Phases run in the explicit order PHASE_ORDER lists
+# below, cheapest and most basic first, not file order or the order
+# their comments read in above -- see PHASE_ORDER's own comment for
+# why that order was chosen.
 #
 # Usage:
 #   run.sh [--image PATH] [--openwrt-version VERSION] [--port PORT] [--keep-work]
@@ -230,7 +230,62 @@ for phase in "${HERE}"/phases/phase-*.sh; do
 	. "$phase"
 done
 
-for fn in $(declare -F | awk '{print $3}' | grep '^phase_'); do
+# PHASE_ORDER is the deliberate run order, not the accident of
+# `declare -F`'s alphabetical listing this replaced. Cheapest, most
+# basic checks run first so a broken build fails fast: phase_smoke
+# first (only proves boot -> inject -> SSH -> assert, no payload, no
+# fetch), phase_payload second (checks the injected payload landed,
+# still no fetch). From there the order follows growing scenario
+# complexity -- a first fetch, then multi-revision diff/removal,
+# routes, an operator-added firewall zone, the cron line, a real
+# hotplug event, lock contention between two fetches -- and
+# phase_reboot_uci_persistence runs last: it costs about 24s (a real
+# guest reboot), more than every other phase combined, and a real
+# reboot leaves the guest in a freshly booted state that is a poor
+# starting point for any phase after it.
+#
+# Every phase must stay self-contained regardless of this order: it
+# publishes whatever fixture it needs and does not assume any other
+# phase already ran. This list exists so a reader knows what runs and
+# when, not to license one phase depending on another's leftover
+# state -- a hidden dependency would make phases un-runnable alone and
+# would break the moment this list is reordered again.
+PHASE_ORDER=(
+	phase_smoke
+	phase_payload
+	phase_fetch_basic
+	phase_diff_removal
+	phase_routes
+	phase_firewall_survives
+	phase_cron_line
+	phase_hotplug_wan_ifup
+	phase_lock_overlap
+	phase_reboot_uci_persistence
+)
+
+# Cross-check PHASE_ORDER against the phase_* functions actually defined
+# by the sourced files, in both directions. A phase file added without a
+# matching PHASE_ORDER entry must not silently never run; a stale
+# PHASE_ORDER entry with no matching function must not silently be
+# skipped either -- declare -F is the ground truth for what exists.
+mapfile -t DEFINED_PHASES < <(declare -F | awk '{print $3}' | grep '^phase_' | sort)
+mapfile -t SORTED_PHASE_ORDER < <(printf '%s\n' "${PHASE_ORDER[@]}" | sort)
+
+MISSING_FROM_ORDER=$(comm -23 \
+	<(printf '%s\n' "${DEFINED_PHASES[@]}") \
+	<(printf '%s\n' "${SORTED_PHASE_ORDER[@]}")) || true
+MISSING_FUNCTION=$(comm -13 \
+	<(printf '%s\n' "${DEFINED_PHASES[@]}") \
+	<(printf '%s\n' "${SORTED_PHASE_ORDER[@]}")) || true
+
+if [[ -n "$MISSING_FROM_ORDER" ]]; then
+	die "phase function(s) defined but missing from PHASE_ORDER: ${MISSING_FROM_ORDER}"
+fi
+if [[ -n "$MISSING_FUNCTION" ]]; then
+	die "PHASE_ORDER lists function(s) that do not exist: ${MISSING_FUNCTION}"
+fi
+
+for fn in "${PHASE_ORDER[@]}"; do
 	log "-- running ${fn} --"
 	"$fn"
 done

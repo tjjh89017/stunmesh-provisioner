@@ -113,17 +113,30 @@ A few more env vars exist for narrower needs, undocumented in
 
 Every `phase_*` function is self-contained: it publishes whatever
 fixture it needs and does not assume any other phase already ran, in
-any order. This section lists them in the order they actually run
-(see section 8 on why that is not file order).
+any order. This section lists them in the order `run.sh`'s
+`PHASE_ORDER` array actually runs them (see section 8 on why that
+order was chosen, and why it is no longer file order or alphabetical
+order).
 
-- **`phase_cron_line`** (`phases/phase-cron.sh`) -- `service
-  stunmesh-agent start` installs a tagged cron line using
-  `fetch_interval` from `/etc/config/provd`, leaves a foreign
-  crontab line alone, and a real `crond` picks up the new file
-  (checked via a fresh `crond (busybox...` syslog line). A repeated
-  `start` leaves exactly one managed line, never two. `stop` removes
-  the managed line, leaves the foreign one, and the crontab file's
-  mode survives every rewrite.
+- **`phase_smoke`** (`phases/phase-smoke.sh`) -- no payload, no
+  bundle. Only checks that `ubus` answers and `uci show network`
+  names the `lan` interface this harness's own injection wrote. It
+  exists to prove boot -> inject -> SSH -> assert works end to end,
+  independent of anything `stunmesh-agent`-specific.
+- **`phase_payload`** (`phases/phase-payload.sh`) -- no fetch here:
+  checks the injected payload landed correctly before anything runs.
+  `stunmesh-agent --version` runs; the init and hotplug scripts are
+  installed, executable, and byte-identical (by SHA-256) to the real
+  files under `contrib/openwrt/`; the identity key is mode 0600;
+  `/etc/config/provd` parses as UCI; the `stunmesh` stand-in runs and
+  logs the action it was given.
+- **`phase_fetch_basic`** (`phases/phase-fetch-basic.sh`) -- the
+  first real fetch: publishes one interface with one peer, fetches it,
+  and reads back `wg show`, `ubus call network.interface.wg0 status`
+  and the `uci` sections it should have created, plus `last.json`'s
+  path and mode (0600). A second fetch of the same bundle exits 3 (no
+  change) and leaves `/etc/config/network`, `last.json` and the
+  `stunmesh` stand-in's action log byte-identical.
 - **`phase_diff_removal`** (`phases/phase-diff-removal.sh`) --
   publishes and fetches four bundle revisions on the same guest: (v1)
   a two-interface baseline; (v2) only `wg1`'s peer key changes, wg0
@@ -135,18 +148,24 @@ any order. This section lists them in the order they actually run
   checks every agent-created UCI section and netdev is gone, the
   `stunmesh` stand-in was told `stop`, and a UCI section this phase
   added by hand (never recorded in the agent's `last.json`) survives.
-- **`phase_fetch_basic`** (`phases/phase-fetch-basic.sh`) -- the
-  first real fetch: publishes one interface with one peer, fetches it,
-  and reads back `wg show`, `ubus call network.interface.wg0 status`
-  and the `uci` sections it should have created, plus `last.json`'s
-  path and mode (0600). A second fetch of the same bundle exits 3 (no
-  change) and leaves `/etc/config/network`, `last.json` and the
-  `stunmesh` stand-in's action log byte-identical.
+- **`phase_routes`** (`phases/phase-routes.sh`) -- publishes a bundle
+  with `route_allowed_ips: false` and an explicit `routes:` list.
+  Checks the kernel's main routing table for `wg0` holds exactly the
+  listed routes (with the second entry's metric) and nothing derived
+  from the peer's own `allowed_ips`.
 - **`phase_firewall_survives`** (`phases/phase-firewall.sh`) -- adds a
   firewall zone naming `wg0` by hand (the operator's one-time step,
   PLAN.md 2.7), then publishes a second revision that forces `wg0`'s
   own UCI sections to be deleted and recreated. Checks the hand-added
   zone, and its reference to `wg0`, survive untouched.
+- **`phase_cron_line`** (`phases/phase-cron.sh`) -- `service
+  stunmesh-agent start` installs a tagged cron line using
+  `fetch_interval` from `/etc/config/provd`, leaves a foreign
+  crontab line alone, and a real `crond` picks up the new file
+  (checked via a fresh `crond (busybox...` syslog line). A repeated
+  `start` leaves exactly one managed line, never two. `stop` removes
+  the managed line, leaves the foreign one, and the crontab file's
+  mode survives every rewrite.
 - **`phase_hotplug_wan_ifup`** (`phases/phase-hotplug.sh`) -- defines
   two bridge-backed logical interfaces (`wan`, `testif`) with no real
   hardware behind them, then fires real `ifup`/`ifdown` through the
@@ -159,13 +178,6 @@ any order. This section lists them in the order they actually run
   GET so the two overlap for real. Checks exactly one of the two logs
   the lock-contention message, only the winner's action reaches the
   `stunmesh` stand-in, and the winner's bundle reaches the kernel.
-- **`phase_payload`** (`phases/phase-payload.sh`) -- no fetch here:
-  checks the injected payload landed correctly before anything runs.
-  `stunmesh-agent --version` runs; the init and hotplug scripts are
-  installed, executable, and byte-identical (by SHA-256) to the real
-  files under `contrib/openwrt/`; the identity key is mode 0600;
-  `/etc/config/provd` parses as UCI; the `stunmesh` stand-in runs and
-  logs the action it was given.
 - **`phase_reboot_uci_persistence`** (`phases/phase-reboot.sh`) --
   applies a known-good bundle, stops the fake dhtproxy entirely (so no
   boot-delay fetch, cron line or hotplug event could possibly reach
@@ -173,17 +185,10 @@ any order. This section lists them in the order they actually run
   the same key and peer, `/etc/config/network` is byte-identical
   across the reboot, and the `stunmesh` stand-in's action log --
   written to tmpfs, so it cannot survive by accident -- is absent,
-  proving no agent code ran.
-- **`phase_routes`** (`phases/phase-routes.sh`) -- publishes a bundle
-  with `route_allowed_ips: false` and an explicit `routes:` list.
-  Checks the kernel's main routing table for `wg0` holds exactly the
-  listed routes (with the second entry's metric) and nothing derived
-  from the peer's own `allowed_ips`.
-- **`phase_smoke`** (`phases/phase-smoke.sh`) -- no payload, no
-  bundle. Only checks that `ubus` answers and `uci show network`
-  names the `lan` interface this harness's own injection wrote. It
-  exists to prove boot -> inject -> SSH -> assert works end to end,
-  independent of anything `stunmesh-agent`-specific.
+  proving no agent code ran. It runs last: a real guest reboot costs
+  about 24s, more than every other phase combined, and leaves the
+  guest freshly booted -- a poor starting point for any phase after
+  it.
 
 ## 6. Fixtures and the fake proxy
 
@@ -267,14 +272,22 @@ single function in isolation:
   every host. `ensure_kvm_available` polls the device mode directly,
   bounded to 30s, and fails loudly rather than falling back to
   software emulation.
-- **Phases run in the alphabetical order of their function names, not
-  file order or comment order.** `run.sh` sources every
-  `phases/phase-*.sh` file first, then calls every function matching
-  `phase_*` in the order `declare -F` lists them -- which bash lists
-  alphabetically by name. This is exactly why every phase is written
-  to be self-contained: `phase_cron_line` runs before
-  `phase_fetch_basic`, for example, purely because of how their
-  function names sort, not because of any intended sequence.
+- **Phases run in the explicit order `run.sh`'s `PHASE_ORDER` array
+  lists, not file order, comment order or alphabetical order.**
+  `run.sh` sources every `phases/phase-*.sh` file first, then calls
+  each function named in `PHASE_ORDER`, in that order: cheapest and
+  most basic first (`phase_smoke`, `phase_payload`), growing scenario
+  complexity through the middle, and `phase_reboot_uci_persistence`
+  last because a real guest reboot costs about 24s -- more than every
+  other phase combined -- and leaves the guest freshly booted, a poor
+  starting point for any phase after it. Before running anything,
+  `run.sh` cross-checks `PHASE_ORDER` against the `phase_*` functions
+  `declare -F` actually finds, in both directions, and `die`s if they
+  disagree: a phase file added without a `PHASE_ORDER` entry must not
+  silently never run, and a stale `PHASE_ORDER` entry with no matching
+  function must not silently be skipped. Every phase is still written
+  to be self-contained -- this list says what runs and when, it does
+  not license one phase depending on another's leftover state.
 - **A stock OpenWrt image ships no `/etc/config/network` at all.**
   `/etc/board.d` writes one on first boot from board-detection logic,
   and the default it would pick (static `192.168.1.1`) is unreachable
