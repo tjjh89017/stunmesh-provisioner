@@ -1,0 +1,101 @@
+name: 'E2E OpenWrt'
+description: >-
+  Boot a real OpenWrt x86-64 VM under KVM and run the stunmesh-agent e2e
+  harness against it. test/e2e/openwrt/run.sh is the source of truth for
+  what the harness does; this action only prepares the host for it.
+
+inputs:
+  openwrt-version:
+    description: >-
+      OpenWrt release to build, for example 25.12.5. Leave empty to
+      resolve the latest stable release automatically. Forwarded to
+      run.sh as --openwrt-version.
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    # This is the standard rule GitHub-hosted-runner guides use to make
+    # /dev/kvm usable by the unprivileged runner user. `udevadm trigger`
+    # only asks udev to re-evaluate the rule. It returns before udev has
+    # finished applying it, so a read-write check right after it races
+    # the rule and can lose. `udevadm settle` waits for udev's queue to
+    # drain, but that alone is not a guarantee on every runner, so this
+    # step also polls the device mode directly with a bounded timeout.
+    #
+    # Lifted verbatim from .github/workflows/probe.yml, which measured it
+    # on a real GitHub-hosted runner. probe.yml still carries its own
+    # copy of this step; it is not yet refactored to call this action.
+    - name: Install enable-KVM udev rule and wait for it to apply
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        sudo udevadm settle --timeout=30 || true
+
+        timeout_seconds=30
+        start_time=$(date +%s)
+        while [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; do
+          waited=$(( $(date +%s) - start_time ))
+          if [ "$waited" -ge "$timeout_seconds" ]; then
+            echo "/dev/kvm did not become read-write within ${timeout_seconds}s. Failing." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          sleep 0.5
+        done
+        waited=$(( $(date +%s) - start_time ))
+        echo "/dev/kvm became read-write after ${waited}s." | tee -a "$GITHUB_STEP_SUMMARY"
+
+    # run.sh's own `need_cmd`/`need_cmd_root` checks name everything it
+    # needs. qemu-system-x86, qemu-utils and zstd (unzstd) are not on the
+    # stock runner image; wireguard-tools supplies `wg`, used to generate
+    # fixture keys on the host. Everything else the harness needs (curl,
+    # make, go, ssh, losetup, blkid, mount, sudo) already ships on
+    # GitHub-hosted Ubuntu runners, so this installs nothing beyond the
+    # four packages above it.
+    - name: Install host packages the harness needs
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq qemu-system-x86 qemu-utils zstd wireguard-tools
+
+    # TMPDIR is pointed at a workspace-relative directory instead of the
+    # default /tmp so the diagnostics step below can find run.sh's work
+    # directory by a stable glob. E2E_KEEP_WORK=1 stops run.sh's cleanup
+    # trap from deleting it, on every exit path -- success or failure --
+    # so the upload step always has something to look for.
+    - name: Run the OpenWrt e2e harness
+      shell: bash
+      env:
+        OPENWRT_VERSION: ${{ inputs.openwrt-version }}
+        E2E_KEEP_WORK: '1'
+        TMPDIR: ${{ github.workspace }}/.e2e-openwrt-work
+      run: |
+        set -euo pipefail
+        mkdir -p "$TMPDIR"
+        test/e2e/openwrt/run.sh
+
+    # A failed boot's only evidence is the guest's serial console, so
+    # boot.log is the one file this step cannot skip. The fake dhtproxy
+    # logs are the next most likely place to find why a fetch failed.
+    # The image itself, the built binaries and the SSH keypair are
+    # deliberately left out: they are large, reproducible from this same
+    # run, or (the private key) not something to publish as a build
+    # artifact.
+    - name: Upload e2e diagnostics
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: e2e-openwrt-diagnostics
+        path: |
+          .e2e-openwrt-work/stunmesh-e2e-openwrt.*/boot.log
+          .e2e-openwrt-work/stunmesh-e2e-openwrt.*/fakeproxy.log
+          .e2e-openwrt-work/stunmesh-e2e-openwrt.*/fakeproxy-delayed.log
+        if-no-files-found: warn
+        retention-days: 7
