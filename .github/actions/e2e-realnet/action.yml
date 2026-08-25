@@ -1,0 +1,45 @@
+name: 'E2E realnet'
+description: >-
+  Publish a real encrypted bundle to the real Jami dhtproxy instances
+  and fetch it back with the real stunmesh-agent. test/e2e/realnet/
+  is the source of truth for what runs; this action only sequences its
+  two scripts as two separate steps, so a reader can tell a proxy
+  outage apart from a stunmesh-provisioner contract bug by the failed
+  step's name alone, without opening the log.
+
+runs:
+  using: 'composite'
+  steps:
+    # A separate step on purpose: if this one fails, the real Jami
+    # proxies are down. If the next one fails instead, they were up a
+    # moment ago and something stunmesh-provisioner assumes about them
+    # is wrong. See test/e2e/realnet/preflight.sh's header for why that
+    # distinction lives in which step failed, not just in the log text.
+    - name: Check the real Jami proxies are reachable
+      shell: bash
+      run: test/e2e/realnet/preflight.sh
+
+    # Only https://dhtproxy2.jami.net and https://dhtproxy3.jami.net
+    # are ever contacted -- the same two stunmesh-agent and
+    # stunmesh-provd default to. Neither script accepts them as an
+    # input; see test/e2e/realnet/preflight.sh's header.
+    - name: Publish and fetch a real bundle, and measure the real proxies
+      shell: bash
+      env:
+        E2E_KEEP_WORK: '1'
+        TMPDIR: ${{ github.workspace }}/.e2e-realnet-work
+      run: |
+        set -euo pipefail
+        mkdir -p "$TMPDIR"
+        test/e2e/realnet/run.sh
+
+    # The working directory holds only build artifacts and this run's
+    # own throwaway keys (a fresh identity key and a fresh controller
+    # key pair, both good for this run's random namespace alone, never
+    # reused). Nothing in it is a real secret worth protecting, but it
+    # is also not evidence worth keeping around: every measurement this
+    # leg produces already lives in the step summary and the job log.
+    - name: Clean up the working directory
+      if: always()
+      shell: bash
+      run: rm -rf "${{ github.workspace }}/.e2e-realnet-work"

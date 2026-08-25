@@ -1,17 +1,19 @@
 # CI workflow.
 #
 # This workflow checks format, module tidiness, vet, and unit tests. It then
-# builds each release target and uploads the binaries as artifacts, and boots
-# a real OpenWrt VM under KVM to exercise stunmesh-agent end to end.
+# builds each release target and uploads the binaries as artifacts, boots a
+# real OpenWrt VM under KVM to exercise stunmesh-agent end to end, and runs a
+# real round trip against the real Jami dhtproxy instances.
 #
 # Steps live in `.github/actions/*`; the Makefile is the source of truth.
 #
+# Chain: check -> build (matrix) -> build-required -> e2e -> e2e-realnet ->
+# E2E (e2e-required below, the single check branch protection names).
 # e2e runs on every push and pull_request, not workflow_dispatch-only like
-# probe.yml. probe.yml is exploratory and only ever burns minutes on demand;
-# e2e-required below is meant to become a branch protection check, and a
-# required check that only runs on manual dispatch never blocks a merge.
-# That trade costs real runner minutes on every push, but it is the one this
-# job exists to make.
+# probe.yml: probe.yml is exploratory and only ever burns minutes on demand,
+# while a required check that only runs on manual dispatch never blocks a
+# merge. That trade costs real runner minutes on every push, but it is the
+# one this job exists to make.
 
 name: CI
 
@@ -44,6 +46,9 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: check
     runs-on: ubuntu-latest
+    # fail-fast: false means one target failing does not cancel the
+    # others, so build-required below sees a real "failure" from a
+    # broken target instead of a "cancelled" from its siblings.
     strategy:
       fail-fast: false
       matrix:
@@ -68,13 +73,37 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # The single check e2e depends on, instead of the build matrix
+  # directly. A matrix "needs:" expands to a dependency on every leg
+  # anyway, so pointing e2e at one aggregate name here is both cheaper
+  # to read and stable if the matrix gains or loses a target later. It
+  # must be red whenever any build leg failed, was cancelled, or was
+  # skipped -- a skipped dependency must not read as success, which is
+  # why this checks for the exact string "success" rather than the
+  # absence of "failure".
+  build-required:
+    name: Build
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm every build target succeeded
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_RESULT" != "success" ]]; then
+            echo "build job result: ${BUILD_RESULT}" >&2
+            exit 1
+          fi
+
   e2e:
     name: E2E (OpenWrt)
-    # Only check, not build. e2e builds its own agent/provd/fakeproxy
-    # binaries inside run.sh, so it does not need the build matrix's
-    # output. It does need check: there is no reason to boot a VM for
-    # 5+ minutes when gofmt, go vet or a unit test already failed.
-    needs: check
+    # e2e builds its own agent/provd/fakeproxy binaries inside run.sh, so
+    # it does not need the build matrix's own output -- it needs
+    # build-required only so a real device build breaking (not just a
+    # unit test) stops a 20-minute VM boot before it starts.
+    needs: build-required
     # ubuntu-latest is an x86_64 runner. Nested virtualisation is not
     # available on the arm64 hosted runners, so this must not move to
     # one of those.
@@ -90,22 +119,64 @@ jobs:
       - name: Run the OpenWrt e2e harness
         uses: ./.github/actions/e2e-openwrt
 
-  # The single check a branch protection rule will name. It must be red
-  # whenever any e2e job failed, was cancelled, or was skipped -- a
-  # skipped dependency must not read as success, which is why this does
-  # not just check for the absence of "failure".
-  e2e-required:
-    name: E2E required
+  e2e-realnet:
+    name: E2E (realnet)
+    # Runs only after the OpenWrt e2e leg (against a fake, in-VM proxy)
+    # already passed: no reason to spend a real round trip against the
+    # real Jami proxies when the agent's own uci/ubus/netifd behaviour
+    # is already known to be broken.
     needs: e2e
+    runs-on: ubuntu-latest
+    # Measured locally: build (~20s) + preflight + the publish/fetch
+    # round trip + the value-size probe, whose rejected end can take the
+    # real proxy up to ~50s to answer (a slow 502, not a fast 4xx).
+    # 10 minutes leaves real headroom without letting a hung request
+    # burn the job for the better part of an hour.
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      - name: Run the realnet e2e leg
+        uses: ./.github/actions/e2e-realnet
+
+  # The single check a branch protection rule will name, hence the short
+  # display name below. It gates on BOTH e2e jobs: a merge waits on a
+  # real round trip against the real Jami proxies, not just the fake one
+  # inside the OpenWrt VM. This is a deliberate choice, not an oversight
+  # -- it means a real Jami outage can block a pull request, and that
+  # trade was made knowingly. Do not narrow this back to needs: e2e
+  # alone to "fix" a flaky third-party outage; fix or wait out the
+  # outage instead.
+  #
+  # Must be red whenever either e2e job failed, was cancelled, or was
+  # skipped -- a skipped dependency must not read as success, which is
+  # why this checks for the exact string "success" on each, rather than
+  # the absence of "failure".
+  e2e-required:
+    name: E2E
+    needs: [e2e, e2e-realnet]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Confirm every e2e job succeeded
         env:
           E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_REALNET_RESULT: ${{ needs.e2e-realnet.result }}
         run: |
           set -euo pipefail
+          failed=0
           if [[ "$E2E_RESULT" != "success" ]]; then
             echo "e2e job result: ${E2E_RESULT}" >&2
+            failed=1
+          fi
+          if [[ "$E2E_REALNET_RESULT" != "success" ]]; then
+            echo "e2e-realnet job result: ${E2E_REALNET_RESULT}" >&2
+            failed=1
+          fi
+          if [[ "$failed" -ne 0 ]]; then
             exit 1
           fi
