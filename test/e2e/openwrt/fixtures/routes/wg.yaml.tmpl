@@ -1,0 +1,31 @@
+# routes/wg.yaml.tmpl -- template for phases/phase-routes-firewall.sh's
+# route_allowed_ips: false check (stage5 checklist item 16).
+#
+# The interface address is a /32 on purpose: a /32 address gets a
+# "local" table host route (`ip route show table local`), never a
+# main-table subnet route, so the main routing table this phase reads
+# with `ip route show dev wg0` holds only what routes[] and
+# route_allowed_ips explicitly put there -- nothing implicit from the
+# address itself gets in the way of "exactly the listed routes".
+#
+# The peer's allowed_ips (10.95.0.0/16) is deliberately a different
+# subnet from both routes[] entries. route_allowed_ips: false means
+# it must never appear in the routing table; if it did, the routing
+# table would hold more than "exactly the listed routes".
+#
+# No real key material is committed here on purpose; see
+# fixtures/basic-wg0/wg.yaml.tmpl for why.
+wg0:
+  private_key: @NODE_PRIVATE_KEY@
+  addresses:
+    - 10.94.0.1/32
+  route_allowed_ips: false
+  routes:
+    - cidr: 10.88.0.0/24
+    - cidr: 10.89.0.0/24
+      metric: 50
+  peers:
+    peer1:
+      public_key: @PEER_PUBLIC_KEY@
+      allowed_ips:
+        - 10.95.0.0/16

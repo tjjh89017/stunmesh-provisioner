@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtproxy"
@@ -25,7 +26,7 @@ func testKey(t *testing.T) string {
 }
 
 func TestStore_PutThenGetRoundTrips(t *testing.T) {
-	srv := httptest.NewServer(newStore())
+	srv := httptest.NewServer(newStore(0))
 	defer srv.Close()
 
 	client, err := dhtproxy.New([]string{srv.URL})
@@ -53,7 +54,7 @@ func TestStore_PutThenGetRoundTrips(t *testing.T) {
 }
 
 func TestStore_GetUnknownKeyIsEmptyNotError(t *testing.T) {
-	srv := httptest.NewServer(newStore())
+	srv := httptest.NewServer(newStore(0))
 	defer srv.Close()
 
 	client, err := dhtproxy.New([]string{srv.URL})
@@ -71,7 +72,7 @@ func TestStore_GetUnknownKeyIsEmptyNotError(t *testing.T) {
 }
 
 func TestStore_SecondPutOverwritesTheFirst(t *testing.T) {
-	srv := httptest.NewServer(newStore())
+	srv := httptest.NewServer(newStore(0))
 	defer srv.Close()
 
 	client, err := dhtproxy.New([]string{srv.URL})
@@ -93,5 +94,40 @@ func TestStore_SecondPutOverwritesTheFirst(t *testing.T) {
 	}
 	if len(result.Values) != 1 || string(result.Values[0]) != "second" {
 		t.Fatalf("Values = %v, want [\"second\"]", result.Values)
+	}
+}
+
+// TestStore_GetDelayDelaysTheResponse proves the -get-delay knob
+// phases/phase-lock.sh depends on actually holds the response, not
+// just accepts the flag. Without this, a typo or a dropped
+// s.getDelay read would silently turn the lock-contention check back
+// into a race against an undelayed GET, and nothing would fail loudly
+// to say so.
+func TestStore_GetDelayDelaysTheResponse(t *testing.T) {
+	const delay = 100 * time.Millisecond
+	srv := httptest.NewServer(newStore(delay))
+	defer srv.Close()
+
+	client, err := dhtproxy.New([]string{srv.URL})
+	if err != nil {
+		t.Fatalf("dhtproxy.New: %v", err)
+	}
+
+	key := testKey(t)
+	if err := client.Put(context.Background(), key, []byte("delayed")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	start := time.Now()
+	result, err := client.Get(context.Background(), key)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if elapsed < delay {
+		t.Fatalf("Get returned after %v, want at least the configured delay of %v", elapsed, delay)
+	}
+	if len(result.Values) != 1 || string(result.Values[0]) != "delayed" {
+		t.Fatalf("Values = %v, want [\"delayed\"]", result.Values)
 	}
 }

@@ -1,0 +1,25 @@
+# firewall-survive/wg-v1.yaml.tmpl -- baseline bundle for
+# phases/phase-firewall.sh (stage5 checklist item 17).
+#
+# phase-firewall.sh applies this first, then adds
+# `list network 'wg0'` to a firewall zone by hand (PLAN.md 2.7: "The
+# operator adds list network '<iface>' to a zone once by hand"), then
+# applies wg-v2.yaml.tmpl -- a changed peer, forcing PLAN.md 6's
+# "any change inside an interface: delete every section, create all
+# sections again" path -- and checks the firewall zone still names
+# wg0. Only the peer's public key differs between v1 and v2; wg0's
+# own key and address stay byte-for-byte identical, the same pattern
+# fixtures/reload-removal/two-iface.yaml.tmpl uses for its own "only
+# one thing changed" checks.
+#
+# No real key material is committed here on purpose; see
+# fixtures/basic-wg0/wg.yaml.tmpl for why.
+wg0:
+  private_key: @NODE_PRIVATE_KEY@
+  addresses:
+    - 10.96.0.1/24
+  peers:
+    peer1:
+      public_key: @PEER_PUBLIC_KEY_V1@
+      allowed_ips:
+        - 10.96.0.2/32

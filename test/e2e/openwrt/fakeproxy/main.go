@@ -31,13 +31,15 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "address to listen on")
+	getDelay := flag.Duration("get-delay", 0, "delay before answering a GET, for e2e lock-contention tests")
 	flag.Parse()
 
-	s := newStore()
+	s := newStore(*getDelay)
 	log.Printf("fakeproxy: listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, s); err != nil { //nolint:gosec // e2e-only, no timeouts needed
 		log.Fatalf("fakeproxy: %v", err)
@@ -49,13 +51,28 @@ func main() {
 // value's content: a stored value is sealed ciphertext, and the DHT key
 // itself is part of a rendezvous secret (internal/dhtproxy's package
 // doc), so nothing beyond a request's method and path is ever logged.
+//
+// getDelay, when non-zero, is slept at the start of every GET (see
+// get). This exists for phase-lock.sh's overlap check alone: PLAN.md
+// section 5's lock rule ("a second fetch while one runs exits 0 at
+// once") is only provable against a *real* race between two real
+// stunmesh-agent fetch processes, not by inspecting the lock file.
+// Two processes launched back to back would, without this, both
+// likely finish their local, in-VM round trip before the second one
+// even starts -- flock has nothing to contend over by then. A
+// deliberate delay on the winner's GET holds the lock open long
+// enough that a second fetch, launched moments later, reliably
+// arrives while the first still holds it. Every other GET in the
+// harness runs through a store with getDelay 0, so no other check's
+// timing is affected.
 type store struct {
-	mu     sync.Mutex
-	values map[string][]byte // key -> the exact PUT request body
+	mu       sync.Mutex
+	values   map[string][]byte // key -> the exact PUT request body
+	getDelay time.Duration
 }
 
-func newStore() *store {
-	return &store{values: map[string][]byte{}}
+func newStore(getDelay time.Duration) *store {
+	return &store{values: map[string][]byte{}, getDelay: getDelay}
 }
 
 func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +95,9 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // answers 404, which Client.Get treats as "no value here yet", not an
 // error.
 func (s *store) get(w http.ResponseWriter, key string) {
+	if s.getDelay > 0 {
+		time.Sleep(s.getDelay)
+	}
 	s.mu.Lock()
 	value, ok := s.values[key]
 	s.mu.Unlock()

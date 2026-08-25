@@ -15,16 +15,25 @@
 #
 # State this file mutates on the caller's behalf, so run.sh's cleanup trap
 # can find anything left behind by a failure or an interrupt:
-#   QEMU_PID      set while the guest is running, cleared by stop_guest.
-#   FAKEPROXY_PID set while the fake dhtproxy is running, cleared by
-#                 stop_fake_proxy.
-#   MOUNT_DIR     set while the rootfs partition is mounted, cleared after.
-#   LOOP_DEV      set while the image is loop-attached, cleared after.
+#   QEMU_PID              set while the guest is running, cleared by
+#                         stop_guest. reboot_guest clears and re-sets it
+#                         across a real reboot.
+#   FAKEPROXY_PID         set while the fake dhtproxy is running, cleared
+#                         by stop_fake_proxy.
+#   DELAYED_FAKEPROXY_PID set while the delayed fake dhtproxy
+#                         (start_delayed_fake_proxy, phase-lock.sh only)
+#                         is running, cleared by stop_delayed_fake_proxy.
+#   MOUNT_DIR             set while the rootfs partition is mounted,
+#                         cleared after.
+#   LOOP_DEV              set while the image is loop-attached, cleared
+#                         after.
 #
 # build_agent_binary, build_provd_binary, build_fakeproxy_binary,
-# generate_identity_key, start_fake_proxy and setup_controller also set
-# AGENT_BIN, PROVD_BIN, FAKEPROXY_BIN, IDENTITY_KEY_PATH, IDENTITY_PUBKEY,
-# FAKEPROXY_HOST_URL, FAKEPROXY_GUEST_URL, PROVD_ROOT and CONTROLLER_PUBKEY
+# generate_identity_key, start_fake_proxy, start_delayed_fake_proxy and
+# setup_controller also set AGENT_BIN, PROVD_BIN, FAKEPROXY_BIN,
+# IDENTITY_KEY_PATH, IDENTITY_PUBKEY, FAKEPROXY_HOST_URL,
+# FAKEPROXY_GUEST_URL, DELAYED_FAKEPROXY_HOST_URL,
+# DELAYED_FAKEPROXY_GUEST_URL, PROVD_ROOT and CONTROLLER_PUBKEY
 # respectively -- run.sh reads these to drive the real controller and to
 # fill in inject_guest_files.
 set -euo pipefail
@@ -301,6 +310,61 @@ stop_fake_proxy() {
 	kill "$FAKEPROXY_PID" 2>/dev/null || true
 	wait "$FAKEPROXY_PID" 2>/dev/null || true
 	FAKEPROXY_PID=""
+}
+
+# start_delayed_fake_proxy PORT DELAY -- like start_fake_proxy, but a
+# second, independent fakeproxy instance (its own process, its own
+# empty value table) started with -get-delay DELAY (a Go duration,
+# for example "3s"). Sets DELAYED_FAKEPROXY_PID,
+# DELAYED_FAKEPROXY_HOST_URL and DELAYED_FAKEPROXY_GUEST_URL, the
+# delayed-instance counterparts of start_fake_proxy's own variables.
+#
+# phase-lock.sh is the only caller. It needs a GET that stays open
+# long enough for a second, real `stunmesh-agent fetch` to reliably
+# start while the first still holds the lock (see fakeproxy/main.go's
+# getDelay doc comment) -- a delay every other phase's fetches would
+# otherwise have to pay too, if this were the same instance
+# start_fake_proxy already runs for the rest of the harness.
+start_delayed_fake_proxy() {
+	local port="$1" delay="$2"
+	log "Starting the delayed fake dhtproxy on port ${port} (get-delay ${delay})..."
+	"$FAKEPROXY_BIN" -addr "0.0.0.0:${port}" -get-delay "$delay" >"${WORK}/fakeproxy-delayed.log" 2>&1 &
+	DELAYED_FAKEPROXY_PID=$!
+	DELAYED_FAKEPROXY_HOST_URL="http://127.0.0.1:${port}"
+	DELAYED_FAKEPROXY_GUEST_URL="http://10.0.2.2:${port}"
+	[[ -n "$DELAYED_FAKEPROXY_HOST_URL" && -n "$DELAYED_FAKEPROXY_GUEST_URL" ]] \
+		|| die "Delayed fake dhtproxy URLs were not set for port ${port}."
+
+	# Same readiness probe as start_fake_proxy, deliberately not
+	# factored out into a shared helper: the two callers already read
+	# fine on their own, and a shared helper would need to somehow
+	# hand back which of two different PID/URL variable sets to fill,
+	# for no real gain in a file this size.
+	local probe_key="0000000000000000000000000000000000000001"
+	local attempt=1 code
+	while true; do
+		if ! kill -0 "$DELAYED_FAKEPROXY_PID" 2>/dev/null; then
+			die "Delayed fake dhtproxy exited before it started listening. Check ${WORK}/fakeproxy-delayed.log."
+		fi
+		code=$(curl -s -o /dev/null -w '%{http_code}' "${DELAYED_FAKEPROXY_HOST_URL}/${probe_key}" 2>/dev/null || true)
+		[[ "$code" == "404" ]] && break
+		attempt=$((attempt + 1))
+		if (( attempt > 50 )); then
+			die "Delayed fake dhtproxy did not start listening within 5s. Check ${WORK}/fakeproxy-delayed.log."
+		fi
+		sleep 0.1
+	done
+	log "Delayed fake dhtproxy is listening (pid=${DELAYED_FAKEPROXY_PID})."
+}
+
+# stop_delayed_fake_proxy -- kills the fake dhtproxy started by
+# start_delayed_fake_proxy, if still running. Idempotent, the same as
+# stop_fake_proxy.
+stop_delayed_fake_proxy() {
+	[[ -n "${DELAYED_FAKEPROXY_PID:-}" ]] || return 0
+	kill "$DELAYED_FAKEPROXY_PID" 2>/dev/null || true
+	wait "$DELAYED_FAKEPROXY_PID" 2>/dev/null || true
+	DELAYED_FAKEPROXY_PID=""
 }
 
 # setup_controller NAMESPACE NODE_ID IDENTITY_PUBKEY PROXY_URL -- stands
@@ -599,4 +663,45 @@ guest_exec() {
 		-o BatchMode=yes \
 		-o ConnectTimeout=5 \
 		-p "$port" root@127.0.0.1 "$cmd"
+}
+
+# reboot_guest IMAGE PORT KEY LOG_FILE -- reboots the running guest and
+# proves it came back from a real reboot, not a second fresh boot:
+# phase-reboot.sh's whole point (PLAN.md 2.6, "No boot step. UCI is
+# persistent.") only holds if the guest that answers SSH afterwards is
+# the same disk having actually restarted, not a new VM.
+#
+# Sends "reboot" over SSH -- the connection drops as the guest goes
+# down, so its own exit status is meaningless and ignored. Then waits
+# for QEMU_PID to exit: boot_guest's -no-reboot makes a guest-issued
+# reset terminate QEMU instead of resetting the VM in place, so "the
+# guest is down" is only true once that process is gone, not the
+# instant the SSH command returns. Once it is gone, this calls
+# boot_guest and wait_for_ssh again on the same IMAGE -- the very disk
+# the just-exited guest wrote its own UCI commits to, not a copy.
+#
+# Bounded to reboot_timeout_seconds (default 60s) waiting for QEMU to
+# exit, the same pattern boot_guest's own `timeout` and wait_for_ssh's
+# attempt bound use: a hung shutdown fails loudly here instead of
+# wait_for_ssh timing out later with a misleading "never came up".
+reboot_guest() {
+	local image="$1" port="$2" key="$3" log_file="$4"
+	local reboot_timeout_seconds="${REBOOT_TIMEOUT_SECONDS:-60}"
+
+	log "Rebooting the guest..."
+	guest_exec "$port" "$key" "sync; reboot" >/dev/null 2>&1 || true
+
+	local waited=0
+	while [[ -n "${QEMU_PID:-}" ]] && kill -0 "$QEMU_PID" 2>/dev/null; do
+		if (( waited >= reboot_timeout_seconds )); then
+			die "QEMU did not exit within ${reboot_timeout_seconds}s of the guest-issued reboot. -no-reboot should have made it terminate on reset."
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	log "QEMU exited after the guest's reboot request (waited ${waited}s); booting it again from the same image."
+	QEMU_PID=""
+
+	boot_guest "$image" "$port" "$log_file"
+	wait_for_ssh "$port" "$key"
 }

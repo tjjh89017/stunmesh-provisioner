@@ -25,8 +25,22 @@
 # WireGuard interface, one peer) and runs the real stunmesh-agent fetch
 # in the guest, proving the agent's uci/ubus calls actually produce the
 # intended result on real netifd -- and that a second fetch of the same
-# bundle changes nothing. Removal, teardown, and multi-interface
-# behaviour are later items, not this one.
+# bundle changes nothing. phases/phase-diff-removal.sh publishes further
+# revisions of a two-interface bundle to prove reload, removal and
+# teardown. phases/phase-cron.sh, phase-hotplug.sh and phase-lock.sh
+# prove the platform integration contrib/openwrt/README.md section 3
+# and 4 describe: the cron line, a real hotplug-triggered fetch, and
+# lock contention between two real fetches. phases/phase-routes.sh and
+# phase-firewall.sh prove route_allowed_ips: false and that an
+# operator-added firewall zone survives an apply. phases/phase-reboot.sh
+# proves PLAN.md 2.6's "no boot step" claim against a real guest reboot.
+#
+# Every phase_* function is self-contained: it publishes whatever
+# fixture it needs and does not assume any other phase already ran, or
+# ran before it. This matters because phase functions run in the
+# alphabetical order of their function names (run.sh sorts them through
+# `declare -F`), not the order their comments read in, or the order
+# their files are loaded in.
 #
 # Usage:
 #   run.sh [--image PATH] [--openwrt-version VERSION] [--port PORT] [--keep-work]
@@ -134,6 +148,7 @@ done
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/stunmesh-e2e-openwrt.XXXXXX")
 QEMU_PID=""
 FAKEPROXY_PID=""
+DELAYED_FAKEPROXY_PID=""
 MOUNT_DIR=""
 LOOP_DEV=""
 
@@ -148,6 +163,7 @@ cleanup() {
 	local exit_code=$?
 	stop_guest
 	stop_fake_proxy
+	stop_delayed_fake_proxy
 	if [[ -n "${MOUNT_DIR:-}" ]]; then
 		sudo umount "$MOUNT_DIR" 2>/dev/null || true
 		rmdir "$MOUNT_DIR" 2>/dev/null || true

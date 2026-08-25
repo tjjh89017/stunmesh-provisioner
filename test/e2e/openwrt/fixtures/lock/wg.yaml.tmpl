@@ -1,0 +1,20 @@
+# lock/wg.yaml.tmpl -- bundle for phases/phase-lock.sh's overlap check
+# (PLAN.md section 5: "A second fetch while one runs exits 0 at once
+# with a log line"; contrib/openwrt/README.md section 4's last
+# paragraph). Freshly generated key material every run (see
+# fixtures/basic-wg0/wg.yaml.tmpl for why) also guarantees this
+# content differs from whatever any earlier phase already applied, so
+# the winning fetch in the race has a real change to apply, not a
+# same-content no-op -- the stub reload it triggers is genuine
+# evidence, not a coincidence of stale state.
+#
+# No real key material is committed here on purpose.
+wg0:
+  private_key: @NODE_PRIVATE_KEY@
+  addresses:
+    - 10.97.0.1/24
+  peers:
+    peer1:
+      public_key: @PEER_PUBLIC_KEY@
+      allowed_ips:
+        - 10.97.0.2/32

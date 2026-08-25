@@ -1,0 +1,17 @@
+# firewall-survive/wg-v2.yaml.tmpl -- the "changed" bundle for
+# phases/phase-firewall.sh. See wg-v1.yaml.tmpl's own comment: only
+# the peer's public key differs from v1, which is enough to force
+# wg0's sections to be deleted and recreated (PLAN.md 6's change
+# table).
+#
+# No real key material is committed here on purpose; see
+# fixtures/basic-wg0/wg.yaml.tmpl for why.
+wg0:
+  private_key: @NODE_PRIVATE_KEY@
+  addresses:
+    - 10.96.0.1/24
+  peers:
+    peer1:
+      public_key: @PEER_PUBLIC_KEY_V2@
+      allowed_ips:
+        - 10.96.0.2/32
