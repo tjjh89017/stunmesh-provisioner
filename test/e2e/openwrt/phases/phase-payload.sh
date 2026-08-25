@@ -13,6 +13,18 @@
 # hotplug scripts against the real files in contrib/openwrt/, so a phase
 # failure here means the injected copy actually drifted, not that this
 # phase's own expectation is stale.
+#
+# This phase checks the VALUE of every option contrib/openwrt/README.md
+# section 2 marks "Required: yes" -- namespace, node_id,
+# controller_pubkey, private_key_file -- not just that uci can read it.
+# "proxy" is deliberately left out: README.md section 2 marks it
+# "Required: no", both scripts fall back to stunmesh-agent's own default
+# proxy list when the section has none, and no other phase reads it from
+# UCI either -- every fetch phase passes --proxy explicitly from the
+# host-side FAKEPROXY_GUEST_URL/DELAYED_FAKEPROXY_GUEST_URL, so a wrong
+# UCI proxy value would never be exercised by anything in this harness. A
+# value assertion on an option nothing reads would test the injection
+# code, not the payload's fitness for the scripts that consume it.
 set -euo pipefail
 
 phase_payload() {
@@ -38,12 +50,22 @@ phase_payload() {
 	assert_ssh_output_contains "identity key is mode 0600" \
 		"ls -l /etc/stunmesh/provd/identity.key" "-rw-------"
 
-	assert_ssh_ok "/etc/config/provd parses as UCI (namespace readable)" \
-		"uci -q get provd.main.namespace"
-	assert_ssh_ok "/etc/config/provd parses as UCI (controller_pubkey readable)" \
-		"uci -q get provd.main.controller_pubkey"
-	assert_ssh_ok "/etc/config/provd parses as UCI (private_key_file readable)" \
-		"uci -q get provd.main.private_key_file"
+	# The four options both shipped scripts refuse to run without
+	# (contrib/openwrt/README.md section 2). A readable-but-wrong value
+	# -- a swapped variable, a quoting bug in the heredoc that writes
+	# this file -- would still pass a plain "is it set" check, so each
+	# one is compared against the exact value run.sh injected, not just
+	# probed for presence. controller_pubkey is a public key and
+	# private_key_file is only a path, so neither is secret and both are
+	# safe to print in a FAIL line.
+	assert_ssh_output_contains "/etc/config/provd namespace matches what run.sh injected" \
+		"uci -q get provd.main.namespace" "$E2E_NAMESPACE"
+	assert_ssh_output_contains "/etc/config/provd node_id matches what run.sh injected" \
+		"uci -q get provd.main.node_id" "$E2E_NODE_ID"
+	assert_ssh_output_contains "/etc/config/provd controller_pubkey matches what run.sh injected" \
+		"uci -q get provd.main.controller_pubkey" "$CONTROLLER_PUBKEY"
+	assert_ssh_output_contains "/etc/config/provd private_key_file matches the identity key's guest path" \
+		"uci -q get provd.main.private_key_file" "/etc/stunmesh/provd/identity.key"
 
 	assert_ssh_ok "stunmesh stand-in runs and exits 0" \
 		"/etc/init.d/stunmesh reload"
