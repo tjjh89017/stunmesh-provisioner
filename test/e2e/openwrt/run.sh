@@ -7,17 +7,22 @@
 # -accel kvm is hardcoded (see lib.sh boot_guest): this harness never falls
 # back to TCG.
 #
-# Before boot, it builds stunmesh-agent for the guest (linux/amd64) and
-# injects the full node payload: the binary, /etc/config/provd, a node
-# identity key, and the real init and hotplug scripts from contrib/openwrt
-# -- everything a freshly flashed device would have right after an operator
-# finished the manual key exchange, except nothing has fetched anything
-# yet. phases/phase-smoke.sh proves the skeleton itself (boot -> inject ->
-# SSH -> assert); phases/phase-payload.sh proves the payload landed intact.
-# The controller side (stunmesh-provd, a fake dhtproxy, a real bundle) is a
-# later item -- this one only shapes the payload so that item can plug in
-# namespace, node ID, controller public key and proxy URL as parameters
-# (E2E_NAMESPACE, E2E_NODE_ID, E2E_CONTROLLER_PUBKEY, E2E_PROXY_URL below).
+# Before boot, it stands up the real controller side on the host --
+# stunmesh-provd (init, node add, publish --once) and a fake dhtproxy the
+# guest can reach at 10.0.2.2 through QEMU's slirp networking -- publishes
+# a real bundle, and proves it is retrievable from the fake proxy at the
+# DHT key the node will use. It then builds stunmesh-agent for the guest
+# (linux/amd64) and injects the full node payload: the binary,
+# /etc/config/provd (carrying the real namespace, node ID, controller
+# public key and proxy URL the controller just generated), the node's
+# real identity key, and the real init and hotplug scripts from
+# contrib/openwrt -- everything a freshly flashed device would have right
+# after an operator finished the manual key exchange, with a real bundle
+# already waiting on the proxy, except nothing has fetched it yet.
+# phases/phase-smoke.sh proves the skeleton itself (boot -> inject -> SSH
+# -> assert); phases/phase-payload.sh proves the payload landed intact.
+# Asserting that the guest's agent actually fetches and applies that
+# bundle is a later item, not this one.
 #
 # Usage:
 #   run.sh [--image PATH] [--openwrt-version VERSION] [--port PORT] [--keep-work]
@@ -34,23 +39,24 @@
 #                         (default 2222).
 #   E2E_KEEP_WORK         1 keeps the working directory (image, boot log,
 #                         SSH key) after the run instead of deleting it.
-#   E2E_NAMESPACE         provd namespace written into /etc/config/provd
+#   E2E_NAMESPACE         the stunmesh-provd namespace this run creates and
+#                         writes into the guest's /etc/config/provd
 #                         (default: e2e-namespace).
-#   E2E_NODE_ID           provd node_id written into /etc/config/provd
+#   E2E_NODE_ID           the node ID this run registers with `node add`
+#                         and writes into /etc/config/provd
 #                         (default: e2e-node).
-#   E2E_CONTROLLER_PUBKEY provd controller_pubkey written into
-#                         /etc/config/provd. Empty generates a throwaway
-#                         key pair and uses its public half, since no real
-#                         controller exists yet.
-#   E2E_PROXY_URL         provd proxy written into /etc/config/provd
-#                         (default: a placeholder that answers nothing --
-#                         no fetch runs in this item).
+#   E2E_FAKEPROXY_PORT    port the fake dhtproxy listens on, on every
+#                         interface (default: 8787).
+#
+# The controller public key and the proxy URL are never operator-supplied:
+# they come from the real `stunmesh-provd init` and the fake dhtproxy this
+# run itself starts, so they are always live values, not placeholders.
 #
 # Requires: curl, sha256sum, unzstd, make (ImageBuilder path); go, make
-# (agent build); losetup, blkid, mount, umount, sync, sudo (injection);
-# qemu-system-x86_64, timeout, ssh, ssh-keygen (boot and control). Each is
-# checked up front, by name, so a missing tool is reported before any of it
-# runs.
+# (agent and provd build); losetup, blkid, mount, umount, sync, sudo
+# (injection); qemu-system-x86_64, timeout, ssh, ssh-keygen (boot and
+# control). Each is checked up front, by name, so a missing tool is
+# reported before any of it runs.
 set -euo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -70,14 +76,9 @@ OPENWRT_SUBTARGET=64
 OPENWRT_PROFILE=generic
 OPENWRT_PACKAGES="kmod-wireguard wireguard-tools"
 
-# These four are the values the NEXT item (stunmesh-provd plus a fake
-# dhtproxy) will supply for real. Until then they default to standins good
-# enough to prove the payload landed correctly, without a fetch ever
-# succeeding against them.
 E2E_NAMESPACE=${E2E_NAMESPACE:-e2e-namespace}
 E2E_NODE_ID=${E2E_NODE_ID:-e2e-node}
-E2E_CONTROLLER_PUBKEY=${E2E_CONTROLLER_PUBKEY:-}
-E2E_PROXY_URL=${E2E_PROXY_URL:-http://127.0.0.1:1/}
+E2E_FAKEPROXY_PORT=${E2E_FAKEPROXY_PORT:-8787}
 
 usage() {
 	sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -127,18 +128,21 @@ done
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/stunmesh-e2e-openwrt.XXXXXX")
 QEMU_PID=""
+FAKEPROXY_PID=""
 MOUNT_DIR=""
 LOOP_DEV=""
 
 # cleanup runs on every exit path: normal completion, an assertion failure,
 # a dependency or boot failure, and an interrupt (Ctrl-C). It kills QEMU
-# first (a leaked qemu-system-x86_64 process is the harness's worst failure
-# mode for a developer's machine), then unwinds any loop-mount left behind
-# by an interrupted inject_guest_files, then removes the working directory
-# unless --keep-work asked to keep it.
+# and the fake dhtproxy first (a leaked qemu-system-x86_64 or fakeproxy
+# process is the harness's worst failure mode for a developer's machine),
+# then unwinds any loop-mount left behind by an interrupted
+# inject_guest_files, then removes the working directory unless
+# --keep-work asked to keep it.
 cleanup() {
 	local exit_code=$?
 	stop_guest
+	stop_fake_proxy
 	if [[ -n "${MOUNT_DIR:-}" ]]; then
 		sudo umount "$MOUNT_DIR" 2>/dev/null || true
 		rmdir "$MOUNT_DIR" 2>/dev/null || true
@@ -171,11 +175,26 @@ fi
 
 build_agent_binary
 generate_identity_key
-resolve_controller_pubkey
+
+build_provd_binary
+build_fakeproxy_binary
+start_fake_proxy "$E2E_FAKEPROXY_PORT"
+
+setup_controller "$E2E_NAMESPACE" "$E2E_NODE_ID" "$IDENTITY_PUBKEY" "$FAKEPROXY_HOST_URL"
+publish_fixture "${HERE}/fixtures/empty" "$E2E_NAMESPACE" "$E2E_NODE_ID"
+
+# The smallest honest check for this item: a real `publish --once` put a
+# real bundle to the fake proxy, and that value is actually retrievable
+# from it at the DHT key the node will use -- the same GET a node's own
+# fetch performs (internal/dhtproxy's package doc). This is not a claim
+# about the guest: the guest has not even booted yet, and asserting that
+# its agent fetches and applies this bundle is a later item.
+assert_output_contains "the published bundle is retrievable from the fake dhtproxy at its DHT key" \
+	"curl -fsS ${FAKEPROXY_HOST_URL}/${PUBLISHED_KEY}" '"data"'
 
 ssh-keygen -t ed25519 -N "" -f "${WORK}/e2e_key" -q -C "stunmesh-e2e-openwrt"
 inject_guest_files "${WORK}/e2e_key.pub" "$AGENT_BIN" "$IDENTITY_KEY_PATH" \
-	"$E2E_NAMESPACE" "$E2E_NODE_ID" "$CONTROLLER_PUBKEY" "$E2E_PROXY_URL"
+	"$E2E_NAMESPACE" "$E2E_NODE_ID" "$CONTROLLER_PUBKEY" "$FAKEPROXY_GUEST_URL"
 
 SSH_KEY="${WORK}/e2e_key"
 export SSH_PORT SSH_KEY

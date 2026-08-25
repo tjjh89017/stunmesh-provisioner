@@ -15,13 +15,18 @@
 #
 # State this file mutates on the caller's behalf, so run.sh's cleanup trap
 # can find anything left behind by a failure or an interrupt:
-#   QEMU_PID   set while the guest is running, cleared by stop_guest.
-#   MOUNT_DIR  set while the rootfs partition is mounted, cleared after.
-#   LOOP_DEV   set while the image is loop-attached, cleared after.
+#   QEMU_PID      set while the guest is running, cleared by stop_guest.
+#   FAKEPROXY_PID set while the fake dhtproxy is running, cleared by
+#                 stop_fake_proxy.
+#   MOUNT_DIR     set while the rootfs partition is mounted, cleared after.
+#   LOOP_DEV      set while the image is loop-attached, cleared after.
 #
-# build_agent_binary, generate_identity_key and resolve_controller_pubkey
-# also set AGENT_BIN, IDENTITY_KEY_PATH and CONTROLLER_PUBKEY respectively,
-# for run.sh to pass into inject_guest_files.
+# build_agent_binary, build_provd_binary, build_fakeproxy_binary,
+# generate_identity_key, start_fake_proxy and setup_controller also set
+# AGENT_BIN, PROVD_BIN, FAKEPROXY_BIN, IDENTITY_KEY_PATH, IDENTITY_PUBKEY,
+# FAKEPROXY_HOST_URL, FAKEPROXY_GUEST_URL, PROVD_ROOT and CONTROLLER_PUBKEY
+# respectively -- run.sh reads these to drive the real controller and to
+# fill in inject_guest_files.
 set -euo pipefail
 
 log() {
@@ -186,38 +191,182 @@ build_agent_binary() {
 # exactly what a device would have after an operator ran keygen for real.
 # The guest is x86-64 and so is this runner, so the just-built AGENT_BIN
 # (linux/amd64) runs directly here; no guest boot is needed to generate it.
-# Sets IDENTITY_KEY_PATH. keygen's stdout is only ever the public key (see
-# doKeygen in cmd/stunmesh-agent/keygen_cmd.go) and is not logged here
-# either way, so no key material reaches any harness output.
+# Sets IDENTITY_KEY_PATH and IDENTITY_PUBKEY. keygen's stdout is only ever
+# the public key (see doKeygen in cmd/stunmesh-agent/keygen_cmd.go); it is
+# captured into a variable, here, for setup_controller's `node add` to
+# consume below, and is never printed or logged, so no key material
+# reaches any harness output.
 generate_identity_key() {
 	IDENTITY_KEY_PATH="${WORK}/identity.key"
 	log "Generating the node identity key (stunmesh-agent keygen)..."
-	"$AGENT_BIN" keygen --identity-key "$IDENTITY_KEY_PATH" >/dev/null \
+	IDENTITY_PUBKEY=$("$AGENT_BIN" keygen --identity-key "$IDENTITY_KEY_PATH") \
 		|| die "stunmesh-agent keygen failed."
 	[[ -f "$IDENTITY_KEY_PATH" ]] || die "keygen did not create ${IDENTITY_KEY_PATH}."
+	[[ -n "$IDENTITY_PUBKEY" ]] || die "keygen produced no public key on stdout."
 	log "Identity key generated."
 }
 
-# resolve_controller_pubkey -- sets CONTROLLER_PUBKEY, the value written
-# into provd's controller_pubkey option. The real controller (stunmesh-provd
-# plus the fake dhtproxy) is the next item, not this one; until it exists,
-# this generates a throwaway key pair with the same keygen path as
-# generate_identity_key and keeps only its public half, so the injected UCI
-# holds a real, well-formed key instead of a placeholder string. Set
-# E2E_CONTROLLER_PUBKEY to override once a real controller key exists.
-resolve_controller_pubkey() {
-	if [[ -n "${E2E_CONTROLLER_PUBKEY:-}" ]]; then
-		CONTROLLER_PUBKEY="$E2E_CONTROLLER_PUBKEY"
-		log "Using controller public key override."
-		return
-	fi
+# build_provd_binary -- builds stunmesh-provd for this runner's own
+# platform (it is the controller: it runs on the host, never on the
+# guest) through the repository's own Makefile, the same way
+# build_agent_binary builds the agent -- so this can never drift from how
+# the binary is really built. Writes it to $WORK/dist, alongside the
+# agent binary. Sets PROVD_BIN.
+build_provd_binary() {
+	log "Building stunmesh-provd (make provd)..."
+	make -C "$REPO_ROOT" provd DIST="${WORK}/dist" VERSION="e2e-test" \
+		|| die "make provd failed."
+	PROVD_BIN="${WORK}/dist/stunmesh-provd"
+	[[ -x "$PROVD_BIN" ]] || die "Expected stunmesh-provd binary not found at ${PROVD_BIN}."
+	log "stunmesh-provd binary ready: ${PROVD_BIN}"
+}
 
-	log "Generating a throwaway controller public key..."
-	local throwaway="${WORK}/controller-fake.key"
-	CONTROLLER_PUBKEY=$("$AGENT_BIN" keygen --identity-key "$throwaway") \
-		|| die "Generating a throwaway controller key failed."
-	rm -f "$throwaway"
-	[[ -n "$CONTROLLER_PUBKEY" ]] || die "Throwaway controller keygen produced no public key."
+# build_fakeproxy_binary -- builds the fake dhtproxy
+# (test/e2e/openwrt/fakeproxy), a harness-only Go program, not one of the
+# two product binaries the Makefile knows about, so a plain `go build` is
+# the right tool here, the same way it would be for any other
+# harness-only helper. Sets FAKEPROXY_BIN.
+build_fakeproxy_binary() {
+	log "Building the fake dhtproxy (go build)..."
+	(cd "$REPO_ROOT" && go build -o "${WORK}/dist/fakeproxy" ./test/e2e/openwrt/fakeproxy) \
+		|| die "Building the fake dhtproxy failed."
+	FAKEPROXY_BIN="${WORK}/dist/fakeproxy"
+	[[ -x "$FAKEPROXY_BIN" ]] || die "Expected fakeproxy binary not found at ${FAKEPROXY_BIN}."
+	log "Fake dhtproxy binary ready: ${FAKEPROXY_BIN}"
+}
+
+# start_fake_proxy PORT -- starts the fake dhtproxy (FAKEPROXY_BIN) in the
+# background, bound to every interface at PORT, not just 127.0.0.1: the
+# guest reaches the host at 10.0.2.2 through QEMU's slirp networking (see
+# boot_guest's -netdev user,...), and a loopback-only bind would answer
+# this harness's own checks while refusing the guest's fetch (the next
+# item). Sets FAKEPROXY_PID, FAKEPROXY_HOST_URL (for stunmesh-provd and
+# this harness's own checks, both running on the host) and
+# FAKEPROXY_GUEST_URL (the value written into the guest's
+# /etc/config/provd). Blocks until the proxy actually answers an HTTP
+# request, so nothing after this call can race an unready listener.
+start_fake_proxy() {
+	local port="$1"
+	log "Starting the fake dhtproxy on port ${port}..."
+	"$FAKEPROXY_BIN" -addr "0.0.0.0:${port}" >"${WORK}/fakeproxy.log" 2>&1 &
+	FAKEPROXY_PID=$!
+	FAKEPROXY_HOST_URL="http://127.0.0.1:${port}"
+	FAKEPROXY_GUEST_URL="http://10.0.2.2:${port}"
+	[[ -n "$FAKEPROXY_HOST_URL" && -n "$FAKEPROXY_GUEST_URL" ]] \
+		|| die "Fake dhtproxy URLs were not set for port ${port}."
+
+	# A syntactically valid but certainly-unused dhtkey: any real
+	# GET/PUT the harness later performs uses a different key
+	# (namespace/node_id derived), so this probe can never collide
+	# with real data. A 404 for it proves the server is not just
+	# accepting TCP connections but actually running store.ServeHTTP.
+	local probe_key="0000000000000000000000000000000000000000"
+	local attempt=1 code
+	while true; do
+		if ! kill -0 "$FAKEPROXY_PID" 2>/dev/null; then
+			die "Fake dhtproxy exited before it started listening. Check ${WORK}/fakeproxy.log."
+		fi
+		code=$(curl -s -o /dev/null -w '%{http_code}' "${FAKEPROXY_HOST_URL}/${probe_key}" 2>/dev/null || true)
+		[[ "$code" == "404" ]] && break
+		attempt=$((attempt + 1))
+		if (( attempt > 50 )); then
+			die "Fake dhtproxy did not start listening within 5s. Check ${WORK}/fakeproxy.log."
+		fi
+		sleep 0.1
+	done
+	log "Fake dhtproxy is listening (pid=${FAKEPROXY_PID})."
+}
+
+# stop_fake_proxy -- kills the fake dhtproxy started by start_fake_proxy,
+# if still running. Idempotent, the same as stop_guest.
+stop_fake_proxy() {
+	[[ -n "${FAKEPROXY_PID:-}" ]] || return 0
+	kill "$FAKEPROXY_PID" 2>/dev/null || true
+	wait "$FAKEPROXY_PID" 2>/dev/null || true
+	FAKEPROXY_PID=""
+}
+
+# setup_controller NAMESPACE NODE_ID IDENTITY_PUBKEY PROXY_URL -- stands
+# up the real controller side of a deployment through the actual
+# stunmesh-provd binary: `init` makes the namespace and its controller
+# key pair, `node add` registers this node with its identity public key.
+# Sets PROVD_ROOT (the --dir every stunmesh-provd invocation in this
+# harness uses) and CONTROLLER_PUBKEY (the value inject_guest_files
+# writes into the guest's /etc/config/provd).
+#
+# Ordering matters, the same way it would for a real operator: the node's
+# identity key pair must already exist (generate_identity_key, which
+# run.sh calls before this), because `node add` needs its public half as
+# an argument. init's controller key pair has no such dependency and
+# could in principle run at any point before publish -- it runs first
+# here only because `node add` needs an initialized namespace to add the
+# node into.
+setup_controller() {
+	local namespace="$1" node_id="$2" identity_pubkey="$3" proxy_url="$4"
+	PROVD_ROOT="${WORK}/provd-root"
+
+	log "Running stunmesh-provd init ${namespace}..."
+	"$PROVD_BIN" --dir "$PROVD_ROOT" init "$namespace" >/dev/null \
+		|| die "stunmesh-provd init failed."
+
+	local pubkey_path="${PROVD_ROOT}/${namespace}/controller.pub"
+	[[ -f "$pubkey_path" ]] || die "init did not write ${pubkey_path}."
+	CONTROLLER_PUBKEY=$(cat "$pubkey_path")
+	[[ -n "$CONTROLLER_PUBKEY" ]] || die "${pubkey_path} is empty."
+
+	point_proxies_at "$namespace" "$proxy_url"
+
+	log "Running stunmesh-provd node add ${namespace} ${node_id}..."
+	"$PROVD_BIN" --dir "$PROVD_ROOT" node add "$namespace" "$node_id" "$identity_pubkey" >/dev/null \
+		|| die "stunmesh-provd node add failed."
+	log "Controller ready: namespace=${namespace} node_id=${node_id}"
+}
+
+# point_proxies_at NAMESPACE PROXY_URL -- overwrites
+# <namespace>/provd.yaml's proxy list with PROXY_URL alone, replacing the
+# default Jami proxies `init` wrote (PLAN.md 7.3, init_cmd.go's
+# defaultProvdYAML). provd.yaml is one of the files PLAN.md 7.1 names as
+# the operator's to edit; this harness plays the operator's part here the
+# same way it hand-writes /etc/config/network for the guest.
+point_proxies_at() {
+	local namespace="$1" proxy_url="$2"
+	local path="${PROVD_ROOT}/${namespace}/provd.yaml"
+	cat >"$path" <<EOF
+proxies:
+  - ${proxy_url}
+republish_interval: 5m
+EOF
+}
+
+# publish_fixture FIXTURE_DIR NAMESPACE NODE_ID -- copies FIXTURE_DIR's
+# wg.yaml and stunmesh.yaml over the node's own, then runs the real
+# `stunmesh-provd publish --once` and parses its own stdout for the DHT
+# key it reports (the same "published ns/node: key=..." line
+# printPublishReport prints for a real operator, see
+# cmd/stunmesh-provd/publish_cmd.go). Sets PUBLISHED_KEY.
+#
+# Fixtures live under test/e2e/openwrt/fixtures/ as files, not as inline
+# shell strings here: a later item rewrites wg.yaml/stunmesh.yaml between
+# phases and re-publishes, and every phase that needs a new bundle on the
+# fake proxy only has to add a fixture directory and call this function
+# again with it -- no shell-string plumbing to add alongside it.
+publish_fixture() {
+	local fixture_dir="$1" namespace="$2" node_id="$3"
+	local node_dir="${PROVD_ROOT}/${namespace}/nodes/${node_id}"
+
+	[[ -f "${fixture_dir}/wg.yaml" ]] || die "Fixture ${fixture_dir} has no wg.yaml."
+	[[ -f "${fixture_dir}/stunmesh.yaml" ]] || die "Fixture ${fixture_dir} has no stunmesh.yaml."
+	cp "${fixture_dir}/wg.yaml" "${node_dir}/wg.yaml"
+	cp "${fixture_dir}/stunmesh.yaml" "${node_dir}/stunmesh.yaml"
+
+	log "Publishing fixture $(basename "$fixture_dir") for ${namespace}/${node_id}..."
+	local output
+	output=$("$PROVD_BIN" --dir "$PROVD_ROOT" publish --namespace "$namespace" --once) \
+		|| die "stunmesh-provd publish failed: ${output}"
+
+	PUBLISHED_KEY=$(echo "$output" | grep -oE 'key=[0-9a-f]{40}' | head -1 | cut -d= -f2)
+	[[ -n "$PUBLISHED_KEY" ]] || die "Could not find a DHT key in publish output: ${output}"
+	log "Published, DHT key: ${PUBLISHED_KEY}"
 }
 
 # inject_guest_files PUBKEY_PATH AGENT_BIN IDENTITY_KEY NAMESPACE NODE_ID
