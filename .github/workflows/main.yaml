@@ -121,11 +121,12 @@ jobs:
 
   e2e-realnet:
     name: E2E (realnet)
-    # Runs only after the OpenWrt e2e leg (against a fake, in-VM proxy)
-    # already passed: no reason to spend a real round trip against the
-    # real Jami proxies when the agent's own uci/ubus/netifd behaviour
-    # is already known to be broken.
-    needs: e2e
+    # Runs beside the OpenWrt leg, not after it. The two answer
+    # different questions -- one asks what the agent does to a device,
+    # the other asks what the Jami proxies actually return -- and
+    # neither needs the other's result. Running them together costs no
+    # extra runner minutes and saves the wall-clock of a serial chain.
+    needs: build-required
     runs-on: ubuntu-latest
     # Measured locally: build (~20s) + preflight + the publish/fetch
     # round trip + the value-size probe, whose rejected end can take the
