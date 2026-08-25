@@ -88,8 +88,12 @@ phase_reboot_uci_persistence() {
 	assert_ssh_ok "no managed cron line survives into the reboot" \
 		"! grep -q 'stunmesh-agent: managed by' /etc/crontabs/root 2>/dev/null"
 
-	before_network_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
-	before_pubkey=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
+	# guest_capture, not a plain `var=$(guest_exec ...)`: see
+	# phase-fetch-basic.sh's identical comment on the same pattern, and
+	# lib.sh's guest_capture, for why a failed read here must not abort
+	# the harness under `set -e`.
+	before_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
+	before_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
 
 	# No proxy reachable at all during the reboot window: see this
 	# file's own top comment for why this, not just boot_delay's
@@ -102,7 +106,7 @@ phase_reboot_uci_persistence() {
 	# anything could possibly have fetched, not eventually true once
 	# something did.
 	local after_pubkey
-	after_pubkey=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
+	after_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
 	assert_equal "wg0's public key survived the reboot, from UCI alone" \
 		"$after_pubkey" "$before_pubkey"
 	assert_ssh_output_contains "wg0 carries its peer again, from UCI alone" \
@@ -111,7 +115,7 @@ phase_reboot_uci_persistence() {
 		"ubus call network.interface.wg0 status" '"up": true'
 
 	local after_network_sha
-	after_network_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
+	after_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
 	assert_equal "/etc/config/network is byte-identical across the reboot (no uci commit happened)" \
 		"$after_network_sha" "$before_network_sha"
 

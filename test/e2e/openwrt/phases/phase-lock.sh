@@ -29,7 +29,7 @@
 set -euo pipefail
 
 # lockGetDelay must comfortably exceed the stagger between launching
-# the two racing fetches (0.5s, in phase_lock_overlap) so the second
+# the two racing fetches (1s, in phase_lock_overlap) so the second
 # one always starts while the first still holds the lock, and must
 # stay comfortably under fetch_cmd.go's fetchTimeout (30s) so the
 # winner's own GET does not time out waiting on itself.
@@ -78,7 +78,7 @@ phase_lock_overlap() {
 
 	delayed_fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${DELAYED_FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
 
-	before_actions=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log 2>/dev/null || echo 0")
+	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log" 0)
 
 	# The real overlap: one guest_exec, one shell, one fetch backgrounded
 	# and a second launched 1s later while the first is still asleep
@@ -104,7 +104,7 @@ phase_lock_overlap() {
 	assert_equal "exactly one of the two overlapping fetches was locked out" \
 		"$locked_count" "1"
 
-	after_actions=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log 2>/dev/null || echo 0")
+	after_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log" 0)
 	assert_equal "only the winner reached apply: the stunmesh stand-in ran exactly once, not twice" \
 		"$((after_actions - before_actions))" "1"
 

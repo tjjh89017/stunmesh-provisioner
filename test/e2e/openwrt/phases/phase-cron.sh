@@ -30,7 +30,11 @@ phase_cron_line() {
 	guest_exec "$SSH_PORT" "$SSH_KEY" \
 		"mkdir -p /etc/crontabs && echo '${FOREIGN_CRON_LINE}' > /etc/crontabs/root && chmod 0600 /etc/crontabs/root" \
 		|| die "Could not plant the foreign crontab line."
-	mode_before=$(guest_exec "$SSH_PORT" "$SSH_KEY" "ls -l /etc/crontabs/root" | awk '{print $1}')
+	# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+	# guest_capture for why a failed read here must not abort the
+	# harness under `set -e` -- this phase's own mode_before/mode_after
+	# is exactly the before/after capture pattern that guards.
+	mode_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "ls -l /etc/crontabs/root" | awk '{print $1}')
 
 	# Count, not assume: another phase's own cron activity (this
 	# phase does not know or care what ran before it -- see run.sh's
@@ -64,7 +68,7 @@ phase_cron_line() {
 	# must not leave two managed lines.
 	assert_ssh_ok "a repeated service start exits 0" \
 		"service stunmesh-agent start"
-	tag_count=$(guest_exec "$SSH_PORT" "$SSH_KEY" \
+	tag_count=$(guest_capture "$SSH_PORT" "$SSH_KEY" \
 		"grep -c -F '${CRON_TAG}' /etc/crontabs/root")
 	assert_equal "a repeated start left exactly one managed cron line, not two" \
 		"$tag_count" "1"
@@ -76,7 +80,7 @@ phase_cron_line() {
 	assert_ssh_output_contains "stop left the foreign crontab line alone" \
 		"cat /etc/crontabs/root" "not-stunmesh-agent"
 
-	mode_after=$(guest_exec "$SSH_PORT" "$SSH_KEY" "ls -l /etc/crontabs/root" | awk '{print $1}')
+	mode_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "ls -l /etc/crontabs/root" | awk '{print $1}')
 	assert_equal "the crontab file's mode survived every rewrite" \
 		"$mode_after" "$mode_before"
 

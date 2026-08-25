@@ -102,22 +102,39 @@ phase_fetch_basic() {
 	assert_ssh_output_contains "uci peer section wg0_p_peer1 carries the peer's public key" \
 		"uci -q get network.wg0_p_peer1.public_key" "$FETCH_BASIC_PEER_PUBKEY"
 
+	# The fixture generates a preshared key for peer1 (fixtures/basic-wg0/
+	# wg.yaml.tmpl) and internal/uci/interface.go writes it as
+	# `option preshared_key`. Checking that UCI option would only prove the
+	# agent wrote a string; it would not prove netifd's WireGuard proto
+	# handler ever read it back out and pushed it into the kernel. "wg show
+	# ... preshared-keys" asks the kernel directly, so it is the one check
+	# that actually closes the loop this harness exists to close. Presence
+	# only, never the value: printing or comparing the key itself would put
+	# real key material in the harness's own output.
+	assert_ssh_ok "wg0 peer1's preshared key reached the kernel (wg show, not just uci)" \
+		"wg show wg0 preshared-keys | awk -v peer='${FETCH_BASIC_PEER_PUBKEY}' '\$1 == peer && \$2 != \"(none)\" { f=1 } END { exit !f }'"
+
 	assert_ssh_ok "last.json exists at the documented path" \
 		"test -f /etc/stunmesh/provd/last.json"
 	assert_ssh_output_contains "last.json is mode 0600" \
 		"ls -l /etc/stunmesh/provd/last.json" "-rw-------"
 
+	# guest_capture, not a plain `var=$(guest_exec ...)`: if an earlier
+	# assertion in this phase already failed and left one of these files
+	# missing, a plain read would abort the whole harness under `set -e`
+	# instead of letting assert_equal below report the mismatch and the
+	# run continue (see lib.sh's guest_capture for why).
 	local before_network_sha before_last_sha before_actions
-	before_network_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
-	before_last_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
-	before_actions=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
+	before_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
+	before_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
+	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
 	assert_ssh_exit_code "second fetch with the same bundle exits 3 (no change)" "$fetch_cmd" 3
 
 	local after_network_sha after_last_sha after_actions
-	after_network_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
-	after_last_sha=$(guest_exec "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
-	after_actions=$(guest_exec "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
+	after_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
+	after_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
+	after_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
 	assert_equal "second fetch left /etc/config/network byte-identical" \
 		"$after_network_sha" "$before_network_sha"

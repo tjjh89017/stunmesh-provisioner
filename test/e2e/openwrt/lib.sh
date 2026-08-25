@@ -664,6 +664,50 @@ guest_exec() {
 		-p "$port" root@127.0.0.1 "$cmd"
 }
 
+# guest_capture PORT KEY CMD [FALLBACK] -- like `var=$(guest_exec ...)`,
+# except a failed CMD (for example, reading a file an earlier failed
+# assertion left missing) returns FALLBACK instead of propagating
+# CMD's nonzero exit.
+#
+# assert.sh's assertions deliberately never stop the run on failure
+# (see assert.sh's own top comment), so a plain `var=$(guest_exec
+# ...)` used for a before/after capture defeats that under this
+# harness's `set -euo pipefail`: the read itself aborts the whole
+# script the instant its file is missing, skips every later phase,
+# and buries report_assertions' summary. Capturing through this
+# instead means the read always succeeds at the shell level.
+#
+# FALLBACK given (e.g. phase-lock.sh's "0" for a before-any-action
+# count): returned as-is on failure, because it is a real, meaningful
+# default value the caller chose, not just an error flag -- the
+# caller's own arithmetic or comparison still needs to work with it.
+#
+# FALLBACK omitted: returns a sentinel unique to *this call*
+# ("GUEST_CAPTURE_FAILED:<nanoseconds>-<random>"), not one fixed
+# string. A fixed sentinel would make a before/after assert_equal
+# report a false "ok" if the same guest command failed identically on
+# both sides (for example, a file that was missing before the second
+# fetch and is still missing after it) -- exactly the silent pass this
+# guard exists to prevent, not reproduce.
+#
+# CMD's stderr is left alone, not redirected to /dev/null: a capture
+# that fails for an unexpected reason (a dropped SSH connection, not
+# the missing-file case this exists for) still needs its diagnostic
+# on the console, the same as a plain guest_exec failure would leave
+# visible.
+#
+# Several phases do this kind of before/after (or single-value)
+# capture; this is the one place that owns the guard so each phase
+# does not reinvent it.
+guest_capture() {
+	local port="$1" key="$2" cmd="$3"
+	if [[ $# -ge 4 ]]; then
+		guest_exec "$port" "$key" "$cmd" || echo "$4"
+	else
+		guest_exec "$port" "$key" "$cmd" || echo "GUEST_CAPTURE_FAILED:$(date +%s%N)-$RANDOM"
+	fi
+}
+
 # reboot_guest IMAGE PORT KEY LOG_FILE -- reboots the running guest and
 # proves it came back from a real reboot, not a second fresh boot:
 # phase-reboot.sh's whole point (PLAN.md 2.6, "No boot step. UCI is

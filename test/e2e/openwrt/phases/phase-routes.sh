@@ -57,7 +57,11 @@ phase_routes() {
 	# comment explains why): the main routing table for wg0 should hold
 	# only the two routes[] entries, nothing implicit from the address
 	# itself.
-	route_count=$(guest_exec "$SSH_PORT" "$SSH_KEY" "ip route show dev wg0 | wc -l")
+	#
+	# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+	# guest_capture for why a failed read here must not abort the
+	# harness under `set -e`.
+	route_count=$(guest_capture "$SSH_PORT" "$SSH_KEY" "ip route show dev wg0 | wc -l")
 	assert_equal "the main table holds exactly the two routes[] entries for wg0" \
 		"$route_count" "2"
 

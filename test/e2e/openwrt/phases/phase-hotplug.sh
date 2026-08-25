@@ -68,14 +68,19 @@ remove_bridge_iface() {
 		|| die "Could not remove the ${name} bridge interface."
 }
 
-# hotplug_fetch_count -- the number of "hotplug fetch" log lines
-# logread currently holds. hotplug-iface's log() calls are the only
-# source of this exact substring (stunmesh-agent.init's own run_fetch
-# logs "fetch applied"/"fetch: no change", with no "hotplug" prefix),
-# so a delta here can only come from a real hotplug-triggered fetch,
-# never from a cron- or manually-run one.
+# hotplug_fetch_count -- the number of hotplug-iface log lines that
+# report a real fetch outcome (applied / no change / failed).
+# hotplug-iface (contrib/openwrt/hotplug-iface) also logs two guard-
+# clause lines that contain the plain substring "hotplug fetch"
+# ("...; skipping hotplug fetch", when /etc/config/provd is missing or
+# incomplete) without ever having run fetch at all. A plain substring
+# grep for "hotplug fetch" would count those too, so this matches only
+# the three lines that follow a real invocation: "hotplug fetch
+# applied", "hotplug fetch: no change" and "hotplug fetch failed, exit
+# code N". The guard-clause lines end in "hotplug fetch" with nothing
+# after it, so none of the three patterns below can match them.
 hotplug_fetch_count() {
-	guest_exec "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'hotplug fetch' || true"
+	guest_exec "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true"
 }
 
 phase_hotplug_wan_ifup() {
