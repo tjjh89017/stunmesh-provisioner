@@ -98,9 +98,19 @@ render_wg0_only_bundle() {
 # both as "not restarted" evidence (unchanged ifindex across a reload
 # that should not have touched this interface) and as "torn down"
 # evidence (ifindex becomes "absent").
+#
+# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+# guest_capture for why a failed read here must not abort the harness
+# under `set -e`. No FALLBACK: "absent" is already a real, meaningful
+# answer this function returns (the netdev is genuinely gone), so
+# using it to also mean "the ssh read itself failed" would make an
+# infrastructure failure read as a passing "torn down" check. The
+# per-call sentinel guest_capture falls back to instead never equals
+# "absent" or a real ifindex, so a failed read shows up as itself in
+# the assertion output, not as a plausible-looking value.
 ifindex_of() {
 	local iface="$1"
-	guest_exec "$SSH_PORT" "$SSH_KEY" \
+	guest_capture "$SSH_PORT" "$SSH_KEY" \
 		"cat /sys/class/net/${iface}/ifindex 2>/dev/null || echo absent"
 }
 

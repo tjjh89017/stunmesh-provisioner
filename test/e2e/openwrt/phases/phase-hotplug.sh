@@ -79,8 +79,16 @@ remove_bridge_iface() {
 # applied", "hotplug fetch: no change" and "hotplug fetch failed, exit
 # code N". The guard-clause lines end in "hotplug fetch" with nothing
 # after it, so none of the three patterns below can match them.
+#
+# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+# guest_capture for why a failed read here must not abort the harness
+# under `set -e` -- every caller below takes a before/after delta of
+# this count, the same pattern the guard exists for. The remote `||
+# true` stays: it absorbs grep's own "no match" exit so its real count
+# reaches the caller unchanged. FALLBACK "0" covers guest_exec itself
+# failing, with a real value the callers' arithmetic can still use.
 hotplug_fetch_count() {
-	guest_exec "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true"
+	guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true" 0
 }
 
 phase_hotplug_wan_ifup() {

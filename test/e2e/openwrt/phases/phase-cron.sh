@@ -40,7 +40,15 @@ phase_cron_line() {
 	# phase does not know or care what ran before it -- see run.sh's
 	# doc comment on phase ordering) may already have logged a
 	# "crond (busybox" line before this one runs.
-	crond_log_before=$(guest_exec "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true")
+	# guest_capture, not a plain `var=$(guest_exec ...)`, same as
+	# mode_before above: this is a count, and the `|| true` inside the
+	# remote command already absorbs grep's own "no match" exit so its
+	# real count reaches the caller unchanged (see lib.sh's guest_capture
+	# comment on why FALLBACK cannot substitute for that). FALLBACK "0"
+	# here covers the other failure mode, guest_exec itself failing, with
+	# a real "no crond activity seen" value the later subtraction can
+	# still do arithmetic on.
+	crond_log_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true" 0)
 
 	assert_ssh_ok "service stunmesh-agent start exits 0" \
 		"service stunmesh-agent start"
@@ -59,7 +67,7 @@ phase_cron_line() {
 	# line, means the reload never really landed.
 	assert_ssh_ok "crond is running after the reload install_cron triggers" \
 		"pgrep crond"
-	crond_log_after=$(guest_exec "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true")
+	crond_log_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true" 0)
 	assert_ssh_ok "crond logged that it (re)started against the new crontab" \
 		"[ $((crond_log_after - crond_log_before)) -ge 1 ]"
 

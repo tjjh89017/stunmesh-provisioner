@@ -99,8 +99,18 @@ phase_lock_overlap() {
 		wait \"\$a_pid\"" \
 		|| die "Constructing the real fetch overlap failed outright (not a lock-contention failure; see the guest for /tmp/lock-a.out and /tmp/lock-b.out)."
 
-	locked_count=$(guest_exec "$SSH_PORT" "$SSH_KEY" \
-		"grep -c 'already locked by another instance, exiting' /tmp/lock-a.out /tmp/lock-b.out | awk -F: '{s+=\$2} END {print s}'")
+	# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+	# guest_capture for why a failed read here must not abort the
+	# harness under `set -e`. FALLBACK "0": like before_actions/
+	# after_actions above, this is a count, and 0 is the real,
+	# meaningful "no lockout observed" value -- the assert_equal below
+	# then reports it as a count that is wrong (0 instead of 1), not as
+	# a silent abort. The remote pipeline itself needs no `|| true`:
+	# its last command is awk, which exits 0 whether or not grep found
+	# a match, so guest_exec's own exit status already never reflects
+	# grep's "no match" case.
+	locked_count=$(guest_capture "$SSH_PORT" "$SSH_KEY" \
+		"grep -c 'already locked by another instance, exiting' /tmp/lock-a.out /tmp/lock-b.out | awk -F: '{s+=\$2} END {print s}'" 0)
 	assert_equal "exactly one of the two overlapping fetches was locked out" \
 		"$locked_count" "1"
 
