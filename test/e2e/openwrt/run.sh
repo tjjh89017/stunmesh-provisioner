@@ -224,8 +224,35 @@ boot_guest "$IMAGE_PATH" "$SSH_PORT" "${WORK}/boot.log"
 wait_for_ssh "$SSH_PORT" "$SSH_KEY"
 
 log "Running phases..."
+# declare -F only reports function NAMES, with no per-file origin: if two
+# phase files each define the same phase_* name, the second sourced file
+# silently overwrites the first and declare -F still shows the name
+# exactly once -- the PHASE_ORDER cross-check below would see nothing
+# wrong, the shadowed file's checks would simply never run, and the
+# suite would report a clean pass. Catch that here, per file, before it
+# can happen: source each phase file standalone in a throwaway
+# interpreter first (nothing else loaded) to see exactly which phase_*
+# names IT defines, independent of what any earlier file already
+# defined, then fail loudly the moment a name repeats across files. If
+# the standalone probe itself fails to source a file (a real syntax
+# error, or a top-level reference to a variable only run.sh/lib.sh
+# would normally provide), that is treated as a probe failure and dies
+# immediately too -- silently falling back to "this file defines no
+# phase_* functions" would let a duplicate slip past undetected, which
+# is exactly the failure mode this check exists to prevent.
+declare -A PHASE_FUNCTION_FILE=()
 for phase in "${HERE}"/phases/phase-*.sh; do
 	log "-- loading $(basename "$phase") --"
+	if ! PHASE_PROBE_OUTPUT=$(bash -c '. "$1" && declare -F' _ "$phase" 2>&1); then
+		die "could not determine phase_* functions in $(basename "$phase"): sourcing it standalone failed: ${PHASE_PROBE_OUTPUT}"
+	fi
+	mapfile -t FILE_PHASES < <(printf '%s\n' "$PHASE_PROBE_OUTPUT" | awk '{print $3}' | grep '^phase_')
+	for fn in "${FILE_PHASES[@]}"; do
+		if [[ -n "${PHASE_FUNCTION_FILE[$fn]:-}" ]]; then
+			die "phase function '${fn}' is defined in both $(basename "${PHASE_FUNCTION_FILE[$fn]}") and $(basename "$phase") -- the second definition silently shadows the first; rename one of them"
+		fi
+		PHASE_FUNCTION_FILE[$fn]="$phase"
+	done
 	# shellcheck source=/dev/null
 	. "$phase"
 done
@@ -267,7 +294,11 @@ PHASE_ORDER=(
 # by the sourced files, in both directions. A phase file added without a
 # matching PHASE_ORDER entry must not silently never run; a stale
 # PHASE_ORDER entry with no matching function must not silently be
-# skipped either -- declare -F is the ground truth for what exists.
+# skipped either -- declare -F is the ground truth for what exists, and
+# by this point it is safe to treat as such: the sourcing loop above has
+# already ruled out two files quietly defining the same name, which is
+# the one way declare -F's name-only view could otherwise lie about a
+# file's checks actually having run.
 mapfile -t DEFINED_PHASES < <(declare -F | awk '{print $3}' | grep '^phase_' | sort)
 mapfile -t SORTED_PHASE_ORDER < <(printf '%s\n' "${PHASE_ORDER[@]}" | sort)
 
