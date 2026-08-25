@@ -115,6 +115,15 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v7
 
+      # The harness builds stunmesh-agent, stunmesh-provd, and the fake
+      # dhtproxy itself (test/e2e/openwrt/lib.sh, via make and go build).
+      # Without this step those builds fall back to whatever Go the
+      # runner image ships, which can silently differ from the toolchain
+      # build used to produce the release binaries. Pin it explicitly,
+      # the same way build and e2e-realnet do.
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
       - name: Run the OpenWrt e2e harness
         uses: ./.github/actions/e2e-openwrt
 
