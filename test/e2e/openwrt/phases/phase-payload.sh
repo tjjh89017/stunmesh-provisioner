@@ -53,19 +53,36 @@ phase_payload() {
 	# The four options both shipped scripts refuse to run without
 	# (contrib/openwrt/README.md section 2). A readable-but-wrong value
 	# -- a swapped variable, a quoting bug in the heredoc that writes
-	# this file -- would still pass a plain "is it set" check, so each
-	# one is compared against the exact value run.sh injected, not just
-	# probed for presence. controller_pubkey is a public key and
+	# this file, a trailing newline or stray whitespace, an accidental
+	# prefix or suffix -- would still pass a substring check
+	# (assert_ssh_output_contains), because the expected value stays a
+	# substring of the corrupted one. Each option is instead captured
+	# exactly and compared with assert_equal, which only passes on a
+	# literal match. controller_pubkey is a public key and
 	# private_key_file is only a path, so neither is secret and both are
 	# safe to print in a FAIL line.
-	assert_ssh_output_contains "/etc/config/provd namespace matches what run.sh injected" \
-		"uci -q get provd.main.namespace" "$E2E_NAMESPACE"
-	assert_ssh_output_contains "/etc/config/provd node_id matches what run.sh injected" \
-		"uci -q get provd.main.node_id" "$E2E_NODE_ID"
-	assert_ssh_output_contains "/etc/config/provd controller_pubkey matches what run.sh injected" \
-		"uci -q get provd.main.controller_pubkey" "$CONTROLLER_PUBKEY"
-	assert_ssh_output_contains "/etc/config/provd private_key_file matches the identity key's guest path" \
-		"uci -q get provd.main.private_key_file" "/etc/stunmesh/provd/identity.key"
+	#
+	# `uci -q get` on a missing option prints nothing and exits
+	# nonzero. guest_capture, with no FALLBACK argument, reports that
+	# case as "GUEST_CAPTURE_FAILED:<timestamp>-<random>" (see lib.sh's
+	# guest_capture) -- a value that can never equal an expected
+	# namespace/node_id/pubkey/path, so assert_equal fails and the FAIL
+	# line's "got:" reads as a missing-option marker, not as a
+	# confusing empty string.
+	local got_namespace got_node_id got_controller_pubkey got_private_key_file
+	got_namespace=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.namespace")
+	got_node_id=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.node_id")
+	got_controller_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.controller_pubkey")
+	got_private_key_file=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.private_key_file")
+
+	assert_equal "/etc/config/provd namespace matches what run.sh injected" \
+		"$got_namespace" "$E2E_NAMESPACE"
+	assert_equal "/etc/config/provd node_id matches what run.sh injected" \
+		"$got_node_id" "$E2E_NODE_ID"
+	assert_equal "/etc/config/provd controller_pubkey matches what run.sh injected" \
+		"$got_controller_pubkey" "$CONTROLLER_PUBKEY"
+	assert_equal "/etc/config/provd private_key_file matches the identity key's guest path" \
+		"$got_private_key_file" "/etc/stunmesh/provd/identity.key"
 
 	assert_ssh_ok "stunmesh stand-in runs and exits 0" \
 		"/etc/init.d/stunmesh reload"
