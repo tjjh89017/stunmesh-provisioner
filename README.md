@@ -40,4 +40,16 @@ system provides no certificate store, so they are inert on an image
 that has `ca-bundle`. Build with `EMBED_CA=0` when the image is known
 to have one and the flash space matters more.
 
+## OpenWrt end-to-end tests
+
+`test/e2e/openwrt/` boots a real OpenWrt x86-64 VM under KVM and runs
+the real `stunmesh-agent` binary against it. It proves the agent's
+`uci`, `ubus` and hotplug calls work on real `netifd`, not a mocked
+`exec` -- fetching and applying a bundle, diffing and removing
+interfaces, the cron line, hotplug, lock contention, routes, a
+firewall zone surviving an apply, and a reboot with no proxy or agent
+running. CI (`e2e-required` in `.github/workflows/main.yaml`) gates on
+it for every push and pull request. See
+`test/e2e/openwrt/README.md` for how to run and extend it.
+
 Status: pre-alpha, see .plan/PLAN.md
