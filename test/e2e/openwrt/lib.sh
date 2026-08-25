@@ -717,6 +717,22 @@ guest_capture() {
 	fi
 }
 
+# guest_capture_failed VALUE -- true when VALUE is one of
+# guest_capture's own no-FALLBACK sentinels, i.e. the read behind it
+# never reached the guest. Callers that need to do arithmetic on a
+# no-FALLBACK capture (a before/after delta, for example) cannot rely
+# on the sentinel simply losing an equality or substring check the
+# way phase-diff-removal.sh's ifindex_of comparisons do -- feeding it
+# to `$(( ))` is a bash error, not a clean "not equal", so they must
+# recognize it explicitly before doing arithmetic and record a named
+# assertion failure instead. What to do about a failed capture differs
+# by caller (a single before/after pair vs. several sharing one
+# delta-and-compare helper), so only the recognizing predicate lives
+# here; the response stays at each call site.
+guest_capture_failed() {
+	[[ "$1" == GUEST_CAPTURE_FAILED:* ]]
+}
+
 # reboot_guest IMAGE PORT KEY LOG_FILE -- reboots the running guest and
 # proves it came back from a real reboot, not a second fresh boot:
 # phase-reboot.sh's whole point (PLAN.md 2.6, "No boot step. UCI is

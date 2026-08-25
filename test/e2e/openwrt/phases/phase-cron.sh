@@ -44,11 +44,19 @@ phase_cron_line() {
 	# mode_before above: this is a count, and the `|| true` inside the
 	# remote command already absorbs grep's own "no match" exit so its
 	# real count reaches the caller unchanged (see lib.sh's guest_capture
-	# comment on why FALLBACK cannot substitute for that). FALLBACK "0"
-	# here covers the other failure mode, guest_exec itself failing, with
-	# a real "no crond activity seen" value the later subtraction can
-	# still do arithmetic on.
-	crond_log_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true" 0)
+	# comment on why FALLBACK cannot substitute for that). No FALLBACK
+	# here, unlike mode_before: this value feeds a before/after
+	# subtraction below, and "0" is itself a real, meaningful crond-log
+	# count -- if the *before* read is what fails (guest wedged,
+	# connection dropped) a "0" FALLBACK would read as "no crond
+	# activity yet", inflate the after-before delta by whatever crond
+	# really logged, and pass the "crond (re)started" assertion with no
+	# evidence it did. The sentinel guest_capture falls back to instead
+	# can never be mistaken for a real count, so the guard below can
+	# tell "the read failed" from "crond really hasn't logged" and
+	# record that as its own named failure instead of doing arithmetic
+	# on it.
+	crond_log_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true")
 
 	assert_ssh_ok "service stunmesh-agent start exits 0" \
 		"service stunmesh-agent start"
@@ -67,9 +75,20 @@ phase_cron_line() {
 	# line, means the reload never really landed.
 	assert_ssh_ok "crond is running after the reload install_cron triggers" \
 		"pgrep crond"
-	crond_log_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true" 0)
-	assert_ssh_ok "crond logged that it (re)started against the new crontab" \
-		"[ $((crond_log_after - crond_log_before)) -ge 1 ]"
+	crond_log_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c 'crond (busybox' || true")
+	# Recognize a failed before/after read explicitly before doing
+	# arithmetic on it -- see crond_log_before's comment and lib.sh's
+	# guest_capture_failed. Feeding the sentinel to `$(( ))` would be a
+	# bash error, not a clean assertion failure, so this checks first
+	# and records a named failure instead of ever reaching that
+	# arithmetic on bad input.
+	if guest_capture_failed "$crond_log_before" || guest_capture_failed "$crond_log_after"; then
+		assert_ok "crond logged that it (re)started against the new crontab" \
+			"echo 'could not read the crond log count from the guest (before=${crond_log_before}, after=${crond_log_after})' >&2; false"
+	else
+		assert_ssh_ok "crond logged that it (re)started against the new crontab" \
+			"[ $((crond_log_after - crond_log_before)) -ge 1 ]"
+	fi
 
 	# A repeated start (README.md section 3: "a repeated start()...
 	# removes any cron line it installed before adding the new one")

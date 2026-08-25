@@ -85,10 +85,35 @@ remove_bridge_iface() {
 # under `set -e` -- every caller below takes a before/after delta of
 # this count, the same pattern the guard exists for. The remote `||
 # true` stays: it absorbs grep's own "no match" exit so its real count
-# reaches the caller unchanged. FALLBACK "0" covers guest_exec itself
-# failing, with a real value the callers' arithmetic can still use.
+# reaches the caller unchanged. No FALLBACK: every caller subtracts
+# two of these, and "0" is itself a real, meaningful count -- if the
+# *before* call is the one that fails (guest wedged, connection
+# dropped), a "0" FALLBACK would read as "no fetches yet", inflate the
+# after-before delta by whatever really ran, and pass "ran exactly N
+# hotplug fetches" with no evidence behind the number. The sentinel
+# guest_capture falls back to instead can never be mistaken for a real
+# count, so assert_hotplug_delta below can tell "the read failed" from
+# "genuinely zero fetches" and record the former as its own named
+# failure instead of doing arithmetic on it.
 hotplug_fetch_count() {
-	guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true" 0
+	guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true"
+}
+
+# assert_hotplug_delta DESC BEFORE AFTER EXPECTED -- asserts that
+# AFTER minus BEFORE equals EXPECTED, unless either capture is
+# hotplug_fetch_count's failure sentinel, in which case it records DESC
+# as a named failure ("could not read ... from the guest") instead of
+# feeding the sentinel to `$(( ))`, which would be a bash error rather
+# than a clean assertion failure. Shared by every before/after call
+# below instead of each one reimplementing the same guard.
+assert_hotplug_delta() {
+	local desc="$1" before="$2" after="$3" expected="$4"
+	if guest_capture_failed "$before" || guest_capture_failed "$after"; then
+		assert_ok "$desc" \
+			"echo 'could not read the hotplug fetch count from the guest (before=${before}, after=${after})' >&2; false"
+	else
+		assert_equal "$desc" "$((after - before))" "$expected"
+	fi
 }
 
 phase_hotplug_wan_ifup() {
@@ -101,22 +126,22 @@ phase_hotplug_wan_ifup() {
 	assert_ssh_ok "ifup wan exits 0" "ifup wan"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 	after=$(hotplug_fetch_count)
-	assert_equal "a real 'ifup wan' event ran exactly one hotplug fetch" \
-		"$((after - before))" "1"
+	assert_hotplug_delta "a real 'ifup wan' event ran exactly one hotplug fetch" \
+		"$before" "$after" "1"
 
 	before="$after"
 	assert_ssh_ok "ifdown wan exits 0" "ifdown wan"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 2" || true
 	after=$(hotplug_fetch_count)
-	assert_equal "'ifdown wan' (ACTION != ifup) ran no hotplug fetch" \
-		"$((after - before))" "0"
+	assert_hotplug_delta "'ifdown wan' (ACTION != ifup) ran no hotplug fetch" \
+		"$before" "$after" "0"
 
 	before="$after"
 	assert_ssh_ok "ifup testif exits 0" "ifup testif"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 2" || true
 	after=$(hotplug_fetch_count)
-	assert_equal "'ifup testif' (INTERFACE != wan) ran no hotplug fetch" \
-		"$((after - before))" "0"
+	assert_hotplug_delta "'ifup testif' (INTERFACE != wan) ran no hotplug fetch" \
+		"$before" "$after" "0"
 
 	remove_bridge_iface testif
 	remove_bridge_iface wan
