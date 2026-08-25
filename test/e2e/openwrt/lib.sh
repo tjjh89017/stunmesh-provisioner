@@ -18,6 +18,10 @@
 #   QEMU_PID   set while the guest is running, cleared by stop_guest.
 #   MOUNT_DIR  set while the rootfs partition is mounted, cleared after.
 #   LOOP_DEV   set while the image is loop-attached, cleared after.
+#
+# build_agent_binary, generate_identity_key and resolve_controller_pubkey
+# also set AGENT_BIN, IDENTITY_KEY_PATH and CONTROLLER_PUBKEY respectively,
+# for run.sh to pass into inject_guest_files.
 set -euo pipefail
 
 log() {
@@ -162,9 +166,69 @@ build_openwrt_image() {
 	log "Image ready: ${IMAGE_PATH}"
 }
 
-# inject_guest_files PUBKEY_PATH -- loop-mounts IMAGE_PATH's rootfs partition
-# and writes a DHCP lan config plus an authorized_keys file for root, so the
-# guest becomes reachable over "hostfwd=tcp::PORT-:22" on first boot.
+# build_agent_binary -- builds stunmesh-agent for the guest's architecture
+# (linux/amd64: this harness always builds the x86-64 OpenWrt target, never
+# the mips one committed under dist/) through the repository's own
+# Makefile, so this can never drift from how the binary is really built.
+# Writes it to $WORK/dist, not the repo's own dist/, so a run never
+# clobbers a binary a developer built there by hand. Sets AGENT_BIN.
+build_agent_binary() {
+	log "Building stunmesh-agent for linux/amd64 (make agent)..."
+	make -C "$REPO_ROOT" agent GOOS=linux GOARCH=amd64 DIST="${WORK}/dist" VERSION="e2e-test" \
+		|| die "make agent failed."
+	AGENT_BIN="${WORK}/dist/stunmesh-agent"
+	[[ -x "$AGENT_BIN" ]] || die "Expected agent binary not found at ${AGENT_BIN}."
+	log "Agent binary ready: ${AGENT_BIN}"
+}
+
+# generate_identity_key -- generates the node identity key with the real
+# `stunmesh-agent keygen`, never hand-rolled bytes, so the key on disk is
+# exactly what a device would have after an operator ran keygen for real.
+# The guest is x86-64 and so is this runner, so the just-built AGENT_BIN
+# (linux/amd64) runs directly here; no guest boot is needed to generate it.
+# Sets IDENTITY_KEY_PATH. keygen's stdout is only ever the public key (see
+# doKeygen in cmd/stunmesh-agent/keygen_cmd.go) and is not logged here
+# either way, so no key material reaches any harness output.
+generate_identity_key() {
+	IDENTITY_KEY_PATH="${WORK}/identity.key"
+	log "Generating the node identity key (stunmesh-agent keygen)..."
+	"$AGENT_BIN" keygen --identity-key "$IDENTITY_KEY_PATH" >/dev/null \
+		|| die "stunmesh-agent keygen failed."
+	[[ -f "$IDENTITY_KEY_PATH" ]] || die "keygen did not create ${IDENTITY_KEY_PATH}."
+	log "Identity key generated."
+}
+
+# resolve_controller_pubkey -- sets CONTROLLER_PUBKEY, the value written
+# into provd's controller_pubkey option. The real controller (stunmesh-provd
+# plus the fake dhtproxy) is the next item, not this one; until it exists,
+# this generates a throwaway key pair with the same keygen path as
+# generate_identity_key and keeps only its public half, so the injected UCI
+# holds a real, well-formed key instead of a placeholder string. Set
+# E2E_CONTROLLER_PUBKEY to override once a real controller key exists.
+resolve_controller_pubkey() {
+	if [[ -n "${E2E_CONTROLLER_PUBKEY:-}" ]]; then
+		CONTROLLER_PUBKEY="$E2E_CONTROLLER_PUBKEY"
+		log "Using controller public key override."
+		return
+	fi
+
+	log "Generating a throwaway controller public key..."
+	local throwaway="${WORK}/controller-fake.key"
+	CONTROLLER_PUBKEY=$("$AGENT_BIN" keygen --identity-key "$throwaway") \
+		|| die "Generating a throwaway controller key failed."
+	rm -f "$throwaway"
+	[[ -n "$CONTROLLER_PUBKEY" ]] || die "Throwaway controller keygen produced no public key."
+}
+
+# inject_guest_files PUBKEY_PATH AGENT_BIN IDENTITY_KEY NAMESPACE NODE_ID
+#   CONTROLLER_PUBKEY PROXY_URL -- loop-mounts IMAGE_PATH's rootfs partition
+# and writes everything a provisioned node needs before first boot: the SSH
+# key and network config the harness itself needs to reach the guest, plus
+# the full stunmesh-agent payload -- binary, identity key, /etc/config/provd,
+# the real init and hotplug scripts from contrib/openwrt, and a stand-in
+# /etc/init.d/stunmesh. After this, the guest looks exactly like a freshly
+# flashed device an operator has just finished the manual key exchange on,
+# except nothing has fetched anything yet.
 #
 # A stock OpenWrt image ships no /etc/config/network at all -- /etc/board.d
 # generates it on first boot from board-detection logic, and the default it
@@ -177,12 +241,13 @@ build_openwrt_image() {
 # Each ext4 candidate is mounted read-only and kept only if it has
 # /etc/openwrt_release or an executable /sbin/init.
 #
-# This is the SKELETON injection only: network config and an SSH key, no
-# stunmesh-agent payload. A later item extends this function's call site to
-# also inject the agent binary and its config.
+# namespace, node_id, controller_pubkey and proxy_url are parameters, not
+# hardcoded: the next item (the real controller and fake dhtproxy) only has
+# to supply its own values through these same four positions.
 inject_guest_files() {
-	local pubkey="$1"
-	log "Injecting network config and SSH key into ${IMAGE_PATH}..."
+	local pubkey="$1" agent_bin="$2" identity_key="$3" \
+		namespace="$4" node_id="$5" controller_pubkey="$6" proxy_url="$7"
+	log "Injecting the network config, SSH key and stunmesh-agent payload into ${IMAGE_PATH}..."
 
 	LOOP_DEV=$(sudo losetup -fP --show "$IMAGE_PATH") || die "losetup failed to attach ${IMAGE_PATH}."
 	sudo udevadm settle --timeout=10 2>/dev/null || true
@@ -231,6 +296,54 @@ NETCONF
 	sudo mkdir -p "${MOUNT_DIR}/etc/dropbear"
 	sudo cp "$pubkey" "${MOUNT_DIR}/etc/dropbear/authorized_keys"
 	sudo chmod 600 "${MOUNT_DIR}/etc/dropbear/authorized_keys"
+
+	log "Installing the stunmesh-agent binary..."
+	sudo install -m 0755 "$agent_bin" "${MOUNT_DIR}/usr/sbin/stunmesh-agent"
+
+	# The identity key file itself is 0600, the same as a real device
+	# (contrib/openwrt/README.md section 2); /etc/config/provd only holds
+	# its path, at 0644, set explicitly below since a real device ships it
+	# that way and nothing in it is secret.
+	log "Installing the node identity key..."
+	sudo mkdir -p "${MOUNT_DIR}/etc/stunmesh/provd"
+	sudo install -m 0600 "$identity_key" "${MOUNT_DIR}/etc/stunmesh/provd/identity.key"
+
+	log "Writing /etc/config/provd..."
+	sudo tee "${MOUNT_DIR}/etc/config/provd" >/dev/null <<PROVD
+config provd 'main'
+	option namespace          '${namespace}'
+	option node_id            '${node_id}'
+	option controller_pubkey  '${controller_pubkey}'
+	list   proxy              '${proxy_url}'
+	option private_key_file   '/etc/stunmesh/provd/identity.key'
+	option boot_delay         '15'
+	option fetch_interval     '5'
+	option lock_file          '/var/lock/stunmesh-agent.lock'
+PROVD
+	sudo chmod 0644 "${MOUNT_DIR}/etc/config/provd"
+
+	# The real init and hotplug scripts, installed as-is from contrib/ --
+	# never a copy kept in this harness, which would drift from what
+	# actually ships and stop testing it.
+	log "Installing the init and hotplug scripts from contrib/openwrt..."
+	sudo install -m 0755 "${CONTRIB_DIR}/stunmesh-agent.init" \
+		"${MOUNT_DIR}/etc/init.d/stunmesh-agent"
+	sudo mkdir -p "${MOUNT_DIR}/etc/hotplug.d/iface"
+	sudo install -m 0755 "${CONTRIB_DIR}/hotplug-iface" \
+		"${MOUNT_DIR}/etc/hotplug.d/iface/95-stunmesh-agent"
+
+	# stunmesh-go itself is not under test here (see phases/phase-payload.sh);
+	# what is under test is whether stunmesh-agent calls
+	# /etc/init.d/stunmesh at the right moments, with the right action.
+	# This stand-in records every action it is asked to perform and always
+	# exits 0, the same as a real reload/stop would report on success.
+	log "Installing the stunmesh stand-in..."
+	sudo tee "${MOUNT_DIR}/etc/init.d/stunmesh" >/dev/null <<'STUNMESH_STUB'
+#!/bin/sh
+echo "$1" >> /tmp/stunmesh-stub-actions.log
+exit 0
+STUNMESH_STUB
+	sudo chmod 0755 "${MOUNT_DIR}/etc/init.d/stunmesh"
 
 	sync
 	sudo umount "$MOUNT_DIR"

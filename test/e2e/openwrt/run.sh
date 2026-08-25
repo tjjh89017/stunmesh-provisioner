@@ -7,10 +7,17 @@
 # -accel kvm is hardcoded (see lib.sh boot_guest): this harness never falls
 # back to TCG.
 #
-# This item is a SKELETON only. No stunmesh-agent payload is injected and no
-# bundle-driven assertions run yet -- those are later items. phases/
-# currently holds one placeholder, phase-smoke.sh, that proves the skeleton
-# itself works: boot -> inject -> SSH -> assert.
+# Before boot, it builds stunmesh-agent for the guest (linux/amd64) and
+# injects the full node payload: the binary, /etc/config/provd, a node
+# identity key, and the real init and hotplug scripts from contrib/openwrt
+# -- everything a freshly flashed device would have right after an operator
+# finished the manual key exchange, except nothing has fetched anything
+# yet. phases/phase-smoke.sh proves the skeleton itself (boot -> inject ->
+# SSH -> assert); phases/phase-payload.sh proves the payload landed intact.
+# The controller side (stunmesh-provd, a fake dhtproxy, a real bundle) is a
+# later item -- this one only shapes the payload so that item can plug in
+# namespace, node ID, controller public key and proxy URL as parameters
+# (E2E_NAMESPACE, E2E_NODE_ID, E2E_CONTROLLER_PUBKEY, E2E_PROXY_URL below).
 #
 # Usage:
 #   run.sh [--image PATH] [--openwrt-version VERSION] [--port PORT] [--keep-work]
@@ -27,14 +34,28 @@
 #                         (default 2222).
 #   E2E_KEEP_WORK         1 keeps the working directory (image, boot log,
 #                         SSH key) after the run instead of deleting it.
+#   E2E_NAMESPACE         provd namespace written into /etc/config/provd
+#                         (default: e2e-namespace).
+#   E2E_NODE_ID           provd node_id written into /etc/config/provd
+#                         (default: e2e-node).
+#   E2E_CONTROLLER_PUBKEY provd controller_pubkey written into
+#                         /etc/config/provd. Empty generates a throwaway
+#                         key pair and uses its public half, since no real
+#                         controller exists yet.
+#   E2E_PROXY_URL         provd proxy written into /etc/config/provd
+#                         (default: a placeholder that answers nothing --
+#                         no fetch runs in this item).
 #
-# Requires: curl, sha256sum, unzstd, make (ImageBuilder path); losetup,
-# blkid, mount, umount, sync, sudo (injection); qemu-system-x86_64, timeout,
-# ssh, ssh-keygen (boot and control). Each is checked up front, by name, so
-# a missing tool is reported before any of it runs.
+# Requires: curl, sha256sum, unzstd, make (ImageBuilder path); go, make
+# (agent build); losetup, blkid, mount, umount, sync, sudo (injection);
+# qemu-system-x86_64, timeout, ssh, ssh-keygen (boot and control). Each is
+# checked up front, by name, so a missing tool is reported before any of it
+# runs.
 set -euo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "${HERE}/../../.." && pwd)
+CONTRIB_DIR="${REPO_ROOT}/contrib/openwrt"
 # shellcheck source=test/e2e/openwrt/lib.sh
 . "${HERE}/lib.sh"
 # shellcheck source=test/e2e/openwrt/assert.sh
@@ -49,8 +70,17 @@ OPENWRT_SUBTARGET=64
 OPENWRT_PROFILE=generic
 OPENWRT_PACKAGES="kmod-wireguard wireguard-tools"
 
+# These four are the values the NEXT item (stunmesh-provd plus a fake
+# dhtproxy) will supply for real. Until then they default to standins good
+# enough to prove the payload landed correctly, without a fetch ever
+# succeeding against them.
+E2E_NAMESPACE=${E2E_NAMESPACE:-e2e-namespace}
+E2E_NODE_ID=${E2E_NODE_ID:-e2e-node}
+E2E_CONTROLLER_PUBKEY=${E2E_CONTROLLER_PUBKEY:-}
+E2E_PROXY_URL=${E2E_PROXY_URL:-http://127.0.0.1:1/}
+
 usage() {
-	sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+	sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -83,7 +113,7 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-for cmd in curl sha256sum unzstd make sync sudo \
+for cmd in curl sha256sum unzstd make go sync sudo \
 	qemu-system-x86_64 timeout ssh ssh-keygen; do
 	need_cmd "$cmd"
 done
@@ -139,8 +169,13 @@ else
 	build_openwrt_image
 fi
 
+build_agent_binary
+generate_identity_key
+resolve_controller_pubkey
+
 ssh-keygen -t ed25519 -N "" -f "${WORK}/e2e_key" -q -C "stunmesh-e2e-openwrt"
-inject_guest_files "${WORK}/e2e_key.pub"
+inject_guest_files "${WORK}/e2e_key.pub" "$AGENT_BIN" "$IDENTITY_KEY_PATH" \
+	"$E2E_NAMESPACE" "$E2E_NODE_ID" "$CONTROLLER_PUBKEY" "$E2E_PROXY_URL"
 
 SSH_KEY="${WORK}/e2e_key"
 export SSH_PORT SSH_KEY
