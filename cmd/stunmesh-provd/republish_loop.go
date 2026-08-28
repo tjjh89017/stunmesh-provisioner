@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
-	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtproxy"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/store"
 )
 
@@ -277,7 +277,7 @@ func publishNamespaceCached(ctx context.Context, env *Env, deployment *store.Dep
 // example, a bad wg.yaml mid-edit) does not erase a good node's
 // standing cache entry, and the next successful round can still
 // compare against it.
-func publishNodeCached(ctx context.Context, env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time, cache map[nodeKey]cacheEntry) nodeReport {
+func publishNodeCached(ctx context.Context, env *Env, proxy backend.Store, deployment *store.Deployment, nodeID string, now time.Time, cache map[nodeKey]cacheEntry) nodeReport {
 	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
 	if err != nil {
 		return report

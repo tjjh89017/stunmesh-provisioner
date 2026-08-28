@@ -54,6 +54,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 )
 
 const (
@@ -78,6 +80,10 @@ type Client struct {
 	maxValues   int
 	maxLineSize int
 }
+
+// Client implements backend.Store: it is the DHT-backed rendezvous
+// storage a caller reaches through the narrow interface.
+var _ backend.Store = (*Client)(nil)
 
 // config collects Option values before New builds the Client.
 type config struct {
@@ -179,19 +185,13 @@ func isHexKey(key string) bool {
 	return true
 }
 
-// Result is the outcome of a successful Get.
-type Result struct {
-	// Values holds the decoded value bytes, in the order they were
-	// returned, up to the client's maxValues cap.
-	Values [][]byte
-	// Skipped counts lines that could not be parsed: invalid JSON,
-	// missing "data", or invalid base64.
-	Skipped int
-	// Dropped counts valid values received after the cap was reached.
-	Dropped int
-	// URL is the base URL that answered the request.
-	URL string
-}
+// Result is the outcome of a successful Get. It is an alias for
+// backend.Result: Values holds the decoded value bytes, in the order
+// received, up to the client's maxValues cap; Skipped counts lines
+// that could not be parsed (invalid JSON, missing "data", or invalid
+// base64); Dropped counts valid values received after the cap was
+// reached; URL is the base URL that answered the request.
+type Result = backend.Result
 
 // Get fetches the values stored under key. It tries each base URL in
 // order and returns the result of the first one that yields at least
