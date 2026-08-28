@@ -47,6 +47,7 @@ config_get controller_pubkey "$UCI_SECTION" controller_pubkey
 config_get private_key_file "$UCI_SECTION" private_key_file
 config_get proxies "$UCI_SECTION" proxy
 config_get lock_file "$UCI_SECTION" lock_file "/var/lock/stunmesh-agent.lock"
+config_get backend "$UCI_SECTION" backend
 
 if [ -z "$namespace" ] || [ -z "$node_id" ] || \
    [ -z "$controller_pubkey" ] || [ -z "$private_key_file" ]; then
@@ -60,6 +61,10 @@ set -- fetch \
 	--controller-pubkey "$controller_pubkey" \
 	--identity-key "$private_key_file" \
 	--lock "$lock_file"
+
+if [ -n "$backend" ]; then
+	set -- "$@" --backend "$backend"
+fi
 
 for p in $proxies; do
 	set -- "$@" --proxy "$p"

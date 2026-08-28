@@ -371,6 +371,11 @@ test_build_fetch_args_full_option_set() {
 	private_key_file="/etc/stunmesh/provd/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies="https://dhtproxy2.jami.net https://dhtproxy3.jami.net"
+	# backend is not part of "every option set" here on purpose: its own
+	# on/off behavior has dedicated tests below. It must still be
+	# assigned -- build_fetch_args reads it under this file's "set -u",
+	# and an unset (not merely empty) variable would abort the test.
+	backend=""
 
 	args="$(build_fetch_args)"
 
@@ -385,11 +390,42 @@ test_build_fetch_args_no_proxies() {
 	private_key_file="/etc/stunmesh/provd/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies=""
+	backend=""
 
 	args="$(build_fetch_args)"
 
 	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock"
 	assert_eq "$args" "$expected" "build_fetch_args emits no --proxy flags when the section has none"
+}
+
+test_build_fetch_args_backend_set() {
+	namespace="mymesh-7f3a"
+	node_id="alpha"
+	controller_pubkey="pk123"
+	private_key_file="/etc/stunmesh/provd/identity.key"
+	lock_file="/var/lock/stunmesh-agent.lock"
+	proxies=""
+	backend="sentinel-backend"
+
+	args="$(build_fetch_args)"
+
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend"
+	assert_eq "$args" "$expected" "build_fetch_args appends --backend with its value when the option is set"
+}
+
+test_build_fetch_args_backend_unset() {
+	namespace="mymesh-7f3a"
+	node_id="alpha"
+	controller_pubkey="pk123"
+	private_key_file="/etc/stunmesh/provd/identity.key"
+	lock_file="/var/lock/stunmesh-agent.lock"
+	proxies=""
+	backend=""
+
+	args="$(build_fetch_args)"
+
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock"
+	assert_eq "$args" "$expected" "build_fetch_args emits no --backend flag when the option is unset, so the binary's own default applies"
 }
 
 # --- read_config -----------------------------------------------------------
@@ -439,7 +475,8 @@ EOF
 	assert_eq "$boot_delay" "$DEFAULT_BOOT_DELAY" "boot_delay falls back to its default" || return 1
 	assert_eq "$fetch_interval" "$DEFAULT_FETCH_INTERVAL" "fetch_interval falls back to its default" || return 1
 	assert_eq "$lock_file" "$DEFAULT_LOCK_FILE" "lock_file falls back to its default" || return 1
-	assert_eq "$proxies" "" "proxies is empty when the section has no proxy entries"
+	assert_eq "$proxies" "" "proxies is empty when the section has no proxy entries" || return 1
+	assert_eq "$backend" "" "backend has no default and stays empty when the section has none"
 }
 
 test_read_config_reads_all_fields() {
@@ -455,6 +492,7 @@ option private_key_file /etc/stunmesh/provd/identity.key
 option boot_delay 30
 option fetch_interval 10
 option lock_file /tmp/custom.lock
+option backend sentinel-backend
 EOF
 	install_fake_uci
 
@@ -469,7 +507,8 @@ EOF
 	assert_eq "$proxies" "https://dhtproxy2.jami.net https://dhtproxy3.jami.net" "proxies" || return 1
 	assert_eq "$boot_delay" "30" "boot_delay" || return 1
 	assert_eq "$fetch_interval" "10" "fetch_interval" || return 1
-	assert_eq "$lock_file" "/tmp/custom.lock" "lock_file"
+	assert_eq "$lock_file" "/tmp/custom.lock" "lock_file" || return 1
+	assert_eq "$backend" "sentinel-backend" "backend"
 }
 
 # --- run_fetch -------------------------------------------------------------
@@ -555,6 +594,7 @@ list proxy https://dhtproxy2.jami.net
 list proxy https://dhtproxy3.jami.net
 option private_key_file /etc/stunmesh/provd/identity.key
 option lock_file /var/lock/stunmesh-agent.lock
+option backend sentinel-backend
 EOF
 	install_fake_uci
 
@@ -605,7 +645,7 @@ EOF
 	[ -f "$record" ] || { echo "  \$BIN was never invoked by the boot-time fetch" >&2; return 1; }
 	assert_eq "$(cat "$order")" "$(printf 'sleep\nfetch')" "boot-time fetch waits for the sleep to finish before invoking \$BIN, not the other way around" || return 1
 	invoked=$(cat "$record")
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN by the boot-time fetch" || return 1
 	expected_cron="*/$DEFAULT_FETCH_INTERVAL * * * * $BIN $expected >/dev/null 2>&1 $CRON_TAG"
 	assert_eq "$(cat "$CRONTAB")" "$expected_cron" "installed cron line matches the args built from config"
@@ -656,6 +696,8 @@ run_test "stop_service: leaves no managed line" test_stop_service_leaves_no_mana
 run_test "stop_service: returns 1 when removal cannot be confirmed" test_stop_service_returns_1_when_removal_unconfirmed
 run_test "build_fetch_args: full option set, exact argument list" test_build_fetch_args_full_option_set
 run_test "build_fetch_args: no --proxy flags when none configured" test_build_fetch_args_no_proxies
+run_test "build_fetch_args: appends --backend when configured" test_build_fetch_args_backend_set
+run_test "build_fetch_args: omits --backend when unset" test_build_fetch_args_backend_unset
 run_test "read_config: rc 1 when /etc/config/provd is missing" test_read_config_missing_file
 run_test "read_config: rc 1 when a required field is missing" test_read_config_missing_required_field
 run_test "read_config: applies boot_delay/fetch_interval/lock_file defaults" test_read_config_applies_defaults

@@ -49,6 +49,7 @@ config provd 'main'
     option boot_delay         '15'
     option fetch_interval     '5'
     option lock_file          '/var/lock/stunmesh-agent.lock'
+    option backend            'dhtproxy'
 ```
 
 | UCI option | stunmesh-agent flag | Required |
@@ -61,6 +62,7 @@ config provd 'main'
 | `boot_delay` | sleep before the first fetch (init only) | no -- defaults to 15 |
 | `fetch_interval` | minutes between cron runs (init only) | no -- defaults to 5 |
 | `lock_file` | `--lock` | no -- defaults to `/var/lock/stunmesh-agent.lock` |
+| `backend` | `--backend` | no -- omitted when unset, so the binary's own default (`dhtproxy`) applies |
 
 `--last` and `--stunmesh-config` are not in the UCI schema. Both
 scripts omit those flags and let `stunmesh-agent` use its own
