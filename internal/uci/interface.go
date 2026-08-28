@@ -209,7 +209,7 @@ func PeerSectionNames(name string, peers map[string]bundle.Peer) []string {
 // routeFamily returns "route" for an IPv4 cidr and "route6" for an
 // IPv6 one (PLAN.md 6: "route6 for IPv6"). It first tries
 // net.ParseCIDR, the authoritative parse. bundle.Validate does not
-// check CIDR syntax (docs/format.md 5, "out of scope"), so
+// check CIDR syntax (docs/format.md 6, "out of scope"), so
 // BuildInterface may see a cidr net.ParseCIDR rejects; rather than
 // fail the whole batch over a string this package was never asked to
 // validate, routeFamily falls back to a plain substring check: an

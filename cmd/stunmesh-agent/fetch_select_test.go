@@ -35,7 +35,7 @@ func sealTestBundleFor(t *testing.T, namespace, nodeID string, timestamp int64, 
 
 // sealTestBundleInvalidField builds a bundle JSON that parses (phase 1
 // passes) but fails a phase 2 check: listen_port out of range
-// (docs/format.md 6, check 13).
+// (docs/format.md 7, check 13).
 func sealTestBundleInvalidField(t *testing.T, timestamp int64, senderPriv, recipientPub crypto.Key) []byte {
 	t.Helper()
 	plain := []byte(fmt.Sprintf(`{"version":1,"namespace":"ns","node_id":"n1","timestamp":%d,"wg":{"wg0":{"private_key":"x","addresses":["10.0.0.1/24"],"listen_port":70000,"peers":{}}},"stunmesh":""}`, timestamp))
@@ -189,7 +189,7 @@ func TestDecryptAndSelect_RejectsValueForAnotherNamespace(t *testing.T) {
 
 	values := [][]byte{
 		// Decrypts (sealed for this node's key) but the namespace does
-		// not match: phase 2 check 8 (docs/format.md 6) must reject it.
+		// not match: phase 2 check 8 (docs/format.md 7) must reject it.
 		sealTestBundleFor(t, "other-ns", "n1", 999, senderPriv, recipientPub),
 	}
 

@@ -60,7 +60,7 @@ untouched and reported as such.
 /etc/stunmesh/provd/
 ├── README.md
 └── myns/
-    ├── provd.yaml         proxy list and republish interval
+    ├── provd.yaml         backend plugin, republish interval
     ├── controller.key     controller private key (SECRET, mode 0600)
     ├── controller.pub     controller public key (mode 0644)
     └── nodes/

@@ -175,7 +175,7 @@ func TestPublishRound_PutsDecryptableBundleToEveryProxy(t *testing.T) {
 		}
 
 		// The wire format is base64(nonce || nacl/box(inner bundle
-		// JSON)) (docs/format.md 3), with dhtproxy.Put doing the
+		// JSON)) (docs/format.md 4), with dhtproxy.Put doing the
 		// base64 encoding itself. Decoding the captured "data" field
 		// exactly once must therefore already be the sealed bytes,
 		// not another layer of base64: base64-decoding it a second

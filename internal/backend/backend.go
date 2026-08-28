@@ -12,6 +12,15 @@ package backend
 
 import "context"
 
+// TypeDHTProxy is the "type" value that selects the dhtproxy plugin
+// in a provd.yaml backend selection (docs/format.md section 3) and
+// stunmesh-agent's --backend flag. It is the only backend type this
+// module implements. It lives here, in the shared contract package,
+// so store.BackendConfig, stunmesh-agent's Config, and the
+// internal/backend/dial constructor all compare against the same
+// string instead of each hard-coding "dhtproxy" separately.
+const TypeDHTProxy = "dhtproxy"
+
 // Store is the rendezvous storage a deployment publishes to and a
 // node fetches from.
 //

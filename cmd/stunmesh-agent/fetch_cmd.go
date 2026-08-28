@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend/dial"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
@@ -207,36 +208,38 @@ func doFetch(env *Env, cfg *Config) int {
 }
 
 // newBackend builds the backend.Store fetch uses, selected by
-// cfg.Backend (docs/format.md section 3). ValidateFetch already
-// rejects any cfg.Backend other than "dhtproxy" before runFetch ever
-// reaches doFetch, so the default arm below only matters for a caller
+// cfg.Backend (docs/format.md section 3), through
+// internal/backend/dial's one shared construction point (also used by
+// cmd/stunmesh-provd). ValidateFetch already rejects any cfg.Backend
+// other than backend.TypeDHTProxy before runFetch ever reaches
+// doFetch, so dial.New's default arm below only matters for a caller
 // that builds a Config directly and skips ValidateFetch (as some
 // tests do): it still returns an error, naming the field and not
 // cfg.Backend's value, rather than picking a backend silently or
 // panicking.
-func newBackend(env *Env, cfg *Config) (backend.Store, error) {
-	switch cfg.Backend {
-	case "dhtproxy":
-		return newDHTProxyClient(env, cfg.Proxies)
-	default:
-		return nil, errors.New("backend: unknown type")
-	}
-}
-
-// newDHTProxyClient builds the dhtproxy.Client arm of newBackend. It
-// prefers env.HTTPClient when a test set one (see Env's doc), so a
+//
+// It prefers env.HTTPClient when a test set one (see Env's doc), so a
 // test tree points every proxy call at an httptest.Server instead of
 // the real network; a production run leaves it nil and gets
 // fetchProxyTimeout as its per-request timeout instead of
 // internal/dhtproxy's own default.
-func newDHTProxyClient(env *Env, proxies []string) (backend.Store, error) {
-	var opts []dhtproxy.Option
-	if env.HTTPClient != nil {
-		opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))
-	} else {
-		opts = append(opts, dhtproxy.WithTimeout(fetchProxyTimeout))
+func newBackend(env *Env, cfg *Config) (backend.Store, error) {
+	return dial.New(backendDialConfig(env, cfg))
+}
+
+// backendDialConfig maps env and cfg into the dial.Config newBackend
+// passes to dial.New. It is a pure, network-free mapping step, split
+// out from newBackend so a test can assert the mapping (in particular,
+// that fetchProxyTimeout -- the one piece of this mapping specific to
+// this binary -- is forwarded) without needing dial.New's own
+// coverage of what each dial.Config field does.
+func backendDialConfig(env *Env, cfg *Config) dial.Config {
+	return dial.Config{
+		Type:       cfg.Backend,
+		Proxies:    cfg.Proxies,
+		HTTPClient: env.HTTPClient,
+		Timeout:    fetchProxyTimeout,
 	}
-	return dhtproxy.New(proxies, opts...)
 }
 
 // checkAndApply is the seam stage 3 item 5 onward fills in: the
