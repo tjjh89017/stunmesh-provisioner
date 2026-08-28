@@ -1,0 +1,78 @@
+name: 'Package Release Asset'
+description: 'Build one release binary and package it with the extra files its downstream consumer expects alongside it. The Makefile is the source of truth for the build.'
+
+inputs:
+  target:
+    description: 'Make target to build (agent-mips, agent-mipsle, agent-arm64, provd)'
+    required: true
+  tag:
+    description: 'Release tag, passed to the Makefile as VERSION and stamped into the archive name'
+    required: true
+
+outputs:
+  archive:
+    description: 'Path to the packaged tarball'
+    value: ${{ steps.package.outputs.archive }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build ${{ inputs.target }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        # provd has no dedicated cross-compiling make target (unlike the
+        # agent-* targets, which hard-code an OpenWrt architecture): pin
+        # GOOS/GOARCH here instead, since the runner's host defaults are
+        # an implementation detail this step should not depend on.
+        if [ "${{ inputs.target }}" = "provd" ]; then
+          GOOS=linux GOARCH=amd64 make VERSION="${{ inputs.tag }}" provd
+        else
+          make VERSION="${{ inputs.tag }}" "${{ inputs.target }}"
+        fi
+
+    - name: Package
+      id: package
+      shell: bash
+      run: |
+        set -euo pipefail
+        tag="${{ inputs.tag }}"
+        case "${{ inputs.target }}" in
+          agent-mips)
+            binary=dist/stunmesh-agent-linux-mips
+            name="stunmesh-agent-${tag}-linux-mips"
+            extra="contrib/openwrt/stunmesh-agent.init contrib/openwrt/hotplug-iface"
+            ;;
+          agent-mipsle)
+            binary=dist/stunmesh-agent-linux-mipsle
+            name="stunmesh-agent-${tag}-linux-mipsle"
+            extra="contrib/openwrt/stunmesh-agent.init contrib/openwrt/hotplug-iface"
+            ;;
+          agent-arm64)
+            binary=dist/stunmesh-agent-linux-arm64
+            name="stunmesh-agent-${tag}-linux-arm64"
+            extra="contrib/openwrt/stunmesh-agent.init contrib/openwrt/hotplug-iface"
+            ;;
+          provd)
+            binary=dist/stunmesh-provd
+            name="stunmesh-provd-${tag}-linux-amd64"
+            extra="contrib/systemd/stunmesh-provd.service"
+            ;;
+          *)
+            echo "release-package: unknown target ${{ inputs.target }}" >&2
+            exit 1
+            ;;
+        esac
+        # The separate stunmesh-openwrt feed copies stunmesh-agent.init and
+        # hotplug-iface straight out of the agent release tarball
+        # (.plan/PLAN.md M6); the systemd unit belongs beside the provd
+        # binary for the same reason. A tarball with the binary alone
+        # breaks both packagings, so every archive built here carries its
+        # install files, not just the binary.
+        workdir="$(mktemp -d)"
+        mkdir -p "$workdir/$name"
+        cp "$binary" "$workdir/$name/"
+        cp $extra "$workdir/$name/"
+        tar -C "$workdir" -czf "$name.tar.gz" "$name"
+        rm -rf "$workdir"
+        echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"

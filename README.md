@@ -16,6 +16,33 @@ OpenWrt device. It fetches each bundle, decrypts it, and applies it.
 long-lived, hardened systemd service. See
 `contrib/systemd/README.md` for install steps.
 
+## Running the controller as a container
+
+The image at `ghcr.io/tjjh89017/stunmesh-provd` ships `stunmesh-provd`
+only. Tags follow the release: `vX.Y.Z` for a tagged release, `latest`
+for the newest non-prerelease release, and `main` for the latest commit
+on the default branch.
+
+The only state the controller keeps is the `--dir` tree (default
+`/etc/stunmesh/provd`). Mount it as a real, host-backed volume, never an
+anonymous one: the tree holds the controller identity key and every
+tunnel's private key, and losing it means every node has to be
+re-provisioned.
+
+```sh
+docker run --rm -v stunmesh-provd:/etc/stunmesh/provd \
+  ghcr.io/tjjh89017/stunmesh-provd init myns
+
+docker run --rm -v stunmesh-provd:/etc/stunmesh/provd \
+  ghcr.io/tjjh89017/stunmesh-provd node add myns node1 < node1.pub
+
+# No command runs the republish loop (publish with no --once); it runs
+# until it receives SIGINT or SIGTERM (`docker stop`).
+docker run -d --name stunmesh-provd \
+  -v stunmesh-provd:/etc/stunmesh/provd \
+  ghcr.io/tjjh89017/stunmesh-provd
+```
+
 ## Agent binary size (`mips_24kc`)
 
 `make agent-mips` builds `stunmesh-agent` for 32-bit MIPS routers

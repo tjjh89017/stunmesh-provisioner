@@ -1,0 +1,109 @@
+# Release workflow.
+#
+# Triggered by a pushed tag. It builds and uploads release assets, then
+# builds and pushes the container image. Steps live in .github/actions/*;
+# the Makefile is the source of truth for every binary it builds.
+#
+# No lint/test job here: the tagged commit already went through CI.yaml
+# on its way to main (branch protection requires the check/build/e2e
+# chain to be green before a merge), so re-running it on the tag would
+# only repeat work already done.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  # Creates the draft release up front so every job below only ever finds
+  # it. A draft is invisible to the get-release-by-tag API, so an uploader
+  # that started before the draft existed would fall back to creating its
+  # own -- without this barrier, jobs that start together (release-assets'
+  # matrix legs, docker) each miss the others' draft and end up creating
+  # separate ones for the same tag.
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve tag
+        id: tag
+        uses: ./.github/actions/release-tag
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          draft: true
+          prerelease: >-
+            ${{
+              contains(steps.tag.outputs.tag, 'RC') ||
+              contains(steps.tag.outputs.tag, 'rc')
+            }}
+
+  release-assets:
+    name: Release (${{ matrix.target }})
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # fail-fast: false so one broken target does not hide the state of
+    # the others in the same run.
+    strategy:
+      fail-fast: false
+      matrix:
+        # agent-mips/agent-mipsle/agent-arm64 are the OpenWrt router
+        # targets the stunmesh-openwrt feed packages; provd is the
+        # controller binary this repo also ships as a container. A
+        # matrix keeps each target's build and packaging as one
+        # reusable step (.github/actions/release-package) instead of
+        # four near-identical copies of the same job.
+        target: [agent-mips, agent-mipsle, agent-arm64, provd]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      - name: Build and package
+        id: package
+        uses: ./.github/actions/release-package
+        with:
+          target: ${{ matrix.target }}
+          tag: ${{ needs.create-release.outputs.tag }}
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag }}
+          files: ${{ steps.package.outputs.archive }}
+          draft: true
+          prerelease: >-
+            ${{
+              contains(needs.create-release.outputs.tag, 'RC') ||
+              contains(needs.create-release.outputs.tag, 'rc')
+            }}
+
+  docker:
+    name: Build and push Docker container
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and push
+        uses: ./.github/actions/docker
+        with:
+          version: ${{ needs.create-release.outputs.tag }}
+          push: 'true'
+          ghcr-token: ${{ secrets.GITHUB_TOKEN }}

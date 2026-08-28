@@ -1,0 +1,20 @@
+name: 'Resolve Release Tag'
+description: 'Resolve the tag the release workflow is running for, once, so every job stamps the same version string.'
+
+outputs:
+  tag:
+    description: 'The resolved tag (git describe --tags --dirty)'
+    value: ${{ steps.tag.outputs.tag }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Every asset job needs the same string for its filename and its
+    # VERSION build-arg/ldflag. Resolving it once here, instead of
+    # repeating "git describe" inline in each job, keeps that string from
+    # drifting if the two ever disagree (for example a shallow checkout in
+    # one job producing a different --dirty suffix than another).
+    - name: Resolve tag
+      id: tag
+      shell: bash
+      run: echo "tag=$(git describe --tags --dirty)" >> "$GITHUB_OUTPUT"

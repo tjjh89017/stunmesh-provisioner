@@ -1,0 +1,21 @@
+# Keep the build context small and keep local artifacts out of the
+# builder stage entirely -- the Dockerfile builds from source, so nothing
+# here is ever needed inside the image.
+
+# Build output; the Dockerfile builds stunmesh-provd itself.
+/dist/
+/stunmesh-provd
+/stunmesh-agent
+
+# Version control and editor/tooling metadata.
+.git/
+.github/
+
+# powerloop/plan/issue bookkeeping: internal working state, not source.
+.plan/
+.powerloop/
+.issue/
+.claude/
+
+# End-to-end test work directories (test/e2e/*/run.sh writes here).
+test/e2e/**/work/

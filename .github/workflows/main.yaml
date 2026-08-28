@@ -189,3 +189,46 @@ jobs:
           if [[ "$failed" -ne 0 ]]; then
             exit 1
           fi
+
+  # Additive: neither e2e-required nor either aggregate gate job above
+  # depends on this one, so a broken Dockerfile cannot block a merge by
+  # itself -- it can only fail its own job.
+  #
+  # needs: e2e-required ties this job to the full check -> build ->
+  # build-required -> e2e/e2e-realnet chain, so it never wastes a build
+  # (or, worse, a publish) on a commit that was already going to fail for
+  # an unrelated reason, and so a push to main is never published unless
+  # that whole chain went green first.
+  #
+  # What it does differs by event:
+  #   - pull_request: build only (push: false), one platform (linux/amd64),
+  #     to catch a broken Dockerfile on the PR as cheaply as possible. A
+  #     PR carries no packages:write token -- doubly so from a fork -- and
+  #     must never attempt to publish.
+  #   - push (a real merge to main): also push, both platforms, tagged
+  #     "main" by the docker action's type=ref,event=branch pattern. This
+  #     is separate from the tag-triggered release.yml, which publishes
+  #     the "vX.Y.Z" / "latest" tags.
+  #
+  # This workflow's own "on: push" has no branch filter (it also runs for
+  # a push to any other branch), so the publish condition below checks
+  # github.ref itself rather than trusting github.event_name alone --
+  # otherwise a push to a feature branch would publish a "main" tag too.
+  docker:
+    name: Docker image
+    needs: e2e-required
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Build the image, and publish it on a push to main
+        uses: ./.github/actions/docker
+        with:
+          version: ${{ github.ref_name }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          platforms: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          ghcr-token: ${{ secrets.GITHUB_TOKEN }}

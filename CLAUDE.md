@@ -55,6 +55,15 @@ See `test/e2e/openwrt/README.md` for phases, fixtures, and debugging. CI steps
 live in `.github/actions/*`; the Makefile is the single source of truth, so a
 CI change that is not also a Makefile change is usually wrong.
 
+```sh
+docker build -t stunmesh-provd --build-arg VERSION=$(git describe --tags --dirty) .
+```
+
+builds the controller-only image (`Dockerfile`, root). `.github/workflows/main.yaml`
+builds it (no push) on every pull request and pushes `ghcr.io/tjjh89017/stunmesh-provd:main`
+on a merge to main; `.github/workflows/release.yml` builds release binaries/tarballs
+and pushes `vX.Y.Z`/`latest` container tags on a pushed tag.
+
 ## Architecture
 
 Shared packages under `internal/` are used by both binaries:
