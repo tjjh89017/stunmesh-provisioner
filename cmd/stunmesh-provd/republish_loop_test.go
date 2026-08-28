@@ -37,10 +37,11 @@ func setRepublishInterval(t *testing.T, env *Env, namespace, interval string) {
 		t.Fatalf("ReadDeployment: %v", err)
 	}
 	var b strings.Builder
-	b.WriteString("proxies:\n")
+	b.WriteString("plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n")
 	for _, u := range deployment.Backend.Proxies {
-		b.WriteString("  - " + u + "\n")
+		b.WriteString("      - " + u + "\n")
 	}
+	b.WriteString("use_plugin: dht\n")
 	b.WriteString("republish_interval: " + interval + "\n")
 	mustWriteFile(t, filepath.Join(env.Dir, namespace, "provd.yaml"), b.String())
 }
@@ -193,7 +194,8 @@ func TestRunRepublishLoop_RespectsPerNamespaceInterval(t *testing.T) {
 		t.Fatalf("runInit(%s): code=%d", slowNS, code)
 	}
 	var b strings.Builder
-	b.WriteString("proxies:\n  - " + slowSrv.URL + "\n")
+	b.WriteString("plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - " + slowSrv.URL + "\n")
+	b.WriteString("use_plugin: dht\n")
 	b.WriteString("republish_interval: 100s\n")
 	mustWriteFile(t, filepath.Join(env.Dir, slowNS, "provd.yaml"), b.String())
 	addPublishTestNode(t, env, slowNS, "bravo")

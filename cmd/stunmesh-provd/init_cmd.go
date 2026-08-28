@@ -67,8 +67,8 @@ copies ` + "`identity.pub`" + ` in from the node at node init.
 // defaultProvdYAML is the content of <namespace>/provd.yaml that
 // `init` writes for a new namespace (PLAN.md 7.1, 7.3). It uses the
 // "plugins" map + "use_plugin" selector form (docs/format.md section
-// 3), the canonical form; the top-level "proxies" shorthand still
-// works, but `init` no longer writes it.
+// 3), the only form the store package accepts: a top-level "proxies"
+// key is rejected as malformed.
 const defaultProvdYAML = `plugins:
   dht:
     type: dhtproxy

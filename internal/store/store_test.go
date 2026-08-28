@@ -41,7 +41,14 @@ func writeFile(t *testing.T, path string, data string) {
 func setupNamespace(t *testing.T, root, namespace string) string {
 	t.Helper()
 	nsDir := filepath.Join(root, namespace)
-	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies:\n  - https://dhtproxy2.jami.net\n  - https://dhtproxy3.jami.net\nrepublish_interval: 5m\n")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n"+
+		"  dht:\n"+
+		"    type: dhtproxy\n"+
+		"    proxies:\n"+
+		"      - https://dhtproxy2.jami.net\n"+
+		"      - https://dhtproxy3.jami.net\n"+
+		"use_plugin: dht\n"+
+		"republish_interval: 5m\n")
 	writeFile(t, filepath.Join(nsDir, "controller.key"), b64Key(0x01)+"\n")
 	writeFile(t, filepath.Join(nsDir, "controller.pub"), b64Key(0x02)+"\n")
 	return nsDir
@@ -96,41 +103,6 @@ func TestReadDeployment(t *testing.T) {
 	}
 }
 
-// TestReadDeployment_PluginsForm covers docs/format.md section 3's
-// "plugins" map + "use_plugin" selector form: ReadDeployment must
-// resolve it to the same BackendConfig shape as the legacy top-level
-// "proxies" shorthand.
-func TestReadDeployment_PluginsForm(t *testing.T) {
-	root := t.TempDir()
-	nsDir := setupNamespace(t, root, "test-ns")
-	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n"+
-		"  dht:\n"+
-		"    type: dhtproxy\n"+
-		"    proxies:\n"+
-		"      - https://dhtproxy2.jami.net\n"+
-		"      - https://dhtproxy3.jami.net\n"+
-		"use_plugin: dht\n"+
-		"republish_interval: 5m\n")
-
-	dep, err := store.ReadDeployment(root, "test-ns")
-	if err != nil {
-		t.Fatalf("ReadDeployment: %v", err)
-	}
-
-	if dep.Backend.Type != "dhtproxy" {
-		t.Errorf("Backend.Type = %q, want dhtproxy", dep.Backend.Type)
-	}
-	wantProxies := []string{"https://dhtproxy2.jami.net", "https://dhtproxy3.jami.net"}
-	if len(dep.Backend.Proxies) != len(wantProxies) {
-		t.Fatalf("Backend.Proxies = %v, want %v", dep.Backend.Proxies, wantProxies)
-	}
-	for i, p := range wantProxies {
-		if dep.Backend.Proxies[i] != p {
-			t.Errorf("Backend.Proxies[%d] = %q, want %q", i, dep.Backend.Proxies[i], p)
-		}
-	}
-}
-
 // TestReadDeployment_BackendMalformedCases covers every malformed
 // case docs/format.md section 3's table lists.
 func TestReadDeployment_BackendMalformedCases(t *testing.T) {
@@ -139,19 +111,17 @@ func TestReadDeployment_BackendMalformedCases(t *testing.T) {
 		yaml string
 	}{
 		{
-			name: "both forms present",
+			name: "top-level proxies present",
 			yaml: "proxies:\n  - https://dhtproxy2.jami.net\n" +
-				"plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
-				"use_plugin: dht\n" +
 				"republish_interval: 5m\n",
 		},
 		{
-			name: "use_plugin without plugins",
+			name: "plugins absent",
 			yaml: "use_plugin: dht\n" +
 				"republish_interval: 5m\n",
 		},
 		{
-			name: "plugins without use_plugin",
+			name: "use_plugin absent",
 			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
 				"republish_interval: 5m\n",
 		},
@@ -168,13 +138,13 @@ func TestReadDeployment_BackendMalformedCases(t *testing.T) {
 				"republish_interval: 5m\n",
 		},
 		{
-			name: "plugins form: proxies absent",
+			name: "selected plugin: proxies absent",
 			yaml: "plugins:\n  dht:\n    type: dhtproxy\n" +
 				"use_plugin: dht\n" +
 				"republish_interval: 5m\n",
 		},
 		{
-			name: "plugins form: proxies empty",
+			name: "selected plugin: proxies empty",
 			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies: []\n" +
 				"use_plugin: dht\n" +
 				"republish_interval: 5m\n",
@@ -195,14 +165,14 @@ func TestReadDeployment_BackendMalformedCases(t *testing.T) {
 	}
 }
 
-// TestReadDeployment_PluginsFormMissingProxiesNamesFileAndKey checks
-// that the "proxies absent/empty in the plugins form" error (part of
+// TestReadDeployment_MissingProxiesNamesFileAndKey checks that the
+// "proxies absent/empty for the selected plugin" error (part of
 // TestReadDeployment_BackendMalformedCases) names provd.yaml and the
 // "proxies" key, matching this package's no-file-content rule
 // (package doc "Errors"): the message must let an operator find the
 // broken file without the failure only surfacing later, at publish
 // time, with a message that never names provd.yaml at all.
-func TestReadDeployment_PluginsFormMissingProxiesNamesFileAndKey(t *testing.T) {
+func TestReadDeployment_MissingProxiesNamesFileAndKey(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		yaml string
@@ -236,10 +206,29 @@ func TestReadDeployment_PluginsFormMissingProxiesNamesFileAndKey(t *testing.T) {
 	}
 }
 
+// TestReadDeployment_TopLevelProxiesNamesFileAndPointsAtPlugins checks
+// that the "top-level proxies present" error (part of
+// TestReadDeployment_BackendMalformedCases) names provd.yaml and
+// points the operator at the plugins form, so an operator upgrading
+// from an old file gets a pointed error instead of a mysteriously
+// ignored proxy list.
+func TestReadDeployment_TopLevelProxiesNamesFileAndPointsAtPlugins(t *testing.T) {
+	root := t.TempDir()
+	nsDir := setupNamespace(t, root, "test-ns")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies:\n  - https://dhtproxy2.jami.net\nrepublish_interval: 5m\n")
+
+	_, err := store.ReadDeployment(root, "test-ns")
+	if !errors.Is(err, store.ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+	if !strings.Contains(err.Error(), "provd.yaml") || !strings.Contains(err.Error(), "plugins") {
+		t.Errorf("err = %q, want it to name provd.yaml and point at plugins", err)
+	}
+}
+
 // TestReadDeployment_UnknownTopLevelKeyIsIgnored preserves this
 // package's existing, permissive handling of an unknown provd.yaml
-// key (see the provdYAML doc comment) for the new nested "plugins"
-// form, not just the legacy top-level "proxies" shorthand.
+// key (see the provdYAML doc comment) for the "plugins" form.
 func TestReadDeployment_UnknownTopLevelKeyIsIgnored(t *testing.T) {
 	root := t.TempDir()
 	nsDir := setupNamespace(t, root, "test-ns")
@@ -297,7 +286,7 @@ func TestReadDeployment_MalformedProvdYAML(t *testing.T) {
 func TestReadDeployment_BadRepublishInterval(t *testing.T) {
 	root := t.TempDir()
 	nsDir := setupNamespace(t, root, "test-ns")
-	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies:\n  - https://dhtproxy2.jami.net\nrepublish_interval: not-a-duration\n")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\nuse_plugin: dht\nrepublish_interval: not-a-duration\n")
 
 	_, err := store.ReadDeployment(root, "test-ns")
 	if !errors.Is(err, store.ErrMalformed) {
@@ -309,7 +298,7 @@ func TestReadDeployment_NonPositiveRepublishIntervalIsRejected(t *testing.T) {
 	for _, interval := range []string{"0s", "-1m", "0"} {
 		root := t.TempDir()
 		nsDir := setupNamespace(t, root, "test-ns")
-		writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies:\n  - https://dhtproxy2.jami.net\nrepublish_interval: "+interval+"\n")
+		writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\nuse_plugin: dht\nrepublish_interval: "+interval+"\n")
 
 		_, err := store.ReadDeployment(root, "test-ns")
 		if !errors.Is(err, store.ErrMalformed) {
@@ -335,7 +324,7 @@ func TestReadDeployment_BadControllerKey(t *testing.T) {
 func TestReadDeployment_MissingControllerKey(t *testing.T) {
 	root := t.TempDir()
 	nsDir := filepath.Join(root, "test-ns")
-	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "proxies: []\nrepublish_interval: 5m\n")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\nuse_plugin: dht\nrepublish_interval: 5m\n")
 	writeFile(t, filepath.Join(nsDir, "controller.pub"), b64Key(0x02))
 
 	_, err := store.ReadDeployment(root, "test-ns")

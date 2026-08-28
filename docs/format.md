@@ -48,8 +48,8 @@ be9c941a9a95be818895c0fb0ee60aecab6cb4f3
 a plugin. This format defines one plugin type, `dhtproxy`, backed by
 `internal/dhtproxy`.
 
-A `provd.yaml` names its backend in one of two forms. The plugin form
-names a `plugins` map and a `use_plugin` selector:
+A `provd.yaml` names its backend with a `plugins` map and a
+`use_plugin` selector:
 
 ```yaml
 plugins:
@@ -64,36 +64,23 @@ republish_interval: 5m
 
 | Key | Rule |
 |---|---|
-| `plugins` | Map of plugin name to plugin definition. The name (`dht` above) is the operator's own label; the controller does not interpret it beyond matching it against `use_plugin`. |
+| `plugins` | Required. Map of plugin name to plugin definition. The name (`dht` above) is the operator's own label; the controller does not interpret it beyond matching it against `use_plugin`. |
 | `plugins.*.type` | Required. Selects the plugin implementation. Only `dhtproxy` exists. |
 | `plugins.*.proxies` | Required when `type` is `dhtproxy`. List of dhtproxy base URLs. |
-| `use_plugin` | Required alongside `plugins`. Names the entry in `plugins` that this deployment uses. |
-| `republish_interval` | Required. Top-level, outside `plugins`. Same meaning in both forms (section 8). |
-
-The legacy shorthand form names a top-level `proxies` list instead,
-with no `plugins` map and no `use_plugin`:
-
-```yaml
-proxies:
-  - https://dhtproxy2.jami.net
-  - https://dhtproxy3.jami.net
-republish_interval: 5m
-```
-
-A top-level `proxies` list means one implicit `dhtproxy` plugin.
-`republish_interval` keeps the same top-level key and the same meaning
-as in the plugin form.
+| `use_plugin` | Required. Names the entry in `plugins` that this deployment uses. |
+| `republish_interval` | Required. Top-level, outside `plugins`. See section 8. |
 
 `provd.yaml` is malformed in each of these cases, and the controller
 rejects it:
 
 | Case | Detail |
 |---|---|
-| Both forms present | A top-level `proxies` list and a `plugins` map both exist in one file. |
+| Top-level `proxies` present | A top-level `proxies` list is not a valid key. Move the list into a `plugins` entry instead. |
+| `plugins` absent | No `plugins` map exists. |
+| `use_plugin` absent | `plugins` exists, but `use_plugin` is absent. Selection is always explicit; there is no default entry. |
 | `use_plugin` names a missing entry | `use_plugin` names an entry that `plugins` does not contain. |
-| `use_plugin` without `plugins` | `use_plugin` is present, but no `plugins` map exists. |
-| `plugins` without `use_plugin` | A `plugins` map exists, but `use_plugin` is absent. Selection is always explicit; there is no default entry. |
 | Unknown plugin type | A `plugins.*.type` value other than `dhtproxy`. |
+| Missing `proxies` | The selected `dhtproxy` plugin has an absent or empty `plugins.*.proxies`. |
 
 ## 4. DHT value
 
