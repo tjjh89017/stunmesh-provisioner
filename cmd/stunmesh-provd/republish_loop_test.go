@@ -38,7 +38,7 @@ func setRepublishInterval(t *testing.T, env *Env, namespace, interval string) {
 	}
 	var b strings.Builder
 	b.WriteString("proxies:\n")
-	for _, u := range deployment.Proxies {
+	for _, u := range deployment.Backend.Proxies {
 		b.WriteString("  - " + u + "\n")
 	}
 	b.WriteString("republish_interval: " + interval + "\n")

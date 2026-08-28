@@ -174,8 +174,9 @@ var ErrInvalidName = errors.New("store: invalid name")
 type Deployment struct {
 	// Namespace is the directory name.
 	Namespace string
-	// Proxies is the list of dhtproxy base URLs from provd.yaml.
-	Proxies []string
+	// Backend is the storage backend provd.yaml selects (docs/format.md
+	// section 3).
+	Backend BackendConfig
 	// RepublishInterval is the parsed republish_interval from
 	// provd.yaml.
 	RepublishInterval time.Duration
@@ -183,6 +184,20 @@ type Deployment struct {
 	ControllerPrivateKey crypto.Key
 	// ControllerPublicKey is controller.pub, parsed.
 	ControllerPublicKey crypto.Key
+}
+
+// BackendConfig is the backend plugin a provd.yaml selects
+// (docs/format.md section 3): either the one entry in its "plugins"
+// map that "use_plugin" names, or the implicit dhtproxy plugin the
+// legacy top-level "proxies" shorthand names. Type is always
+// "dhtproxy" for now -- docs/format.md defines no other plugin type,
+// and ReadDeployment rejects any other Type value in provd.yaml
+// before a BackendConfig is ever built.
+type BackendConfig struct {
+	// Type is the plugin implementation. Always "dhtproxy" for now.
+	Type string
+	// Proxies is the list of dhtproxy base URLs.
+	Proxies []string
 }
 
 // Node is one node directory under a namespace's nodes/ subdirectory.
@@ -204,12 +219,72 @@ type Node struct {
 	Stunmesh string
 }
 
-// provdYAML is the on-disk shape of provd.yaml. RepublishInterval is
-// decoded as a string first because YAML has no duration type; Go
-// parses it with time.ParseDuration afterward.
+// provdYAML is the on-disk shape of provd.yaml (docs/format.md section
+// 3). RepublishInterval is decoded as a string first because YAML has
+// no duration type; Go parses it with time.ParseDuration afterward.
+//
+// Proxies and Plugins/UsePlugin are the two mutually exclusive forms
+// a provd.yaml names its backend with: the legacy top-level "proxies"
+// shorthand, or the "plugins" map plus "use_plugin" selector.
+// backendConfig resolves whichever form is present into a
+// BackendConfig, or rejects the file as malformed. A field left
+// unset here (an absent YAML key) decodes to its Go zero value --
+// nil for Proxies and Plugins, "" for UsePlugin -- which is exactly
+// the "absent" case backendConfig's presence checks test for.
+//
+// An unknown top-level key, or an unknown key inside a plugins
+// entry, is silently ignored: sigs.k8s.io/yaml's Unmarshal goes
+// through encoding/json's default decoder, which does not reject
+// unknown fields (unlike internal/bundle's decoder, which calls
+// DisallowUnknownFields). provd.yaml is operator-edited configuration,
+// not a value the network can forge, so this package keeps that
+// existing, permissive behavior rather than introducing strictness
+// only for the new nested form.
 type provdYAML struct {
-	Proxies           []string `json:"proxies"`
-	RepublishInterval string   `json:"republish_interval"`
+	Proxies           []string              `json:"proxies"`
+	Plugins           map[string]pluginYAML `json:"plugins"`
+	UsePlugin         string                `json:"use_plugin"`
+	RepublishInterval string                `json:"republish_interval"`
+}
+
+// pluginYAML is one entry in provd.yaml's "plugins" map.
+type pluginYAML struct {
+	Type    string   `json:"type"`
+	Proxies []string `json:"proxies"`
+}
+
+// backendConfig resolves p's backend selection into a BackendConfig,
+// rejecting every malformed case docs/format.md section 3 lists.
+// provdPath names the file being read, for the error only; the error
+// never carries a value out of the file itself (an operator-chosen
+// plugin name or type), only the name of the key involved, matching
+// this package's no-file-content rule (package doc "Errors").
+func backendConfig(p provdYAML, provdPath string) (BackendConfig, error) {
+	hasProxies := p.Proxies != nil
+	hasPlugins := p.Plugins != nil
+	hasUsePlugin := p.UsePlugin != ""
+
+	switch {
+	case hasProxies && hasPlugins:
+		return BackendConfig{}, fmt.Errorf("%w: %s: proxies and plugins both present", ErrMalformed, provdPath)
+	case hasUsePlugin && !hasPlugins:
+		return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin without plugins", ErrMalformed, provdPath)
+	case hasPlugins && !hasUsePlugin:
+		return BackendConfig{}, fmt.Errorf("%w: %s: plugins without use_plugin", ErrMalformed, provdPath)
+	case hasPlugins:
+		plugin, ok := p.Plugins[p.UsePlugin]
+		if !ok {
+			return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin names a missing plugins entry", ErrMalformed, provdPath)
+		}
+		if plugin.Type != "dhtproxy" {
+			return BackendConfig{}, fmt.Errorf("%w: %s: unknown plugin type", ErrMalformed, provdPath)
+		}
+		return BackendConfig{Type: "dhtproxy", Proxies: plugin.Proxies}, nil
+	default:
+		// Neither form present, or only the legacy top-level "proxies"
+		// shorthand: one implicit dhtproxy plugin.
+		return BackendConfig{Type: "dhtproxy", Proxies: p.Proxies}, nil
+	}
 }
 
 // Namespaces lists the namespace directories directly under root. It
@@ -300,6 +375,11 @@ func ReadDeployment(root, namespace string) (*Deployment, error) {
 		return nil, fmt.Errorf("%w: %s: %v", ErrMalformed, provdPath, err)
 	}
 
+	backend, err := backendConfig(p, provdPath)
+	if err != nil {
+		return nil, err
+	}
+
 	interval, err := time.ParseDuration(p.RepublishInterval)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: republish_interval", ErrMalformed, provdPath)
@@ -326,7 +406,7 @@ func ReadDeployment(root, namespace string) (*Deployment, error) {
 
 	return &Deployment{
 		Namespace:            namespace,
-		Proxies:              p.Proxies,
+		Backend:              backend,
 		RepublishInterval:    interval,
 		ControllerPrivateKey: priv,
 		ControllerPublicKey:  pub,

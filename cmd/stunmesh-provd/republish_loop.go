@@ -246,7 +246,7 @@ func publishNamespaceCached(ctx context.Context, env *Env, deployment *store.Dep
 		return []nodeReport{{Namespace: deployment.Namespace, Err: fmt.Errorf("list nodes: %w", err)}}
 	}
 
-	proxy, err := newDHTProxyClient(env, deployment.Proxies)
+	proxy, err := newDHTProxyClient(env, deployment.Backend.Proxies)
 	if err != nil {
 		return []nodeReport{{Namespace: deployment.Namespace, Err: fmt.Errorf("dht proxy: %w", err)}}
 	}

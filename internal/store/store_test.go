@@ -70,13 +70,16 @@ func TestReadDeployment(t *testing.T) {
 	if dep.Namespace != "test-ns" {
 		t.Errorf("Namespace = %q, want test-ns", dep.Namespace)
 	}
+	if dep.Backend.Type != "dhtproxy" {
+		t.Errorf("Backend.Type = %q, want dhtproxy", dep.Backend.Type)
+	}
 	wantProxies := []string{"https://dhtproxy2.jami.net", "https://dhtproxy3.jami.net"}
-	if len(dep.Proxies) != len(wantProxies) {
-		t.Fatalf("Proxies = %v, want %v", dep.Proxies, wantProxies)
+	if len(dep.Backend.Proxies) != len(wantProxies) {
+		t.Fatalf("Backend.Proxies = %v, want %v", dep.Backend.Proxies, wantProxies)
 	}
 	for i, p := range wantProxies {
-		if dep.Proxies[i] != p {
-			t.Errorf("Proxies[%d] = %q, want %q", i, dep.Proxies[i], p)
+		if dep.Backend.Proxies[i] != p {
+			t.Errorf("Backend.Proxies[%d] = %q, want %q", i, dep.Backend.Proxies[i], p)
 		}
 	}
 	if dep.RepublishInterval != 5*time.Minute {
@@ -90,6 +93,119 @@ func TestReadDeployment(t *testing.T) {
 	}
 	if dep.ControllerPublicKey != wantPub {
 		t.Errorf("ControllerPublicKey mismatch")
+	}
+}
+
+// TestReadDeployment_PluginsForm covers docs/format.md section 3's
+// "plugins" map + "use_plugin" selector form: ReadDeployment must
+// resolve it to the same BackendConfig shape as the legacy top-level
+// "proxies" shorthand.
+func TestReadDeployment_PluginsForm(t *testing.T) {
+	root := t.TempDir()
+	nsDir := setupNamespace(t, root, "test-ns")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n"+
+		"  dht:\n"+
+		"    type: dhtproxy\n"+
+		"    proxies:\n"+
+		"      - https://dhtproxy2.jami.net\n"+
+		"      - https://dhtproxy3.jami.net\n"+
+		"use_plugin: dht\n"+
+		"republish_interval: 5m\n")
+
+	dep, err := store.ReadDeployment(root, "test-ns")
+	if err != nil {
+		t.Fatalf("ReadDeployment: %v", err)
+	}
+
+	if dep.Backend.Type != "dhtproxy" {
+		t.Errorf("Backend.Type = %q, want dhtproxy", dep.Backend.Type)
+	}
+	wantProxies := []string{"https://dhtproxy2.jami.net", "https://dhtproxy3.jami.net"}
+	if len(dep.Backend.Proxies) != len(wantProxies) {
+		t.Fatalf("Backend.Proxies = %v, want %v", dep.Backend.Proxies, wantProxies)
+	}
+	for i, p := range wantProxies {
+		if dep.Backend.Proxies[i] != p {
+			t.Errorf("Backend.Proxies[%d] = %q, want %q", i, dep.Backend.Proxies[i], p)
+		}
+	}
+}
+
+// TestReadDeployment_BackendMalformedCases covers every malformed
+// case docs/format.md section 3's table lists.
+func TestReadDeployment_BackendMalformedCases(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "both forms present",
+			yaml: "proxies:\n  - https://dhtproxy2.jami.net\n" +
+				"plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "use_plugin without plugins",
+			yaml: "use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "plugins without use_plugin",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "use_plugin names a missing entry",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
+				"use_plugin: no-such-plugin\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "unknown plugin type",
+			yaml: "plugins:\n  dht:\n    type: not-a-real-backend\n    proxies:\n      - https://dhtproxy2.jami.net\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			nsDir := setupNamespace(t, root, "test-ns")
+			writeFile(t, filepath.Join(nsDir, "provd.yaml"), tc.yaml)
+
+			_, err := store.ReadDeployment(root, "test-ns")
+			if !errors.Is(err, store.ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+		})
+	}
+}
+
+// TestReadDeployment_UnknownTopLevelKeyIsIgnored preserves this
+// package's existing, permissive handling of an unknown provd.yaml
+// key (see the provdYAML doc comment) for the new nested "plugins"
+// form, not just the legacy top-level "proxies" shorthand.
+func TestReadDeployment_UnknownTopLevelKeyIsIgnored(t *testing.T) {
+	root := t.TempDir()
+	nsDir := setupNamespace(t, root, "test-ns")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "plugins:\n"+
+		"  dht:\n"+
+		"    type: dhtproxy\n"+
+		"    proxies:\n"+
+		"      - https://dhtproxy2.jami.net\n"+
+		"    unexpected_plugin_field: whatever\n"+
+		"use_plugin: dht\n"+
+		"republish_interval: 5m\n"+
+		"unexpected_top_level_field: whatever\n")
+
+	dep, err := store.ReadDeployment(root, "test-ns")
+	if err != nil {
+		t.Fatalf("ReadDeployment: %v", err)
+	}
+	if dep.Backend.Type != "dhtproxy" {
+		t.Errorf("Backend.Type = %q, want dhtproxy", dep.Backend.Type)
 	}
 }
 

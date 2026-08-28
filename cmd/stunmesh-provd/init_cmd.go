@@ -28,7 +28,7 @@ deployment:
     <root>/
     ├── README.md              this file
     └── <namespace>/
-        ├── provd.yaml         deployment settings: proxies, republish interval
+        ├── provd.yaml         deployment settings: backend plugin, republish interval
         ├── controller.key     controller private key (SECRET)
         ├── controller.pub     controller public key
         └── nodes/
@@ -55,7 +55,7 @@ stunmesh-provd never edits an operator file after it first creates it.
 The operator is free to edit these files by hand between publish
 rounds:
 
-- ` + "`provd.yaml`" + `: change the proxy list or the republish interval.
+- ` + "`provd.yaml`" + `: change the backend plugin's proxy list or the republish interval.
 - ` + "`wg.yaml`" + `: change the WireGuard settings for one node.
 - ` + "`stunmesh.yaml`" + `: change the stunmesh-go settings for one node.
 
@@ -65,10 +65,17 @@ copies ` + "`identity.pub`" + ` in from the node at node init.
 `
 
 // defaultProvdYAML is the content of <namespace>/provd.yaml that
-// `init` writes for a new namespace (PLAN.md 7.1, 7.3).
-const defaultProvdYAML = `proxies:
-  - https://dhtproxy2.jami.net
-  - https://dhtproxy3.jami.net
+// `init` writes for a new namespace (PLAN.md 7.1, 7.3). It uses the
+// "plugins" map + "use_plugin" selector form (docs/format.md section
+// 3), the canonical form; the top-level "proxies" shorthand still
+// works, but `init` no longer writes it.
+const defaultProvdYAML = `plugins:
+  dht:
+    type: dhtproxy
+    proxies:
+      - https://dhtproxy2.jami.net
+      - https://dhtproxy3.jami.net
+use_plugin: dht
 republish_interval: 5m
 `
 
