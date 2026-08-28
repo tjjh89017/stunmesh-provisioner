@@ -57,6 +57,14 @@ func Keygen() (priv, pub Key, err error) {
 func ParseKey(s string) (Key, error) {
 	trimmed := strings.TrimSpace(s)
 
+	// The empty string is valid base64 for zero bytes, so without this
+	// check it would fall through to the length error, which reads as
+	// "your key has the wrong size" when the caller in fact supplied no
+	// key at all.
+	if trimmed == "" {
+		return Key{}, errors.New("crypto: key is empty")
+	}
+
 	decoded, err := base64.StdEncoding.DecodeString(trimmed)
 	if err != nil {
 		return Key{}, errors.New("crypto: key is not valid base64")

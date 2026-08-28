@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/store"
@@ -198,6 +199,15 @@ func readIdentityKey(env *Env, args []string) (crypto.Key, error) {
 			return crypto.Key{}, fmt.Errorf("read identity key from stdin: %w", err)
 		}
 		raw = string(data)
+		// An empty stdin is almost always a plumbing mistake, not a bad
+		// key: `docker exec` / `podman exec` without -i hands the
+		// process a closed stdin, so the pipe the operator wrote never
+		// arrives. crypto.ParseKey would call the empty string "must
+		// decode to 32 bytes", which points at the key instead of the
+		// pipe; name the real problem here.
+		if strings.TrimSpace(raw) == "" {
+			return crypto.Key{}, errors.New("identity key: stdin is empty (pass the key as an argument, or use docker/podman exec -i)")
+		}
 	}
 
 	key, err := crypto.ParseKey(raw)

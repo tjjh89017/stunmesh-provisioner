@@ -289,6 +289,27 @@ func TestRunNodeAdd_RejectsInvalidKeyFromStdin(t *testing.T) {
 	}
 }
 
+// An empty stdin is what `docker exec` / `podman exec` without -i
+// delivers, so the error must point at the missing pipe, not at the
+// key's size.
+func TestRunNodeAdd_EmptyStdinNamesThePipe(t *testing.T) {
+	root := t.TempDir()
+	initTestNamespace(t, root, "myns")
+
+	env, _, stderr := newTestEnv(root)
+	env.Stdin = strings.NewReader("")
+	code := runNodeAdd(env, []string{"myns", "alpha"})
+	if code != ExitError {
+		t.Fatalf("code = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr.String(), "stdin is empty") {
+		t.Errorf("error does not name the empty stdin: %q", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "myns", "nodes", "alpha", "identity.pub")); err == nil {
+		t.Error("runNodeAdd wrote identity.pub from an empty key")
+	}
+}
+
 func TestRunNodeAdd_TooFewOrTooManyArgs(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][]string{

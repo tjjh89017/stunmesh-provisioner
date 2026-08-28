@@ -306,6 +306,20 @@ func TestParseKeyRejectsBadInput(t *testing.T) {
 		"bad base64": "not-valid-base64!!!",
 	}
 
+	// The empty string decodes as zero bytes, so it needs its own
+	// "key is empty" error rather than the misleading length one; it
+	// is listed separately because the echo check below would pass
+	// vacuously for "".
+	t.Run("empty", func(t *testing.T) {
+		_, err := crypto.ParseKey("  \n")
+		if err == nil {
+			t.Fatal("ParseKey(whitespace) succeeded, want error")
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Fatalf("ParseKey(whitespace) error = %q, want it to say the key is empty", err.Error())
+		}
+	})
+
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := crypto.ParseKey(input)
