@@ -242,7 +242,7 @@ func printNodeConstants(env *Env, namespace, nodeID string, deployment *store.De
 	fmt.Fprintf(env.Stdout, "NAMESPACE=%s\n", namespace)
 	fmt.Fprintf(env.Stdout, "NODE_ID=%s\n", nodeID)
 	fmt.Fprintf(env.Stdout, "CONTROLLER_PUBKEY=%s\n", deployment.ControllerPublicKey.String())
-	for _, proxy := range deployment.Proxies {
+	for _, proxy := range deployment.Backend.Proxies {
 		fmt.Fprintf(env.Stdout, "DHT_PROXY=%s\n", proxy)
 	}
 }
