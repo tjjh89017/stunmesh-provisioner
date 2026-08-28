@@ -12,7 +12,7 @@ import (
 
 // maxDHTValueSize is the largest allowed size, in bytes, of the
 // base64-encoded DHT value: base64(nonce || nacl/box(inner bundle
-// JSON)) (PLAN.md 4.1, docs/format.md 3).
+// JSON)) (PLAN.md 4.1, docs/format.md 4).
 //
 // 56 KiB is a placeholder. Stage 5 measures the real limit on a
 // device and replaces this constant; nothing else in this file
@@ -21,7 +21,7 @@ const maxDHTValueSize = 56 * 1024
 
 // naclBoxOverhead is the number of bytes golang.org/x/crypto/nacl/box
 // adds on top of the plaintext: a 24-byte nonce plus box's 16-byte
-// Poly1305 authenticator (PLAN.md 4.1, docs/format.md 3).
+// Poly1305 authenticator (PLAN.md 4.1, docs/format.md 4).
 const naclBoxOverhead = 24 + 16
 
 // maxInnerBundleSize is the largest allowed size, in bytes, of the
@@ -92,7 +92,7 @@ type assembledBundle struct {
 // buildBundle assembles the full inner bundle JSON (see
 // assembledBundle) and always runs it through bundle.Parse and then
 // (*bundle.Bundle).Validate, the same two-phase check
-// stunmesh-agent applies after decryption (docs/format.md 6). It
+// stunmesh-agent applies after decryption (docs/format.md 7). It
 // never builds a bundle.Bundle by hand, so it can never publish a
 // bundle the agent would reject.
 //

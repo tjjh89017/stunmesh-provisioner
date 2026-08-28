@@ -14,7 +14,7 @@ import (
 // net.SplitHostPort first: it already implements that convention
 // correctly, including a bracketed IPv6 host with a port.
 //
-// docs/format.md 5 documents Endpoint as `host:port`, but does not
+// docs/format.md 6 documents Endpoint as `host:port`, but does not
 // forbid a bare host with no port (only a present-but-empty Endpoint
 // is rejected, by bundle.Validate, before this package ever sees it).
 // When SplitHostPort reports no port -- a bare hostname or IPv4
@@ -31,7 +31,7 @@ import (
 // contains colons -- so parseEndpoint returns it unchanged as the
 // host, exactly like any other bare host. Endpoint values in practice
 // always carry a port (stunmesh-go sets the runtime endpoint itself;
-// docs/format.md 5 "usually absent"), so this ambiguous case is not
+// docs/format.md 6 "usually absent"), so this ambiguous case is not
 // expected to occur, but treating it as a bare host is the same
 // interpretation net.SplitHostPort would give it, and it never loses
 // data: the bytes still land in endpoint_host verbatim.

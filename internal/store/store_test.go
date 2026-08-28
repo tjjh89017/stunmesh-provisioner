@@ -167,6 +167,18 @@ func TestReadDeployment_BackendMalformedCases(t *testing.T) {
 				"use_plugin: dht\n" +
 				"republish_interval: 5m\n",
 		},
+		{
+			name: "plugins form: proxies absent",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "plugins form: proxies empty",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies: []\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
 	}
 
 	for _, tc := range cases {
@@ -178,6 +190,47 @@ func TestReadDeployment_BackendMalformedCases(t *testing.T) {
 			_, err := store.ReadDeployment(root, "test-ns")
 			if !errors.Is(err, store.ErrMalformed) {
 				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+		})
+	}
+}
+
+// TestReadDeployment_PluginsFormMissingProxiesNamesFileAndKey checks
+// that the "proxies absent/empty in the plugins form" error (part of
+// TestReadDeployment_BackendMalformedCases) names provd.yaml and the
+// "proxies" key, matching this package's no-file-content rule
+// (package doc "Errors"): the message must let an operator find the
+// broken file without the failure only surfacing later, at publish
+// time, with a message that never names provd.yaml at all.
+func TestReadDeployment_PluginsFormMissingProxiesNamesFileAndKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "absent",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+		{
+			name: "empty",
+			yaml: "plugins:\n  dht:\n    type: dhtproxy\n    proxies: []\n" +
+				"use_plugin: dht\n" +
+				"republish_interval: 5m\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			nsDir := setupNamespace(t, root, "test-ns")
+			writeFile(t, filepath.Join(nsDir, "provd.yaml"), tc.yaml)
+
+			_, err := store.ReadDeployment(root, "test-ns")
+			if !errors.Is(err, store.ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+			if !strings.Contains(err.Error(), "provd.yaml") || !strings.Contains(err.Error(), "proxies") {
+				t.Errorf("err = %q, want it to name provd.yaml and proxies", err)
 			}
 		})
 	}

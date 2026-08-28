@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend/dial"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
-	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtproxy"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/store"
 )
 
@@ -257,39 +257,31 @@ func publishNamespace(ctx context.Context, env *Env, namespace string, now time.
 }
 
 // newBackend builds the backend.Store a namespace's round uses,
-// selected by cfg.Type (docs/format.md section 3). "dhtproxy" is the
-// only type store.ReadDeployment ever hands back today -- it rejects
-// every other value in provd.yaml before a store.BackendConfig is
-// ever built (internal/store's backendConfig) -- so the default arm
-// below is unreachable in practice. It still returns an error rather
-// than panicking, naming the field and not deployment.Backend.Type's
-// value: this is the one construction point every backend.Store this
-// binary can build goes through, and a future backend type landing
-// here before its case is added must fail loudly, not crash or
-// silently pick the wrong implementation.
+// selected by cfg.Type (docs/format.md section 3), through
+// internal/backend/dial's one shared construction point (also used by
+// cmd/stunmesh-agent). "dhtproxy" (backend.TypeDHTProxy) is the only
+// type store.ReadDeployment ever hands back today -- it rejects every
+// other value in provd.yaml before a store.BackendConfig is ever
+// built (internal/store's backendConfig) -- so dial.New's default arm
+// is unreachable in practice. It still returns an error rather than
+// panicking, naming the field and not deployment.Backend.Type's
+// value: dial.New is the one construction point every backend.Store
+// this binary can build goes through, and a future backend type
+// landing here before its case is added must fail loudly, not crash
+// or silently pick the wrong implementation.
 //
 // It prefers env.HTTPClient when a test set one (see Env's doc), so a
 // test tree points every proxy call at an httptest.Server instead of
 // the real network; a production run leaves it nil and gets
 // internal/dhtproxy's own client and default per-request timeout.
-//
-// newBackend lives here, not in internal/backend, because
-// internal/dhtproxy already imports internal/backend (to implement
-// backend.Store); a constructor in internal/backend that also called
-// dhtproxy.New would import it back, an import cycle. publishNamespace
-// and publishNamespaceCached (republish_loop.go) share this one
-// construction point.
+// publishNamespace and publishNamespaceCached (republish_loop.go)
+// share this one construction point.
 func newBackend(env *Env, cfg store.BackendConfig) (backend.Store, error) {
-	switch cfg.Type {
-	case "dhtproxy":
-		var opts []dhtproxy.Option
-		if env.HTTPClient != nil {
-			opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))
-		}
-		return dhtproxy.New(cfg.Proxies, opts...)
-	default:
-		return nil, errors.New("backend: unknown type")
-	}
+	return dial.New(dial.Config{
+		Type:       cfg.Type,
+		Proxies:    cfg.Proxies,
+		HTTPClient: env.HTTPClient,
+	})
 }
 
 // publishNode builds, seals, and puts the bundle for one node (PLAN.md
@@ -366,7 +358,7 @@ func sealAndPutNode(ctx context.Context, proxy backend.Store, deployment *store.
 	// The controller is the sender: it seals with its own private key
 	// (deployment.ControllerPrivateKey) and the node's identity public
 	// key (node.IdentityPublicKey) as the recipient (PLAN.md 2.4,
-	// docs/format.md 3). Getting this order backwards would produce a
+	// docs/format.md 4). Getting this order backwards would produce a
 	// value only the controller itself could open.
 	sealed, err := crypto.Seal(plain, node.IdentityPublicKey, deployment.ControllerPrivateKey)
 	if err != nil {
@@ -400,7 +392,7 @@ func sealAndPutNode(ctx context.Context, proxy backend.Store, deployment *store.
 // wraps sealed in {"data": base64(sealed)} before sending. sealed --
 // nonce || nacl/box ciphertext, raw bytes -- is passed here unencoded,
 // so the wire value ends up as exactly base64(nonce ||
-// nacl/box(inner bundle JSON)), matching docs/format.md 3 with no
+// nacl/box(inner bundle JSON)), matching docs/format.md 4 with no
 // double-encoding.
 func putSealed(ctx context.Context, proxy backend.Store, key string, sealed []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, putTimeout)

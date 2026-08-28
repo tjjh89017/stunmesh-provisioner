@@ -324,7 +324,7 @@ func TestDoFetch_ValueThatFailsPhase2ChecksExitsOKAsNothingUsable(t *testing.T) 
 
 	// Decrypts and parses fine (phase 1), but the namespace does not
 	// match this node's configured namespace ("ns"): a phase 2 check
-	// (docs/format.md 6, check 8) must reject it.
+	// (docs/format.md 7, check 8) must reject it.
 	plain := []byte(`{"version":1,"namespace":"wrong-ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
 	sealed, err := crypto.Seal(plain, identityPub, controllerPriv)
 	if err != nil {

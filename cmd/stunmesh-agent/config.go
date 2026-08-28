@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
@@ -37,7 +38,7 @@ const (
 
 	// defaultBackend is --backend's default (docs/format.md section
 	// 3): dhtproxy is the only backend this agent implements today.
-	defaultBackend = "dhtproxy"
+	defaultBackend = backend.TypeDHTProxy
 )
 
 // defaultProxies is DHT_PROXY's default (PLAN.md section 3): the
@@ -371,7 +372,7 @@ func (cfg *Config) ValidateFetch() error {
 	// section 3); this mirrors --controller-pubkey above: the error
 	// names the field, never cfg.Backend's actual value, so a typo is
 	// never echoed back.
-	if cfg.Backend != "dhtproxy" {
+	if cfg.Backend != backend.TypeDHTProxy {
 		return errors.New("--backend: unknown backend type")
 	}
 

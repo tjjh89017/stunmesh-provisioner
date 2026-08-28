@@ -292,7 +292,7 @@ func TestParseRejectsUnknownKeys(t *testing.T) {
 }
 
 // TestParseUnknownFieldPrecedesValidateErrors pins the precedence
-// documented in docs/format.md section 6: an unknown key is a
+// documented in docs/format.md section 7: an unknown key is a
 // Parse-time (phase 1) error, so it is reported even when the same
 // document also breaks a Validate-time (phase 2) rule that would
 // otherwise be reported first if the checks ran in the field's table
@@ -1411,7 +1411,7 @@ func keepaliveDoc(field string) string {
 }
 
 // TestValidateListenPortRange checks the `listen_port` bound
-// (1-65535, docs/format.md 5) at and past each edge.
+// (1-65535, docs/format.md 6) at and past each edge.
 func TestValidateListenPortRange(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1450,7 +1450,7 @@ func TestValidateListenPortRange(t *testing.T) {
 }
 
 // TestValidateMTURange checks the `mtu` bound (576-65535,
-// docs/format.md 5) at and past each edge.
+// docs/format.md 6) at and past each edge.
 func TestValidateMTURange(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1489,7 +1489,7 @@ func TestValidateMTURange(t *testing.T) {
 }
 
 // TestValidateRouteMetricRange checks the `routes[].metric` bound
-// (0-4294967295, docs/format.md 5) at and past each edge.
+// (0-4294967295, docs/format.md 6) at and past each edge.
 func TestValidateRouteMetricRange(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1528,7 +1528,7 @@ func TestValidateRouteMetricRange(t *testing.T) {
 }
 
 // TestValidatePersistentKeepaliveRange checks the
-// `persistent_keepalive` bound (0-65535, docs/format.md 5) at and
+// `persistent_keepalive` bound (0-65535, docs/format.md 6) at and
 // past each edge.
 func TestValidatePersistentKeepaliveRange(t *testing.T) {
 	jqPath := jqOrSkip(t)
@@ -1568,7 +1568,7 @@ func TestValidatePersistentKeepaliveRange(t *testing.T) {
 }
 
 // TestValidateTimestampRange checks the timestamp upper bound
-// (2^53-1, docs/format.md 5) at and past the edge. The lower bound
+// (2^53-1, docs/format.md 6) at and past the edge. The lower bound
 // (must be positive) is already covered by
 // TestValidateRejectsNonPositiveTimestamp.
 func TestValidateTimestampRange(t *testing.T) {

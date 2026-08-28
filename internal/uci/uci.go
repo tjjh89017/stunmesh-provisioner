@@ -53,7 +53,7 @@
 // # Endpoint parsing
 //
 // A peer's Endpoint field is one string, `host:port` with the host
-// bracketed for IPv6 (docs/format.md 5, matching net.JoinHostPort's
+// bracketed for IPv6 (docs/format.md 6, matching net.JoinHostPort's
 // own convention). BuildInterface splits it into the UCI
 // endpoint_host and endpoint_port options with parseEndpoint; see its
 // doc comment for the exact rule, including the case of an endpoint

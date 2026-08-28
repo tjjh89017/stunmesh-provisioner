@@ -17,7 +17,7 @@
 // Every JSON number in the input must be a plain base-10 integer
 // (ErrNumber; see its doc comment), and `timestamp`, `listen_port`,
 // `mtu`, `routes[].metric`, and `persistent_keepalive` must each fall
-// within the range documented in docs/format.md 5 (ErrRange).
+// within the range documented in docs/format.md 6 (ErrRange).
 //
 // Canonical form preserves the presence of empty containers exactly
 // as received: a bundle parsed from JSON that explicitly has
@@ -77,7 +77,7 @@ type Bundle struct {
 	// stays distinguishable from an explicit `""`: nil means absent,
 	// a pointer to "" means the input had `"stunmesh":""`, which is
 	// the legitimate "no stunmesh config" value (PLAN.md 4.5,
-	// docs/format.md 5). `stunmesh` is required, so Validate rejects
+	// docs/format.md 6). `stunmesh` is required, so Validate rejects
 	// nil with ErrStunmesh.
 	Stunmesh *string `json:"stunmesh"`
 }
@@ -113,12 +113,12 @@ func (b Bundle) MarshalJSON() ([]byte, error) {
 type Interface struct {
 	PrivateKey string `json:"private_key"`
 	// ListenPort's documented and validated range is 1-65535
-	// (docs/format.md 5), well within a 32-bit Go `int`
+	// (docs/format.md 6), well within a 32-bit Go `int`
 	// (max 2147483647), so *int is safe unlike Route.Metric.
 	ListenPort *int     `json:"listen_port,omitempty"`
 	Addresses  []string `json:"addresses"`
 	// MTU's documented and validated range is 576-65535
-	// (docs/format.md 5), well within a 32-bit Go `int`, so *int is
+	// (docs/format.md 6), well within a 32-bit Go `int`, so *int is
 	// safe unlike Route.Metric.
 	MTU             *int              `json:"mtu,omitempty"`
 	RouteAllowedIPs *bool             `json:"route_allowed_ips,omitempty"`
@@ -184,7 +184,7 @@ type Route struct {
 	CIDR    string  `json:"cidr"`
 	Gateway *string `json:"gateway,omitempty"`
 	// Metric's documented and validated range is 0-4294967295
-	// (docs/format.md 5), which does not fit a 32-bit Go `int`
+	// (docs/format.md 6), which does not fit a 32-bit Go `int`
 	// (max 2147483647 on GOARCH=mips/mipsle/386/arm), so it is
 	// *int64 rather than *int.
 	Metric *int64 `json:"metric,omitempty"`
@@ -206,7 +206,7 @@ type Peer struct {
 	AllowedIPs   []string `json:"allowed_ips"`
 	Endpoint     *string  `json:"endpoint,omitempty"`
 	// PersistentKeepalive's documented and validated range is 0-65535
-	// seconds (docs/format.md 5), well within a 32-bit Go `int`, so
+	// seconds (docs/format.md 6), well within a 32-bit Go `int`, so
 	// *int is safe unlike Route.Metric.
 	PersistentKeepalive *int              `json:"persistent_keepalive,omitempty"`
 	Options             map[string]string `json:"options,omitempty"`
@@ -468,7 +468,7 @@ var (
 	// ErrTimestamp means the bundle timestamp is not a positive value.
 	ErrTimestamp = errors.New("bundle: timestamp is not positive")
 	// ErrRange means a numeric field is present but outside the range
-	// documented in docs/format.md 5: `timestamp` (upper bound only;
+	// documented in docs/format.md 6: `timestamp` (upper bound only;
 	// the lower bound is ErrTimestamp), `listen_port`, `mtu`,
 	// `routes[].metric`, and `persistent_keepalive`. Each bound closes
 	// a gap between Go's *int/int64 decoding and jq's float64

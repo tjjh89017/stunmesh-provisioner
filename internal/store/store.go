@@ -150,6 +150,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
@@ -276,14 +277,38 @@ func backendConfig(p provdYAML, provdPath string) (BackendConfig, error) {
 		if !ok {
 			return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin names a missing plugins entry", ErrMalformed, provdPath)
 		}
-		if plugin.Type != "dhtproxy" {
+		if plugin.Type != backend.TypeDHTProxy {
 			return BackendConfig{}, fmt.Errorf("%w: %s: unknown plugin type", ErrMalformed, provdPath)
 		}
-		return BackendConfig{Type: "dhtproxy", Proxies: plugin.Proxies}, nil
+		// docs/format.md section 3's table marks "plugins.*.proxies" as
+		// "Required when type is dhtproxy". Without this check, a
+		// plugin entry with no proxies (or an explicit empty list)
+		// resolves to a BackendConfig with an empty Proxies slice, and
+		// the failure only ever surfaces later, at publish time, deep
+		// inside dhtproxy.New -- with a message that never names
+		// provd.yaml at all. Catching it here, at the one place every
+		// reader of provd.yaml goes through, gives the operator a clear
+		// error naming the file and the field instead.
+		//
+		// The legacy top-level "proxies" shorthand (the default case
+		// below) deliberately keeps its existing, more permissive
+		// behavior: docs/format.md section 3's required-proxies rule is
+		// stated for the plugins table, not the shorthand, and an empty
+		// shorthand proxies list already has other, existing test
+		// coverage (TestReadDeployment_MissingControllerKey) relying on
+		// it not being rejected here.
+		if len(plugin.Proxies) == 0 {
+			return BackendConfig{}, fmt.Errorf("%w: %s: plugins.*.proxies is required for a dhtproxy plugin", ErrMalformed, provdPath)
+		}
+		return BackendConfig{Type: backend.TypeDHTProxy, Proxies: plugin.Proxies}, nil
 	default:
 		// Neither form present, or only the legacy top-level "proxies"
-		// shorthand: one implicit dhtproxy plugin.
-		return BackendConfig{Type: "dhtproxy", Proxies: p.Proxies}, nil
+		// shorthand: one implicit dhtproxy plugin. An empty or absent
+		// proxies list is accepted here, unlike the plugins-form case
+		// above: that is this package's existing behavior for the
+		// shorthand, which docs/format.md section 3's required-proxies
+		// rule does not mention.
+		return BackendConfig{Type: backend.TypeDHTProxy, Proxies: p.Proxies}, nil
 	}
 }
 
