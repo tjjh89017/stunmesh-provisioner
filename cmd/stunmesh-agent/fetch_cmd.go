@@ -143,7 +143,7 @@ func doFetch(env *Env, cfg *Config) int {
 		return ExitError
 	}
 
-	proxy, err := newDHTProxyClient(env, cfg.Proxies)
+	proxy, err := newBackend(env, cfg)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: dht proxy: %v\n", err)
 		return ExitError
@@ -206,14 +206,29 @@ func doFetch(env *Env, cfg *Config) int {
 	return checkAndApply(env, cfg, best)
 }
 
-// newDHTProxyClient builds the backend.Store fetch uses. It prefers
-// env.HTTPClient when a test set one (see Env's doc), so a test tree
-// points every proxy call at an httptest.Server instead of the real
-// network; a production run leaves it nil and gets fetchProxyTimeout
-// as its per-request timeout instead of internal/dhtproxy's own
-// default. It always constructs a dhtproxy.Client directly: a
-// selection factory for other backend.Store implementations comes in
-// a later item.
+// newBackend builds the backend.Store fetch uses, selected by
+// cfg.Backend (docs/format.md section 3). ValidateFetch already
+// rejects any cfg.Backend other than "dhtproxy" before runFetch ever
+// reaches doFetch, so the default arm below only matters for a caller
+// that builds a Config directly and skips ValidateFetch (as some
+// tests do): it still returns an error, naming the field and not
+// cfg.Backend's value, rather than picking a backend silently or
+// panicking.
+func newBackend(env *Env, cfg *Config) (backend.Store, error) {
+	switch cfg.Backend {
+	case "dhtproxy":
+		return newDHTProxyClient(env, cfg.Proxies)
+	default:
+		return nil, errors.New("backend: unknown type")
+	}
+}
+
+// newDHTProxyClient builds the dhtproxy.Client arm of newBackend. It
+// prefers env.HTTPClient when a test set one (see Env's doc), so a
+// test tree points every proxy call at an httptest.Server instead of
+// the real network; a production run leaves it nil and gets
+// fetchProxyTimeout as its per-request timeout instead of
+// internal/dhtproxy's own default.
 func newDHTProxyClient(env *Env, proxies []string) (backend.Store, error) {
 	var opts []dhtproxy.Option
 	if env.HTTPClient != nil {

@@ -249,6 +249,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		Namespace:          namespace,
 		NodeID:             nodeID,
 		ControllerPubkey:   controllerPub.String(),
+		Backend:            "dhtproxy",
 		Proxies:            []string{proxy.srv.URL},
 		IdentityKeyPath:    keyPath,
 		LastPath:           filepath.Join(dir, "last.json"),

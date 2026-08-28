@@ -30,6 +30,20 @@ func TestRun_Help(t *testing.T) {
 	}
 }
 
+func TestRun_HelpDocumentsBackendFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"-h"}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(stdout.String(), "--backend") {
+		t.Errorf("stdout = %q, want it to document --backend", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), defaultBackend) {
+		t.Errorf("stdout = %q, want it to state --backend's default", stdout.String())
+	}
+}
+
 func TestRun_Version(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr, "1.2.3")
