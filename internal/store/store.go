@@ -188,12 +188,11 @@ type Deployment struct {
 }
 
 // BackendConfig is the backend plugin a provd.yaml selects
-// (docs/format.md section 3): either the one entry in its "plugins"
-// map that "use_plugin" names, or the implicit dhtproxy plugin the
-// legacy top-level "proxies" shorthand names. Type is always
-// "dhtproxy" for now -- docs/format.md defines no other plugin type,
-// and ReadDeployment rejects any other Type value in provd.yaml
-// before a BackendConfig is ever built.
+// (docs/format.md section 3): the one entry in its "plugins" map that
+// "use_plugin" names. Type is always "dhtproxy" for now --
+// docs/format.md defines no other plugin type, and ReadDeployment
+// rejects any other Type value in provd.yaml before a BackendConfig
+// is ever built.
 type BackendConfig struct {
 	// Type is the plugin implementation. Always "dhtproxy" for now.
 	Type string
@@ -224,14 +223,13 @@ type Node struct {
 // 3). RepublishInterval is decoded as a string first because YAML has
 // no duration type; Go parses it with time.ParseDuration afterward.
 //
-// Proxies and Plugins/UsePlugin are the two mutually exclusive forms
-// a provd.yaml names its backend with: the legacy top-level "proxies"
-// shorthand, or the "plugins" map plus "use_plugin" selector.
-// backendConfig resolves whichever form is present into a
-// BackendConfig, or rejects the file as malformed. A field left
-// unset here (an absent YAML key) decodes to its Go zero value --
-// nil for Proxies and Plugins, "" for UsePlugin -- which is exactly
-// the "absent" case backendConfig's presence checks test for.
+// A provd.yaml names its backend with a "plugins" map plus a
+// "use_plugin" selector; both are required. A top-level "proxies" key
+// is a leftover from a retired shorthand form and is always malformed
+// (backendConfig rejects it before looking at Plugins or UsePlugin). A
+// field left unset here (an absent YAML key) decodes to its Go zero
+// value -- nil for Proxies and Plugins, "" for UsePlugin -- which is
+// exactly the "absent" case backendConfig's presence checks test for.
 //
 // An unknown top-level key, or an unknown key inside a plugins
 // entry, is silently ignored: sigs.k8s.io/yaml's Unmarshal goes
@@ -266,13 +264,16 @@ func backendConfig(p provdYAML, provdPath string) (BackendConfig, error) {
 	hasUsePlugin := p.UsePlugin != ""
 
 	switch {
-	case hasProxies && hasPlugins:
-		return BackendConfig{}, fmt.Errorf("%w: %s: proxies and plugins both present", ErrMalformed, provdPath)
-	case hasUsePlugin && !hasPlugins:
-		return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin without plugins", ErrMalformed, provdPath)
-	case hasPlugins && !hasUsePlugin:
-		return BackendConfig{}, fmt.Errorf("%w: %s: plugins without use_plugin", ErrMalformed, provdPath)
-	case hasPlugins:
+	case hasProxies:
+		// A top-level "proxies" list is a retired shorthand form; it is
+		// no longer a valid provd.yaml key at all. Point the operator at
+		// the one remaining form instead of silently ignoring the list.
+		return BackendConfig{}, fmt.Errorf("%w: %s: top-level proxies is no longer supported: move the list into a plugins entry (see docs/format.md section 3)", ErrMalformed, provdPath)
+	case !hasPlugins:
+		return BackendConfig{}, fmt.Errorf("%w: %s: plugins is required", ErrMalformed, provdPath)
+	case !hasUsePlugin:
+		return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin is required", ErrMalformed, provdPath)
+	default:
 		plugin, ok := p.Plugins[p.UsePlugin]
 		if !ok {
 			return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin names a missing plugins entry", ErrMalformed, provdPath)
@@ -289,26 +290,10 @@ func backendConfig(p provdYAML, provdPath string) (BackendConfig, error) {
 		// provd.yaml at all. Catching it here, at the one place every
 		// reader of provd.yaml goes through, gives the operator a clear
 		// error naming the file and the field instead.
-		//
-		// The legacy top-level "proxies" shorthand (the default case
-		// below) deliberately keeps its existing, more permissive
-		// behavior: docs/format.md section 3's required-proxies rule is
-		// stated for the plugins table, not the shorthand, and an empty
-		// shorthand proxies list already has other, existing test
-		// coverage (TestReadDeployment_MissingControllerKey) relying on
-		// it not being rejected here.
 		if len(plugin.Proxies) == 0 {
 			return BackendConfig{}, fmt.Errorf("%w: %s: plugins.*.proxies is required for a dhtproxy plugin", ErrMalformed, provdPath)
 		}
 		return BackendConfig{Type: backend.TypeDHTProxy, Proxies: plugin.Proxies}, nil
-	default:
-		// Neither form present, or only the legacy top-level "proxies"
-		// shorthand: one implicit dhtproxy plugin. An empty or absent
-		// proxies list is accepted here, unlike the plugins-form case
-		// above: that is this package's existing behavior for the
-		// shorthand, which docs/format.md section 3's required-proxies
-		// rule does not mention.
-		return BackendConfig{Type: backend.TypeDHTProxy, Proxies: p.Proxies}, nil
 	}
 }
 

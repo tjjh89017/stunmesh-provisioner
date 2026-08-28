@@ -97,10 +97,11 @@ func setupPublishTestNamespace(t *testing.T, proxyURLs []string) (env *Env, name
 func writePublishTestProvdYAML(t *testing.T, env *Env, namespace string, proxyURLs []string) {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("proxies:\n")
+	b.WriteString("plugins:\n  dht:\n    type: dhtproxy\n    proxies:\n")
 	for _, u := range proxyURLs {
-		b.WriteString("  - " + u + "\n")
+		b.WriteString("      - " + u + "\n")
 	}
+	b.WriteString("use_plugin: dht\n")
 	b.WriteString("republish_interval: 5m\n")
 	mustWriteFile(t, filepath.Join(env.Dir, namespace, "provd.yaml"), b.String())
 }

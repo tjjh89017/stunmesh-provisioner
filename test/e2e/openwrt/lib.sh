@@ -412,8 +412,12 @@ point_proxies_at() {
 	local namespace="$1" proxy_url="$2"
 	local path="${PROVD_ROOT}/${namespace}/provd.yaml"
 	cat >"$path" <<EOF
-proxies:
-  - ${proxy_url}
+plugins:
+  dht:
+    type: dhtproxy
+    proxies:
+      - ${proxy_url}
+use_plugin: dht
 republish_interval: 5m
 EOF
 }
