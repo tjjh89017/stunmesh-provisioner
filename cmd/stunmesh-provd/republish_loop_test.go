@@ -244,6 +244,72 @@ func TestRunRepublishLoop_RespectsPerNamespaceInterval(t *testing.T) {
 	}
 }
 
+// TestRunRepublishLoop_NoNamespacesPrintsNothingToPublish covers the
+// first "permanently silent" case this test file's defect fix
+// addresses: env.Dir exists (a container mounted an empty volume, for
+// example) but holds no namespace directory at all. Every round must
+// say so on stderr, not run forever without a trace in `docker logs`.
+func TestRunRepublishLoop_NoNamespacesPrintsNothingToPublish(t *testing.T) {
+	root := t.TempDir()
+	env, _, _ := newTestEnv(root)
+	stderr := env.Stderr.(interface{ String() string })
+
+	runLoopRounds(t, env, "", 2, nil)
+
+	want := "stunmesh-provd: publish: nothing to publish in " + root + " (no namespaces)"
+	if got := strings.Count(stderr.String(), want); got != 2 {
+		t.Fatalf("stderr contained %q %d time(s), want 2 (once per round):\n%s", want, got, stderr.String())
+	}
+}
+
+// TestRunRepublishLoop_NamespaceWithoutNodesPrintsNothingToPublish
+// covers the second "permanently silent" case: a namespace exists
+// (`init` ran) but nodes/ does not (`node add` never ran).
+// publishNamespaceCached already returns nil for this, silently, by
+// design (an empty namespace is not a failure) -- but the loop as a
+// whole must still tell the operator there was nothing to publish.
+func TestRunRepublishLoop_NamespaceWithoutNodesPrintsNothingToPublish(t *testing.T) {
+	root := t.TempDir()
+	env, _, _ := newTestEnv(root)
+	stderr := env.Stderr.(interface{ String() string })
+
+	if code := runInit(env, []string{"myns"}); code != ExitOK {
+		t.Fatalf("runInit: code=%d", code)
+	}
+
+	runLoopRounds(t, env, "", 1, nil)
+
+	want := "stunmesh-provd: publish: nothing to publish in " + root + " (no nodes in myns)"
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), want)
+	}
+}
+
+// TestRunRepublishLoop_WithNodesNeverPrintsNothingToPublish is the
+// negative case: a namespace with at least one node must never trigger
+// the nothing-to-publish diagnostic, on any round, including rounds
+// where the namespace is not yet due and so publishes nothing this
+// time around.
+func TestRunRepublishLoop_WithNodesNeverPrintsNothingToPublish(t *testing.T) {
+	proxy := newCapturingProxy()
+	srv := proxy.server()
+	defer srv.Close()
+
+	env, namespace, _ := setupPublishTestNamespace(t, []string{srv.URL})
+	stderr := env.Stderr.(interface{ String() string })
+	setRepublishInterval(t, env, namespace, "1h")
+	addPublishTestNode(t, env, namespace, "alpha")
+
+	// 1h keeps the namespace due only on round 1; rounds 2-3 skip it on
+	// schedule. The diagnostic must stay silent throughout, not just on
+	// the round that actually published.
+	runLoopRounds(t, env, "", 3, nil)
+
+	if strings.Contains(stderr.String(), "nothing to publish") {
+		t.Fatalf("stderr unexpectedly mentions nothing to publish with a node present:\n%s", stderr.String())
+	}
+}
+
 func TestRunRepublishLoop_UnknownNamespaceIsError(t *testing.T) {
 	root := t.TempDir()
 	env, _, _ := newTestEnv(root)

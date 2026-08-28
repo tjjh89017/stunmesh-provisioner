@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,6 +85,18 @@ func runPublishLoop(env *Env, ns string) int {
 // namespaces, matching runPublish/publishRound's rule that one bad
 // namespace or node never aborts the rest.
 //
+// A round that ends without a single node to publish -- env.Dir has no
+// namespace directories at all, or every namespace it does have is
+// still without a nodes/ directory (`init` ran, `node add` never did)
+// -- prints one diagnostic line to stderr every round (see
+// nothingToPublishLine), the loop's counterpart to --once's "nothing
+// to publish" (publish_cmd.go). Without it, a controller pointed at an
+// empty or half-provisioned volume runs forever with nothing in
+// `docker logs`, which reads as "working" rather than "waiting for you
+// to add a node." This check runs regardless of any namespace's due
+// time, so it reflects the tree's current state every round, not just
+// rounds that happened to publish.
+//
 // runRepublishLoop returns ExitOK on a clean shutdown (ctx canceled).
 // It returns ExitError only when the tree itself cannot be resolved at
 // all (for example, --namespace names a namespace that does not
@@ -105,12 +118,39 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 		nextDue := map[string]time.Time{}
 		wait := fallbackPollInterval
 
+		// haveNodes and emptyNamespaces feed nothingToPublishLine below;
+		// see that function's doc for what each namespace outcome does
+		// to them. Both are computed from the tree's current state, not
+		// from whether this round happened to publish the namespace, so
+		// a namespace waiting out its own republish_interval never
+		// looks "empty" just because this round skipped it.
+		haveNodes := false
+		var emptyNamespaces []string
+
 		for _, namespace := range namespaces {
 			deployment, err := store.ReadDeployment(env.Dir, namespace)
 			if err != nil {
 				fmt.Fprintf(env.Stderr, "stunmesh-provd: publish: %s: %v\n", namespace, err)
 				nextDue[namespace] = now.Add(fallbackPollInterval)
 				continue
+			}
+
+			switch nodeIDs, nodeErr := store.Nodes(env.Dir, namespace); {
+			case nodeErr == nil && len(nodeIDs) > 0:
+				haveNodes = true
+			case nodeErr == nil || errors.Is(nodeErr, store.ErrNotExist):
+				// No nodes/ directory, or one that exists but is empty:
+				// either way, this namespace has nothing to publish.
+				emptyNamespaces = append(emptyNamespaces, namespace)
+			default:
+				// An unreadable nodes/ directory is a real failure, not
+				// an empty namespace: publishNamespaceCached below
+				// reports it (as its own error) on the round(s) this
+				// namespace is due, exactly as it always has. Counting
+				// it as "have nodes" here only keeps it out of the
+				// nothing-to-publish diagnostic, which is for a tree
+				// that is legitimately empty, not one that is broken.
+				haveNodes = true
 			}
 
 			runsAt, seen := due[namespace]
@@ -129,6 +169,10 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 		due = nextDue
 		pruneCache(cache, namespaces)
 
+		if line, ok := nothingToPublishLine(env.Dir, namespaces, haveNodes, emptyNamespaces); ok {
+			fmt.Fprintln(env.Stderr, line)
+		}
+
 		if wait < 0 {
 			wait = 0
 		}
@@ -136,6 +180,37 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 			return ExitOK
 		}
 	}
+}
+
+// nothingToPublishLine reports the diagnostic runRepublishLoop prints
+// when a round finds nothing to publish anywhere in the tree, so an
+// idle or half-provisioned controller is not silent in `docker logs`
+// the way it was before this check existed. ok is false when at least
+// one namespace has at least one node -- the normal, nothing-to-report
+// case -- so the caller prints nothing.
+//
+// namespaces empty means env.Dir has no namespace directories at all
+// (dir mounted but never `init`-ed, or an empty volume). haveNodes
+// false with a non-empty namespaces means every namespace that could
+// be read has no nodes/ directory or an empty one (`init` ran, `node
+// add` never did); emptyNamespaces names them; a namespace whose
+// provd.yaml or nodes/ directory failed to read for some other reason
+// is not folded in, because its own error already appears in this
+// round's output and this line must not read as "everything is fine
+// except empty."
+//
+// It never receives a namespace name or dir path that is not already
+// safe to print: env.Dir and store.Namespaces' names are the operator's
+// own configuration, not derived from any bundle content, so this
+// carries no secret (see CLAUDE.md's logging convention).
+func nothingToPublishLine(dir string, namespaces []string, haveNodes bool, emptyNamespaces []string) (line string, ok bool) {
+	if len(namespaces) == 0 {
+		return fmt.Sprintf("stunmesh-provd: publish: nothing to publish in %s (no namespaces)", dir), true
+	}
+	if !haveNodes && len(emptyNamespaces) > 0 {
+		return fmt.Sprintf("stunmesh-provd: publish: nothing to publish in %s (no nodes in %s)", dir, strings.Join(emptyNamespaces, ", ")), true
+	}
+	return "", false
 }
 
 // pruneCache drops cache entries for namespaces no longer present in
