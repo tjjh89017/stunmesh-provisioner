@@ -65,6 +65,7 @@ read_config() {
 	config_get boot_delay "$UCI_SECTION" boot_delay "$DEFAULT_BOOT_DELAY"
 	config_get fetch_interval "$UCI_SECTION" fetch_interval "$DEFAULT_FETCH_INTERVAL"
 	config_get lock_file "$UCI_SECTION" lock_file "$DEFAULT_LOCK_FILE"
+	config_get backend "$UCI_SECTION" backend
 
 	if [ -z "$namespace" ] || [ -z "$node_id" ] || \
 	   [ -z "$controller_pubkey" ] || [ -z "$private_key_file" ]; then
@@ -87,6 +88,10 @@ build_fetch_args() {
 		--controller-pubkey "$controller_pubkey" \
 		--identity-key "$private_key_file" \
 		--lock "$lock_file"
+
+	if [ -n "$backend" ]; then
+		set -- "$@" --backend "$backend"
+	fi
 
 	local p
 	for p in $proxies; do
