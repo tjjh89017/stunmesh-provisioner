@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
@@ -205,13 +206,15 @@ func doFetch(env *Env, cfg *Config) int {
 	return checkAndApply(env, cfg, best)
 }
 
-// newDHTProxyClient builds the dhtproxy.Client fetch uses. It prefers
+// newDHTProxyClient builds the backend.Store fetch uses. It prefers
 // env.HTTPClient when a test set one (see Env's doc), so a test tree
 // points every proxy call at an httptest.Server instead of the real
 // network; a production run leaves it nil and gets fetchProxyTimeout
 // as its per-request timeout instead of internal/dhtproxy's own
-// default.
-func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
+// default. It always constructs a dhtproxy.Client directly: a
+// selection factory for other backend.Store implementations comes in
+// a later item.
+func newDHTProxyClient(env *Env, proxies []string) (backend.Store, error) {
 	var opts []dhtproxy.Option
 	if env.HTTPClient != nil {
 		opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/dhtkey"
@@ -255,13 +256,15 @@ func publishNamespace(ctx context.Context, env *Env, namespace string, now time.
 	return reports
 }
 
-// newDHTProxyClient builds the dhtproxy.Client a namespace's round
+// newDHTProxyClient builds the backend.Store a namespace's round
 // uses. It prefers env.HTTPClient when a test set one (see Env's
 // doc), so a test tree points every proxy call at an httptest.Server
 // instead of the real network; a production run leaves it nil and
 // gets internal/dhtproxy's own client and default per-request
-// timeout.
-func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
+// timeout. It always constructs a dhtproxy.Client directly: a
+// selection factory for other backend.Store implementations comes in
+// a later item.
+func newDHTProxyClient(env *Env, proxies []string) (backend.Store, error) {
 	var opts []dhtproxy.Option
 	if env.HTTPClient != nil {
 		opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))
@@ -281,7 +284,7 @@ func newDHTProxyClient(env *Env, proxies []string) (*dhtproxy.Client, error) {
 // compare the prepared Bundle and IdentityPublicKey against a cached
 // prior round before deciding whether to seal again (see
 // republish_loop.go).
-func publishNode(ctx context.Context, env *Env, proxy *dhtproxy.Client, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
+func publishNode(ctx context.Context, env *Env, proxy backend.Store, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
 	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
 	if err != nil {
 		return report
@@ -339,7 +342,7 @@ func prepareNode(env *Env, deployment *store.Deployment, nodeID string, now time
 // sealAndPutNode seals plain to node's identity key and puts it to
 // every proxy under report.Key (PLAN.md 7.2 steps 4-5). report must
 // come from a successful prepareNode call for the same node.
-func sealAndPutNode(ctx context.Context, proxy *dhtproxy.Client, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
+func sealAndPutNode(ctx context.Context, proxy backend.Store, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
 	// The controller is the sender: it seals with its own private key
 	// (deployment.ControllerPrivateKey) and the node's identity public
 	// key (node.IdentityPublicKey) as the recipient (PLAN.md 2.4,
@@ -379,7 +382,7 @@ func sealAndPutNode(ctx context.Context, proxy *dhtproxy.Client, deployment *sto
 // so the wire value ends up as exactly base64(nonce ||
 // nacl/box(inner bundle JSON)), matching docs/format.md 3 with no
 // double-encoding.
-func putSealed(ctx context.Context, proxy *dhtproxy.Client, key string, sealed []byte) error {
+func putSealed(ctx context.Context, proxy backend.Store, key string, sealed []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, putTimeout)
 	defer cancel()
 	if err := proxy.Put(ctx, key, sealed); err != nil {
