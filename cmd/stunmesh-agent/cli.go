@@ -56,6 +56,7 @@ of them -- see below):
   --namespace <ns>            deployment namespace
   --node-id <id>               this node's ID
   --controller-pubkey <key>    controller public key, base64
+  --backend <type>              storage backend (default ` + defaultBackend + `; the only type today)
   --proxy <url>                 dhtproxy base URL (repeatable; default: ` + defaultProxiesText + `)
   --identity-key <file>         node identity private key file
   --last <file>                 last-applied bundle file (default ` + defaultLastPath + `)

@@ -244,9 +244,9 @@ func publishNamespace(ctx context.Context, env *Env, namespace string, now time.
 		return []nodeReport{{Namespace: namespace, Err: fmt.Errorf("list nodes: %w", err)}}
 	}
 
-	proxy, err := newDHTProxyClient(env, deployment.Backend.Proxies)
+	proxy, err := newBackend(env, deployment.Backend)
 	if err != nil {
-		return []nodeReport{{Namespace: namespace, Err: fmt.Errorf("dht proxy: %w", err)}}
+		return []nodeReport{{Namespace: namespace, Err: fmt.Errorf("backend: %w", err)}}
 	}
 
 	reports := make([]nodeReport, 0, len(nodeIDs))
@@ -256,20 +256,40 @@ func publishNamespace(ctx context.Context, env *Env, namespace string, now time.
 	return reports
 }
 
-// newDHTProxyClient builds the backend.Store a namespace's round
-// uses. It prefers env.HTTPClient when a test set one (see Env's
-// doc), so a test tree points every proxy call at an httptest.Server
-// instead of the real network; a production run leaves it nil and
-// gets internal/dhtproxy's own client and default per-request
-// timeout. It always constructs a dhtproxy.Client directly: a
-// selection factory for other backend.Store implementations comes in
-// a later item.
-func newDHTProxyClient(env *Env, proxies []string) (backend.Store, error) {
-	var opts []dhtproxy.Option
-	if env.HTTPClient != nil {
-		opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))
+// newBackend builds the backend.Store a namespace's round uses,
+// selected by cfg.Type (docs/format.md section 3). "dhtproxy" is the
+// only type store.ReadDeployment ever hands back today -- it rejects
+// every other value in provd.yaml before a store.BackendConfig is
+// ever built (internal/store's backendConfig) -- so the default arm
+// below is unreachable in practice. It still returns an error rather
+// than panicking, naming the field and not deployment.Backend.Type's
+// value: this is the one construction point every backend.Store this
+// binary can build goes through, and a future backend type landing
+// here before its case is added must fail loudly, not crash or
+// silently pick the wrong implementation.
+//
+// It prefers env.HTTPClient when a test set one (see Env's doc), so a
+// test tree points every proxy call at an httptest.Server instead of
+// the real network; a production run leaves it nil and gets
+// internal/dhtproxy's own client and default per-request timeout.
+//
+// newBackend lives here, not in internal/backend, because
+// internal/dhtproxy already imports internal/backend (to implement
+// backend.Store); a constructor in internal/backend that also called
+// dhtproxy.New would import it back, an import cycle. publishNamespace
+// and publishNamespaceCached (republish_loop.go) share this one
+// construction point.
+func newBackend(env *Env, cfg store.BackendConfig) (backend.Store, error) {
+	switch cfg.Type {
+	case "dhtproxy":
+		var opts []dhtproxy.Option
+		if env.HTTPClient != nil {
+			opts = append(opts, dhtproxy.WithHTTPClient(env.HTTPClient))
+		}
+		return dhtproxy.New(cfg.Proxies, opts...)
+	default:
+		return nil, errors.New("backend: unknown type")
 	}
-	return dhtproxy.New(proxies, opts...)
 }
 
 // publishNode builds, seals, and puts the bundle for one node (PLAN.md

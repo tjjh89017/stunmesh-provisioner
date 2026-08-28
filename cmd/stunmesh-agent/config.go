@@ -20,6 +20,7 @@ type Config struct {
 	Namespace          string
 	NodeID             string
 	ControllerPubkey   string
+	Backend            string
 	Proxies            []string
 	IdentityKeyPath    string
 	LastPath           string
@@ -27,12 +28,16 @@ type Config struct {
 	StunmeshConfigPath string
 }
 
-// Default paths and proxies (PLAN.md section 3). A flag or --config
-// setting overrides its default; see resolveConfig.
+// Default paths, backend, and proxies (PLAN.md section 3). A flag or
+// --config setting overrides its default; see resolveConfig.
 const (
 	defaultLastPath           = "/etc/stunmesh/provd/last.json"
 	defaultLockPath           = "/var/lock/stunmesh-agent.lock"
 	defaultStunmeshConfigPath = "/etc/stunmesh/config.yaml"
+
+	// defaultBackend is --backend's default (docs/format.md section
+	// 3): dhtproxy is the only backend this agent implements today.
+	defaultBackend = "dhtproxy"
 )
 
 // defaultProxies is DHT_PROXY's default (PLAN.md section 3): the
@@ -70,6 +75,7 @@ func registerFlags(fs *flag.FlagSet) *flagSeam {
 	fs.StringVar(&cfg.Namespace, "namespace", "", "deployment namespace")
 	fs.StringVar(&cfg.NodeID, "node-id", "", "this node's ID")
 	fs.StringVar(&cfg.ControllerPubkey, "controller-pubkey", "", "controller public key, base64")
+	fs.StringVar(&cfg.Backend, "backend", defaultBackend, "storage backend (dhtproxy)")
 	fs.Var(&proxyFlag{&cfg.Proxies}, "proxy", "dhtproxy base URL (repeatable)")
 	fs.StringVar(&cfg.IdentityKeyPath, "identity-key", "", "node identity private key file")
 	fs.StringVar(&cfg.LastPath, "last", defaultLastPath, "last-applied bundle file")
@@ -129,8 +135,8 @@ func (p *proxyFlag) Set(v string) error {
 // resolveConfig tells "a flag was explicitly given" apart from "a
 // flag sits at its zero-value default" with fs.Visit, which the flag
 // package documents as visiting only flags that were actually set on
-// the command line. This is why --last, --lock, and
-// --stunmesh-config's defaults are registered directly on the flag
+// the command line. This is why --last, --lock, --stunmesh-config,
+// and --backend's defaults are registered directly on the flag
 // (registerFlags), rather than applied here: an unset --last flag
 // still reads as defaultLastPath after fs.Parse, and fs.Visit
 // correctly leaves it out of the visited set either way, so --config
@@ -180,6 +186,9 @@ func applyFileConfig(cfg *Config, fc *fileConfig, set map[string]bool) {
 	if !set["controller-pubkey"] && fc.ControllerPubkey != nil {
 		cfg.ControllerPubkey = *fc.ControllerPubkey
 	}
+	if !set["backend"] && fc.Backend != nil {
+		cfg.Backend = *fc.Backend
+	}
 	if !set["identity-key"] && fc.IdentityKey != nil {
 		cfg.IdentityKeyPath = *fc.IdentityKey
 	}
@@ -208,6 +217,7 @@ type fileConfig struct {
 	Namespace        *string
 	NodeID           *string
 	ControllerPubkey *string
+	Backend          *string
 	IdentityKey      *string
 	Last             *string
 	Lock             *string
@@ -222,6 +232,7 @@ var configFileKeys = map[string]bool{
 	"namespace":         true,
 	"node_id":           true,
 	"controller_pubkey": true,
+	"backend":           true,
 	"proxy":             true,
 	"identity_key":      true,
 	"last":              true,
@@ -240,8 +251,9 @@ var configFileKeys = map[string]bool{
 //     trimmed. The value is otherwise taken literally: no quoting, no
 //     escaping, no continuation lines.
 //   - The key must be one of: namespace, node_id, controller_pubkey,
-//     proxy, identity_key, last, lock, stunmesh_config. Any other key
-//     is rejected -- most likely it is a typo of one of these.
+//     backend, proxy, identity_key, last, lock, stunmesh_config. Any
+//     other key is rejected -- most likely it is a typo of one of
+//     these.
 //   - "proxy" may appear more than once; each occurrence adds one URL
 //     to the list, in file order. Every other key may appear at most
 //     once; a repeat is rejected, since a second value for the same
@@ -308,6 +320,8 @@ func parseConfigFile(r io.Reader) (*fileConfig, error) {
 			fc.NodeID = &value
 		case "controller_pubkey":
 			fc.ControllerPubkey = &value
+		case "backend":
+			fc.Backend = &value
 		case "identity_key":
 			fc.IdentityKey = &value
 		case "last":
@@ -351,6 +365,14 @@ func (cfg *Config) ValidateFetch() error {
 	// the value.
 	if _, err := crypto.ParseKey(cfg.ControllerPubkey); err != nil {
 		return fmt.Errorf("--controller-pubkey: not a valid key")
+	}
+
+	// dhtproxy is the only backend this agent implements (docs/format.md
+	// section 3); this mirrors --controller-pubkey above: the error
+	// names the field, never cfg.Backend's actual value, so a typo is
+	// never echoed back.
+	if cfg.Backend != "dhtproxy" {
+		return errors.New("--backend: unknown backend type")
 	}
 
 	if len(cfg.Proxies) == 0 {

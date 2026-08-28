@@ -68,6 +68,27 @@ func TestRunFetch_BadControllerPubkeyNeverEchoed(t *testing.T) {
 	}
 }
 
+func TestRunFetch_UnknownBackendNeverEchoed(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	args := []string{
+		"--namespace", "ns",
+		"--node-id", "n1",
+		"--controller-pubkey", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"--identity-key", "/tmp/id.key",
+		"--backend", "sentinel-bogus-backend-type",
+	}
+	code := runFetch(newEnv(strings.NewReader(""), &stdout, &stderr), args)
+	if code != ExitError {
+		t.Errorf("code = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr.String(), "--backend") {
+		t.Errorf("stderr = %q, want it to name --backend", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "sentinel-bogus-backend-type") {
+		t.Errorf("stderr leaks the bad backend value: %q", stderr.String())
+	}
+}
+
 func TestRunFetch_ConfigFilePrecedenceEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "agent.conf")
@@ -123,6 +144,7 @@ func validFetchConfig(lockPath string) *Config {
 		Namespace:          "ns",
 		NodeID:             "n1",
 		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		Backend:            "dhtproxy",
 		Proxies:            []string{"https://dhtproxy.example"},
 		IdentityKeyPath:    "/tmp/no-such-stunmesh-agent-test-identity-key",
 		LastPath:           "/tmp/last.json",
@@ -228,6 +250,7 @@ func fetchTestConfig(t *testing.T, lockPath string, proxies []string) (cfg *Conf
 		Namespace:          "ns",
 		NodeID:             "n1",
 		ControllerPubkey:   controllerPub.String(),
+		Backend:            "dhtproxy",
 		Proxies:            proxies,
 		IdentityKeyPath:    keyPath,
 		LastPath:           filepath.Join(dir, "last.json"),

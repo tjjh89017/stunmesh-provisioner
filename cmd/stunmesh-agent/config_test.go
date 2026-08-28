@@ -125,6 +125,7 @@ func TestParseConfigFile_AllKnownKeys(t *testing.T) {
 		"namespace=ns",
 		"node_id=n1",
 		"controller_pubkey=pk",
+		"backend=dhtproxy",
 		"proxy=https://p1.example",
 		"identity_key=/tmp/id.key",
 		"last=/tmp/last.json",
@@ -140,6 +141,7 @@ func TestParseConfigFile_AllKnownKeys(t *testing.T) {
 		"namespace":         fc.Namespace,
 		"node_id":           fc.NodeID,
 		"controller_pubkey": fc.ControllerPubkey,
+		"backend":           fc.Backend,
 		"identity_key":      fc.IdentityKey,
 		"last":              fc.Last,
 		"lock":              fc.Lock,
@@ -275,6 +277,58 @@ func TestResolveConfig_DefaultProxiesWhenNeitherFlagNorFileGiven(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_DefaultBackendWhenNeitherFlagNorFileGiven(t *testing.T) {
+	seam := newTestFlagSeam(t)
+	if err := seam.fs.Parse(nil); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cfg, err := resolveConfig(seam)
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	if cfg.Backend != defaultBackend {
+		t.Errorf("Backend = %q, want %q", cfg.Backend, defaultBackend)
+	}
+}
+
+func TestResolveConfig_BackendFlagWinsOverConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.conf")
+	writeFile(t, configPath, "backend=from-file\n")
+
+	seam := newTestFlagSeam(t)
+	if err := seam.fs.Parse([]string{"--backend", "from-flag", "--config", configPath}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	cfg, err := resolveConfig(seam)
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	if cfg.Backend != "from-flag" {
+		t.Errorf("Backend = %q, want %q (flag must win)", cfg.Backend, "from-flag")
+	}
+}
+
+func TestResolveConfig_ConfigFileBackendUsedWhenNoFlagGiven(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.conf")
+	writeFile(t, configPath, "backend=from-file\n")
+
+	seam := newTestFlagSeam(t)
+	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	cfg, err := resolveConfig(seam)
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	if cfg.Backend != "from-file" {
+		t.Errorf("Backend = %q, want %q", cfg.Backend, "from-file")
+	}
+}
+
 func TestResolveConfig_DefaultPathsWhenNeitherFlagNorFileGiven(t *testing.T) {
 	seam := newTestFlagSeam(t)
 	if err := seam.fs.Parse(nil); err != nil {
@@ -372,11 +426,36 @@ func TestValidateFetch_RejectsBadControllerPubkey(t *testing.T) {
 	}
 }
 
+func TestValidateFetch_RejectsUnknownBackendType(t *testing.T) {
+	cfg := &Config{
+		Namespace:          "ns",
+		NodeID:             "n1",
+		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		Backend:            "sentinel-bogus-backend-type",
+		IdentityKeyPath:    "/tmp/id.key",
+		Proxies:            []string{"https://p.example"},
+		LastPath:           defaultLastPath,
+		LockPath:           defaultLockPath,
+		StunmeshConfigPath: defaultStunmeshConfigPath,
+	}
+	err := cfg.ValidateFetch()
+	if err == nil {
+		t.Fatal("ValidateFetch: want error for an unknown backend type, got nil")
+	}
+	if !strings.Contains(err.Error(), "--backend") {
+		t.Errorf("error = %v, want it to name --backend", err)
+	}
+	if strings.Contains(err.Error(), "sentinel-bogus-backend-type") {
+		t.Errorf("error leaks the bad value: %v", err)
+	}
+}
+
 func TestValidateFetch_OKWithEverythingSet(t *testing.T) {
 	cfg := &Config{
 		Namespace:          "ns",
 		NodeID:             "n1",
 		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		Backend:            "dhtproxy",
 		IdentityKeyPath:    "/tmp/id.key",
 		Proxies:            []string{"https://p.example"},
 		LastPath:           defaultLastPath,
