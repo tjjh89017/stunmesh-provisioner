@@ -16,9 +16,16 @@
 
 name: CI
 
+# The push trigger names main only: a tag push must not re-run CI,
+# because release.yml's contract is that the tagged commit already went
+# through this chain on its way to main.
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
