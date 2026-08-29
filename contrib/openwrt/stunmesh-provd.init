@@ -1,42 +1,15 @@
 #!/bin/sh /etc/rc.common
 # stunmesh-provd.init -- procd service for stunmesh-provd, the
-# stunmesh-provisioner *controller* (contrast with stunmesh-agent, the
-# on-device half installed by the other two files in this directory --
-# see contrib/openwrt/README.md).
+# controller (see contrib/openwrt/README.md). Optional: the normal way
+# to run the controller is contrib/systemd/stunmesh-provd.service on a
+# regular Linux host, not an OpenWrt router. Running it here costs
+# flash wear (the state tree under /etc/stunmesh/provd) and puts a
+# secrets-holding daemon on the device it provisions -- an operator's
+# call, not this script's.
 #
-# contrib/systemd/README.md says the controller "is a normal Linux
-# machine, not an OpenWrt router". This init script exists anyway so a
-# router can run it if an operator chooses to; whether that is a good
-# idea for a given deployment (flash wear from the state tree under
-# /etc/stunmesh/provd, a secrets-holding daemon sharing the device it
-# provisions, etc.) is the operator's call, not this script's. The
-# stunmesh-openwrt package repository packages this file from a
-# release tarball, the same way it packages stunmesh-agent.init and
-# hotplug-iface; this repository does not build an OpenWrt package
-# (see contrib/openwrt/README.md).
-#
-# It mirrors contrib/systemd/stunmesh-provd.service's core behaviour:
-# run "stunmesh-provd --dir <dir> publish [--namespace <ns>]" (no
-# --once) as a long-lived daemon. Unlike stunmesh-agent (a one-shot,
-# cron-driven command), "publish" without --once is a real daemon: per
-# cli.go and republish_loop.go, it runs until SIGINT/SIGTERM and exits
-# 0 on that clean shutdown, re-reading the whole provisioning tree
-# every round and republishing each namespace on its own
-# republish_interval (from that namespace's own provd.yaml -- not
-# something this init script or its UCI config controls). procd's
-# normal respawn-an-instance-that-exits-unexpectedly behaviour is the
-# right fit for that: procd does not respawn an instance it was itself
-# told to stop (a plain "service stunmesh-provd stop"), so this needs
-# no exit-code-aware restart policy the way systemd's
-# Restart=on-failure has -- procd's instance tracking already gets
-# that distinction right.
-#
-# This script has no packaging step of its own: nothing here calls
-# "enable" for it, so it stays inactive until an operator (or a
-# downstream package's own install step) explicitly runs it. Once the
-# tree under "dir" has been provisioned (stunmesh-provd init / node
-# add -- see contrib/systemd/README.md section 3), review
-# /etc/config/stunmesh-provd and:
+# Nothing here calls "enable"; a downstream package must do that
+# explicitly. Won't start until "dir" is provisioned (stunmesh-provd
+# init / node add):
 #   /etc/init.d/stunmesh-provd enable
 #   /etc/init.d/stunmesh-provd start
 

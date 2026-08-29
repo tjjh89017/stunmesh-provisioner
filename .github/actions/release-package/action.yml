@@ -63,14 +63,9 @@ runs:
             exit 1
             ;;
         esac
-        # The separate stunmesh-openwrt feed copies stunmesh-agent.init and
-        # hotplug-iface straight out of the agent release tarball
-        # (.plan/PLAN.md M6); the systemd unit and the stunmesh-provd
-        # OpenWrt init script belong beside the provd binary for the same
-        # reason -- the feed packages stunmesh-provd.init from this
-        # tarball too, instead of keeping its own copy. A tarball with the
-        # binary alone breaks all three packagings, so every archive built
-        # here carries its install files, not just the binary.
+        # The separate stunmesh-openwrt feed packages these install files
+        # straight from the release tarball, so every archive here must
+        # carry its own, not just the binary.
         workdir="$(mktemp -d)"
         mkdir -p "$workdir/$name"
         cp "$binary" "$workdir/$name/"
