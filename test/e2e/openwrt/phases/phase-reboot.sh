@@ -14,7 +14,7 @@
 # netifd/uci" claim is about a *running* box.
 #
 # To make "no proxy and no agent run" watertight rather than a timing
-# race against boot_delay (15s in this harness's /etc/config/provd),
+# race against boot_delay (15s in this harness's /etc/config/stunmesh-agent),
 # this phase stops the fake dhtproxy entirely before rebooting: with
 # it gone, even a background boot_delay fetch (which only runs at all
 # if the service was left enabled, and this harness never calls

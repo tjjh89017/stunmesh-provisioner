@@ -29,7 +29,7 @@ START=95
 STOP=10
 USE_PROCD=1
 
-UCI_PACKAGE="provd"
+UCI_PACKAGE="stunmesh-agent"
 UCI_SECTION="main"
 BIN="/usr/sbin/stunmesh-agent"
 CRONTAB="/etc/crontabs/root"
@@ -47,7 +47,7 @@ log() {
 	logger -t stunmesh-agent "$1"
 }
 
-# read_config loads /etc/config/provd's "main" section into the shell
+# read_config loads /etc/config/stunmesh-agent's "main" section into the shell
 # variables build_fetch_args and install_cron both need. It returns 1
 # when the file is absent or the section is missing required options;
 # callers must treat that as "not provisioned yet", not as an error.

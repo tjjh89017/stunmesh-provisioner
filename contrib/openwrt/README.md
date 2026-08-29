@@ -1,12 +1,15 @@
-# stunmesh-agent OpenWrt scripts
+# stunmesh-provisioner OpenWrt scripts
 
-These two files are the OpenWrt integration for `stunmesh-agent`
-(`PLAN.md` section 3 and M4). The `stunmesh-openwrt` package repository
-copies them from a release tarball; this repository does not build an
+The first two files below are the OpenWrt integration for
+`stunmesh-agent` (`PLAN.md` section 3 and M4); the third is an
+optional init script for `stunmesh-provd`, the controller (see
+section 7). The `stunmesh-openwrt` package repository copies all
+three from a release tarball; this repository does not build an
 OpenWrt package (`PLAN.md` M6).
 
 - `stunmesh-agent.init` -- installs to `/etc/init.d/stunmesh-agent`.
 - `hotplug-iface` -- installs to `/etc/hotplug.d/iface/95-stunmesh-agent`.
+- `stunmesh-provd.init` -- installs to `/etc/init.d/stunmesh-provd`.
 
 ## 1. `stunmesh-agent` is not a daemon
 
@@ -33,13 +36,13 @@ cron-driven, the same as any OpenWrt one-shot maintenance task.
 Exit code 3 (`PLAN.md` section 5: no change) is success, not failure.
 Both scripts log it as "no change" and never treat it as an error.
 
-## 2. `/etc/config/provd`
+## 2. `/etc/config/stunmesh-agent`
 
-Both scripts read the `main` section of `/etc/config/provd`
+Both scripts read the `main` section of `/etc/config/stunmesh-agent`
 (`PLAN.md` section 3):
 
 ```
-config provd 'main'
+config stunmesh-agent 'main'
     option namespace          'mymesh-7f3a'
     option node_id            'alpha'
     option controller_pubkey  '...'
@@ -69,14 +72,14 @@ scripts omit those flags and let `stunmesh-agent` use its own
 defaults (`/etc/stunmesh/provd/last.json` and
 `/etc/stunmesh/config.yaml`).
 
-The identity private key itself is never in `/etc/config/provd`. That
+The identity private key itself is never in `/etc/config/stunmesh-agent`. That
 file is mode 0644 on OpenWrt (readable by anyone on the box); only
 `private_key_file`'s *path* goes in it. The key file it points to must
 be mode 0600, written once by `stunmesh-agent keygen`.
 
 ### Missing or incomplete configuration
 
-Both scripts treat a missing `/etc/config/provd`, or a `main` section
+Both scripts treat a missing `/etc/config/stunmesh-agent`, or a `main` section
 missing `namespace`, `node_id`, `controller_pubkey`, or
 `private_key_file`, as "not provisioned yet": they log one line with
 `logger -t stunmesh-agent` and exit 0. Neither script fails, retries in
@@ -177,3 +180,28 @@ flow and POSIX-ish shell syntax under an ash-family shell, which is
 what an untested `remove_cron` defect actually looked like in
 practice (a `sed` delimiter collision, an unchecked `mv`) -- logic
 bugs a GNU-utility test run still catches.
+
+`stunmesh-provd.init` has no test file of its own yet: unlike
+`stunmesh-agent.init` and `hotplug-iface`, it does no argument
+building or file surgery worth a fake-UCI harness for -- its only
+non-trivial logic is the `dir`-exists guard in `start_service`, which
+is a single `[ ! -d "$dir" ]` check. Add one if that logic grows.
+
+## 7. `stunmesh-provd.init` (the controller service)
+
+`stunmesh-provd.init` is a procd service for `stunmesh-provd`, the
+controller half of stunmesh-provisioner -- see the file's own header
+comment for the full explanation. Unlike the two files above, it is
+optional: `contrib/systemd/README.md` covers the normal way to run
+`stunmesh-provd` (a systemd unit on a regular Linux host, not an
+OpenWrt router). This script exists so an operator who chooses to run
+the controller on an OpenWrt device anyway has a tested procd
+equivalent, and so the `stunmesh-openwrt` package repository has one
+canonical copy to package instead of maintaining its own.
+
+It reads the `main` section of `/etc/config/stunmesh-provd` (`dir`,
+default `/etc/stunmesh/provd`; `namespace`, optional) and refuses to
+start -- logging why, via `echo ... >&2`, and returning 1 -- when
+either the config section or the `dir` tree itself (provisioned with
+`stunmesh-provd init`/`node add`, see `contrib/systemd/README.md`
+section 3) is missing. It never writes to that tree.

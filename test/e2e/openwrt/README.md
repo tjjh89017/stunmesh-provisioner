@@ -93,12 +93,12 @@ Env-only:
 
 | Env var | Meaning |
 |---|---|
-| `E2E_NAMESPACE` | The `stunmesh-provd` namespace this run creates and writes into the guest's `/etc/config/provd` (default `e2e-namespace`). |
-| `E2E_NODE_ID` | The node ID this run registers with `node add` and writes into `/etc/config/provd` (default `e2e-node`). |
+| `E2E_NAMESPACE` | The `stunmesh-provd` namespace this run creates and writes into the guest's `/etc/config/stunmesh-agent` (default `e2e-namespace`). |
+| `E2E_NODE_ID` | The node ID this run registers with `node add` and writes into `/etc/config/stunmesh-agent` (default `e2e-node`). |
 | `E2E_FAKEPROXY_PORT` | Port the main fake dhtproxy listens on, on every interface (default `8787`). |
 
 The controller public key and the proxy URL that end up in the guest's
-`/etc/config/provd` are never operator-supplied placeholders: they
+`/etc/config/stunmesh-agent` are never operator-supplied placeholders: they
 come from the real `stunmesh-provd init` and the fake dhtproxy this
 run itself starts, so they are always live values.
 
@@ -128,7 +128,7 @@ order).
   `stunmesh-agent --version` runs; the init and hotplug scripts are
   installed, executable, and byte-identical (by SHA-256) to the real
   files under `contrib/openwrt/`; the identity key is mode 0600;
-  `/etc/config/provd` parses as UCI; the `stunmesh` stand-in runs and
+  `/etc/config/stunmesh-agent` parses as UCI; the `stunmesh` stand-in runs and
   logs the action it was given.
 - **`phase_fetch_basic`** (`phases/phase-fetch-basic.sh`) -- the
   first real fetch: publishes one interface with one peer, fetches it,
@@ -160,7 +160,7 @@ order).
   zone, and its reference to `wg0`, survive untouched.
 - **`phase_cron_line`** (`phases/phase-cron.sh`) -- `service
   stunmesh-agent start` installs a tagged cron line using
-  `fetch_interval` from `/etc/config/provd`, leaves a foreign
+  `fetch_interval` from `/etc/config/stunmesh-agent`, leaves a foreign
   crontab line alone, and a real `crond` picks up the new file
   (checked via a fresh `crond (busybox...` syslog line). A repeated
   `start` leaves exactly one managed line, never two. `stop` removes

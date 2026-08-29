@@ -13,7 +13,7 @@
 #
 # What this file does not prove: the ACTION=ifup/INTERFACE=wan path
 # itself sources /lib/functions.sh (OpenWrt's UCI shell library) to
-# read /etc/config/provd. That library does not exist off an OpenWrt
+# read /etc/config/stunmesh-agent. That library does not exist off an OpenWrt
 # device, so exercising the full read-config-and-fetch path needs a
 # stand-in for it; see test_hotplug_dispatch below, which supplies a
 # minimal fake config_load/config_get pair sufficient to check the
@@ -137,7 +137,7 @@ exit 0
 EOF
 	chmod +x "$fake_bin"
 
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha
@@ -169,7 +169,7 @@ exit 0
 EOF
 	chmod +x "$fake_bin"
 
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha
@@ -200,7 +200,7 @@ exit 0
 EOF
 	chmod +x "$fake_bin"
 
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha

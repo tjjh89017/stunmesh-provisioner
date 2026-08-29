@@ -1,0 +1,84 @@
+#!/bin/sh /etc/rc.common
+# stunmesh-provd.init -- procd service for stunmesh-provd, the
+# stunmesh-provisioner *controller* (contrast with stunmesh-agent, the
+# on-device half installed by the other two files in this directory --
+# see contrib/openwrt/README.md).
+#
+# contrib/systemd/README.md says the controller "is a normal Linux
+# machine, not an OpenWrt router". This init script exists anyway so a
+# router can run it if an operator chooses to; whether that is a good
+# idea for a given deployment (flash wear from the state tree under
+# /etc/stunmesh/provd, a secrets-holding daemon sharing the device it
+# provisions, etc.) is the operator's call, not this script's. The
+# stunmesh-openwrt package repository packages this file from a
+# release tarball, the same way it packages stunmesh-agent.init and
+# hotplug-iface; this repository does not build an OpenWrt package
+# (see contrib/openwrt/README.md).
+#
+# It mirrors contrib/systemd/stunmesh-provd.service's core behaviour:
+# run "stunmesh-provd --dir <dir> publish [--namespace <ns>]" (no
+# --once) as a long-lived daemon. Unlike stunmesh-agent (a one-shot,
+# cron-driven command), "publish" without --once is a real daemon: per
+# cli.go and republish_loop.go, it runs until SIGINT/SIGTERM and exits
+# 0 on that clean shutdown, re-reading the whole provisioning tree
+# every round and republishing each namespace on its own
+# republish_interval (from that namespace's own provd.yaml -- not
+# something this init script or its UCI config controls). procd's
+# normal respawn-an-instance-that-exits-unexpectedly behaviour is the
+# right fit for that: procd does not respawn an instance it was itself
+# told to stop (a plain "service stunmesh-provd stop"), so this needs
+# no exit-code-aware restart policy the way systemd's
+# Restart=on-failure has -- procd's instance tracking already gets
+# that distinction right.
+#
+# This script has no packaging step of its own: nothing here calls
+# "enable" for it, so it stays inactive until an operator (or a
+# downstream package's own install step) explicitly runs it. Once the
+# tree under "dir" has been provisioned (stunmesh-provd init / node
+# add -- see contrib/systemd/README.md section 3), review
+# /etc/config/stunmesh-provd and:
+#   /etc/init.d/stunmesh-provd enable
+#   /etc/init.d/stunmesh-provd start
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/sbin/stunmesh-provd
+UCI_PACKAGE="stunmesh-provd"
+UCI_SECTION="main"
+
+. /lib/functions.sh
+
+start_service() {
+	local dir namespace
+
+	config_load "$UCI_PACKAGE" || {
+		echo "stunmesh-provd: no /etc/config/$UCI_PACKAGE, not starting" >&2
+		return 1
+	}
+	config_get dir "$UCI_SECTION" dir "/etc/stunmesh/provd"
+	config_get namespace "$UCI_SECTION" namespace ""
+
+	[ -n "$dir" ] || dir="/etc/stunmesh/provd"
+
+	if [ ! -d "$dir" ]; then
+		echo "stunmesh-provd: $dir does not exist -- run 'stunmesh-provd --dir $dir init <namespace>' first" >&2
+		return 1
+	fi
+
+	procd_open_instance
+	if [ -n "$namespace" ]; then
+		procd_set_param command "$PROG" --dir "$dir" publish --namespace "$namespace"
+	else
+		procd_set_param command "$PROG" --dir "$dir" publish
+	fi
+	procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$UCI_PACKAGE"
+}

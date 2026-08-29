@@ -13,7 +13,7 @@
 # a real bundle, and proves it is retrievable from the fake proxy at the
 # DHT key the node will use. It then builds stunmesh-agent for the guest
 # (linux/amd64) and injects the full node payload: the binary,
-# /etc/config/provd (carrying the real namespace, node ID, controller
+# /etc/config/stunmesh-agent (carrying the real namespace, node ID, controller
 # public key and proxy URL the controller just generated), the node's
 # real identity key, and the real init and hotplug scripts from
 # contrib/openwrt -- everything a freshly flashed device would have right
@@ -58,10 +58,10 @@
 #   E2E_KEEP_WORK         1 keeps the working directory (image, boot log,
 #                         SSH key) after the run instead of deleting it.
 #   E2E_NAMESPACE         the stunmesh-provd namespace this run creates and
-#                         writes into the guest's /etc/config/provd
+#                         writes into the guest's /etc/config/stunmesh-agent
 #                         (default: e2e-namespace).
 #   E2E_NODE_ID           the node ID this run registers with `node add`
-#                         and writes into /etc/config/provd
+#                         and writes into /etc/config/stunmesh-agent
 #                         (default: e2e-node).
 #   E2E_FAKEPROXY_PORT    port the fake dhtproxy listens on, on every
 #                         interface (default: 8787).

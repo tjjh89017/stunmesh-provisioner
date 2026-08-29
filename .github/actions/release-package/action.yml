@@ -56,7 +56,7 @@ runs:
           provd)
             binary=dist/stunmesh-provd
             name="stunmesh-provd-${tag}-linux-amd64"
-            extra="contrib/systemd/stunmesh-provd.service"
+            extra="contrib/systemd/stunmesh-provd.service contrib/openwrt/stunmesh-provd.init"
             ;;
           *)
             echo "release-package: unknown target ${{ inputs.target }}" >&2
@@ -65,10 +65,12 @@ runs:
         esac
         # The separate stunmesh-openwrt feed copies stunmesh-agent.init and
         # hotplug-iface straight out of the agent release tarball
-        # (.plan/PLAN.md M6); the systemd unit belongs beside the provd
-        # binary for the same reason. A tarball with the binary alone
-        # breaks both packagings, so every archive built here carries its
-        # install files, not just the binary.
+        # (.plan/PLAN.md M6); the systemd unit and the stunmesh-provd
+        # OpenWrt init script belong beside the provd binary for the same
+        # reason -- the feed packages stunmesh-provd.init from this
+        # tarball too, instead of keeping its own copy. A tarball with the
+        # binary alone breaks all three packagings, so every archive built
+        # here carries its install files, not just the binary.
         workdir="$(mktemp -d)"
         mkdir -p "$workdir/$name"
         cp "$binary" "$workdir/$name/"
