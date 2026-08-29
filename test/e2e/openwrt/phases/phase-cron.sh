@@ -61,7 +61,7 @@ phase_cron_line() {
 	assert_ssh_ok "service stunmesh-agent start exits 0" \
 		"service stunmesh-agent start"
 
-	assert_ssh_output_contains "the cron line uses fetch_interval from /etc/config/provd (5)" \
+	assert_ssh_output_contains "the cron line uses fetch_interval from /etc/config/stunmesh-agent (5)" \
 		"cat /etc/crontabs/root" "*/5 * * * *"
 	assert_ssh_output_contains "the cron line is tagged as managed" \
 		"cat /etc/crontabs/root" "$CRON_TAG"
@@ -129,7 +129,7 @@ phase_cron_line() {
 	# own "(sleep boot_delay; run_fetch) &" background job
 	# (stunmesh-agent.init's start_service); "stop" only removes the
 	# cron trigger, not those two already-running, already-orphaned
-	# jobs. boot_delay is 15s (this harness's /etc/config/provd); wait
+	# jobs. boot_delay is 15s (this harness's /etc/config/stunmesh-agent); wait
 	# past it here so both jobs have fired and finished before this
 	# phase hands control back, instead of leaving them to race a
 	# later phase's own stub-action-log or last.json bookkeeping

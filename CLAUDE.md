@@ -102,10 +102,11 @@ write `last.json`. The `ifup` step exists because the OpenWrt e2e harness proved
 a plain `network reload` does not push a peer-only change into the kernel.
 Exit codes: `0` applied, `3` no change, anything else failure.
 
-`contrib/openwrt/` holds the init script and the hotplug script that the
-separate `stunmesh-openwrt` feed packages. The agent reads no UCI itself: the
-init script reads `/etc/config/provd` and passes flags. `contrib/openwrt/tests/`
-tests those shell scripts directly, with no VM.
+`contrib/openwrt/` holds the agent's init script and hotplug script, plus an
+optional procd init script for the controller (`stunmesh-provd.init`), all
+packaged by the separate `stunmesh-openwrt` feed. The agent reads no UCI
+itself: the init script reads `/etc/config/stunmesh-agent` and passes flags.
+`contrib/openwrt/tests/` tests the agent's shell scripts directly, with no VM.
 
 ## Conventions
 

@@ -432,18 +432,18 @@ test_build_fetch_args_backend_unset() {
 
 test_read_config_missing_file() {
 	d=$(scratch_dir)
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	install_fake_uci
 
 	read_config
 	rc=$?
 
-	assert_eq "$rc" "1" "read_config rc when /etc/config/provd is missing"
+	assert_eq "$rc" "1" "read_config rc when /etc/config/stunmesh-agent is missing"
 }
 
 test_read_config_missing_required_field() {
 	d=$(scratch_dir)
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha
@@ -459,7 +459,7 @@ EOF
 
 test_read_config_applies_defaults() {
 	d=$(scratch_dir)
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha
@@ -481,7 +481,7 @@ EOF
 
 test_read_config_reads_all_fields() {
 	d=$(scratch_dir)
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh-7f3a
 option node_id alpha
@@ -585,7 +585,7 @@ test_run_fetch_exit_failure_logs_error() {
 test_start_service_builds_args_runs_fetch_and_installs_cron() {
 	d=$(scratch_dir)
 	CRONTAB="$d/crontab"
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh-7f3a
 option node_id alpha
@@ -654,7 +654,7 @@ EOF
 test_start_service_skips_when_config_incomplete() {
 	d=$(scratch_dir)
 	CRONTAB="$d/crontab"
-	UCI_CONFIG_FILE="$d/provd.conf"
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
 	printf '%s\n' "option namespace mymesh-7f3a" > "$UCI_CONFIG_FILE"
 	install_fake_uci
 
@@ -698,7 +698,7 @@ run_test "build_fetch_args: full option set, exact argument list" test_build_fet
 run_test "build_fetch_args: no --proxy flags when none configured" test_build_fetch_args_no_proxies
 run_test "build_fetch_args: appends --backend when configured" test_build_fetch_args_backend_set
 run_test "build_fetch_args: omits --backend when unset" test_build_fetch_args_backend_unset
-run_test "read_config: rc 1 when /etc/config/provd is missing" test_read_config_missing_file
+run_test "read_config: rc 1 when /etc/config/stunmesh-agent is missing" test_read_config_missing_file
 run_test "read_config: rc 1 when a required field is missing" test_read_config_missing_required_field
 run_test "read_config: applies boot_delay/fetch_interval/lock_file defaults" test_read_config_applies_defaults
 run_test "read_config: reads every field from a full config" test_read_config_reads_all_fields

@@ -72,7 +72,7 @@ remove_bridge_iface() {
 # report a real fetch outcome (applied / no change / failed).
 # hotplug-iface (contrib/openwrt/hotplug-iface) also logs two guard-
 # clause lines that contain the plain substring "hotplug fetch"
-# ("...; skipping hotplug fetch", when /etc/config/provd is missing or
+# ("...; skipping hotplug fetch", when /etc/config/stunmesh-agent is missing or
 # incomplete) without ever having run fetch at all. A plain substring
 # grep for "hotplug fetch" would count those too, so this matches only
 # the three lines that follow a real invocation: "hotplug fetch

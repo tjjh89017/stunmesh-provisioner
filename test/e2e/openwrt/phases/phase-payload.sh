@@ -70,18 +70,18 @@ phase_payload() {
 	# line's "got:" reads as a missing-option marker, not as a
 	# confusing empty string.
 	local got_namespace got_node_id got_controller_pubkey got_private_key_file
-	got_namespace=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.namespace")
-	got_node_id=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.node_id")
-	got_controller_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.controller_pubkey")
-	got_private_key_file=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get provd.main.private_key_file")
+	got_namespace=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.namespace")
+	got_node_id=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.node_id")
+	got_controller_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.controller_pubkey")
+	got_private_key_file=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.private_key_file")
 
-	assert_equal "/etc/config/provd namespace matches what run.sh injected" \
+	assert_equal "/etc/config/stunmesh-agent namespace matches what run.sh injected" \
 		"$got_namespace" "$E2E_NAMESPACE"
-	assert_equal "/etc/config/provd node_id matches what run.sh injected" \
+	assert_equal "/etc/config/stunmesh-agent node_id matches what run.sh injected" \
 		"$got_node_id" "$E2E_NODE_ID"
-	assert_equal "/etc/config/provd controller_pubkey matches what run.sh injected" \
+	assert_equal "/etc/config/stunmesh-agent controller_pubkey matches what run.sh injected" \
 		"$got_controller_pubkey" "$CONTROLLER_PUBKEY"
-	assert_equal "/etc/config/provd private_key_file matches the identity key's guest path" \
+	assert_equal "/etc/config/stunmesh-agent private_key_file matches the identity key's guest path" \
 		"$got_private_key_file" "/etc/stunmesh/provd/identity.key"
 
 	assert_ssh_ok "stunmesh stand-in runs and exits 0" \

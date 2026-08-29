@@ -268,7 +268,7 @@ build_fakeproxy_binary() {
 # item). Sets FAKEPROXY_PID, FAKEPROXY_HOST_URL (for stunmesh-provd and
 # this harness's own checks, both running on the host) and
 # FAKEPROXY_GUEST_URL (the value written into the guest's
-# /etc/config/provd). Blocks until the proxy actually answers an HTTP
+# /etc/config/stunmesh-agent). Blocks until the proxy actually answers an HTTP
 # request, so nothing after this call can race an unready listener.
 start_fake_proxy() {
 	local port="$1"
@@ -372,7 +372,7 @@ stop_delayed_fake_proxy() {
 # key pair, `node add` registers this node with its identity public key.
 # Sets PROVD_ROOT (the --dir every stunmesh-provd invocation in this
 # harness uses) and CONTROLLER_PUBKEY (the value inject_guest_files
-# writes into the guest's /etc/config/provd).
+# writes into the guest's /etc/config/stunmesh-agent).
 #
 # Ordering matters, the same way it would for a real operator: the node's
 # identity key pair must already exist (generate_identity_key, which
@@ -457,8 +457,9 @@ publish_fixture() {
 #   CONTROLLER_PUBKEY PROXY_URL -- loop-mounts IMAGE_PATH's rootfs partition
 # and writes everything a provisioned node needs before first boot: the SSH
 # key and network config the harness itself needs to reach the guest, plus
-# the full stunmesh-agent payload -- binary, identity key, /etc/config/provd,
-# the real init and hotplug scripts from contrib/openwrt, and a stand-in
+# the full stunmesh-agent payload -- binary, identity key,
+# /etc/config/stunmesh-agent, the real init and hotplug scripts from
+# contrib/openwrt, and a stand-in
 # /etc/init.d/stunmesh. After this, the guest looks exactly like a freshly
 # flashed device an operator has just finished the manual key exchange on,
 # except nothing has fetched anything yet.
@@ -534,16 +535,16 @@ NETCONF
 	sudo install -m 0755 "$agent_bin" "${MOUNT_DIR}/usr/sbin/stunmesh-agent"
 
 	# The identity key file itself is 0600, the same as a real device
-	# (contrib/openwrt/README.md section 2); /etc/config/provd only holds
-	# its path, at 0644, set explicitly below since a real device ships it
-	# that way and nothing in it is secret.
+	# (contrib/openwrt/README.md section 2); /etc/config/stunmesh-agent
+	# only holds its path, at 0644, set explicitly below since a real
+	# device ships it that way and nothing in it is secret.
 	log "Installing the node identity key..."
 	sudo mkdir -p "${MOUNT_DIR}/etc/stunmesh/provd"
 	sudo install -m 0600 "$identity_key" "${MOUNT_DIR}/etc/stunmesh/provd/identity.key"
 
-	log "Writing /etc/config/provd..."
-	sudo tee "${MOUNT_DIR}/etc/config/provd" >/dev/null <<PROVD
-config provd 'main'
+	log "Writing /etc/config/stunmesh-agent..."
+	sudo tee "${MOUNT_DIR}/etc/config/stunmesh-agent" >/dev/null <<STUNMESH_AGENT_UCI
+config stunmesh-agent 'main'
 	option namespace          '${namespace}'
 	option node_id            '${node_id}'
 	option controller_pubkey  '${controller_pubkey}'
@@ -552,8 +553,8 @@ config provd 'main'
 	option boot_delay         '15'
 	option fetch_interval     '5'
 	option lock_file          '/var/lock/stunmesh-agent.lock'
-PROVD
-	sudo chmod 0644 "${MOUNT_DIR}/etc/config/provd"
+STUNMESH_AGENT_UCI
+	sudo chmod 0644 "${MOUNT_DIR}/etc/config/stunmesh-agent"
 
 	# The real init and hotplug scripts, installed as-is from contrib/ --
 	# never a copy kept in this harness, which would drift from what
