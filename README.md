@@ -5,8 +5,9 @@ This project provisions stunmesh-go nodes on OpenWrt devices. The controller,
 bundles to OpenDHT via dhtproxy. The agent, `stunmesh-agent`, runs on the
 OpenWrt device. It fetches each bundle, decrypts it, and applies it.
 
-See `docs/quick-start.md` for a step-by-step guide from nothing to one
-working node.
+See the [`stunmesh-openwrt`](https://github.com/tjjh89017/stunmesh-openwrt)
+repository's `docs/quick-start.md` for a step-by-step guide from nothing to
+one working node.
 
 ## Binaries
 
