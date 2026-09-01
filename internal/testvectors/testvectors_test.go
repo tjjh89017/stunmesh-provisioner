@@ -87,7 +87,9 @@ func TestKeyPairsMatchVectors(t *testing.T) {
 	}
 }
 
-func TestKeyFilesDecodeTo32Bytes(t *testing.T) {
+// The [32]byte return type already fixes the length, so the useful
+// assertion is that the loader filled the arrays with real key material.
+func TestKeyFilesDecodeToNonZeroKeys(t *testing.T) {
 	loaders := []struct {
 		name   string
 		loader func() (priv, pub [32]byte)
@@ -100,11 +102,11 @@ func TestKeyFilesDecodeTo32Bytes(t *testing.T) {
 	for _, l := range loaders {
 		t.Run(l.name, func(t *testing.T) {
 			priv, pub := l.loader()
-			if len(priv) != 32 {
-				t.Fatalf("%s private key is %d bytes, want 32", l.name, len(priv))
+			if priv == [32]byte{} {
+				t.Fatalf("%s private key is all zero", l.name)
 			}
-			if len(pub) != 32 {
-				t.Fatalf("%s public key is %d bytes, want 32", l.name, len(pub))
+			if pub == [32]byte{} {
+				t.Fatalf("%s public key is all zero", l.name)
 			}
 		})
 	}
