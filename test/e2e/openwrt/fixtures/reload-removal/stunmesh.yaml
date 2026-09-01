@@ -1,1 +1,15 @@
 interfaces: {}
+
+# This fixture is the only reload-removal fixture that starts the embedded
+# stunmesh-go app (see test/e2e/openwrt/README.md). A plugins entry here
+# makes --oneshot construct the opendht builtin plugin at startup: if the
+# agent build is missing the builtin_all (or builtin_opendht) tag, the
+# builtin registry lookup fails and --oneshot exits non-zero, so the
+# existing exit-0 assertion in phase-diff-removal.sh catches a missing
+# build tag. The endpoint is never contacted: NewOpenDHTPlugin only
+# resolves and validates configuration, it makes no network call.
+plugins:
+  opendht1:
+    type: builtin
+    name: opendht
+    endpoint: http://127.0.0.1:1
