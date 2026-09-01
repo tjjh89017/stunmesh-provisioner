@@ -7,8 +7,9 @@ repository does not build an OpenWrt package.
 
 - `stunmesh-agent.init` -- installs to `/etc/init.d/stunmesh-agent`.
   procd service for `stunmesh-agent` (the daemon, default mode).
-- `stunmesh-only.init` -- installs to `/etc/init.d/stunmesh-only`.
-  procd service for `stunmesh-agent --stunmesh-only`. Disabled by
+- `stunmesh-only.init` -- procd service for `stunmesh-agent
+  --stunmesh-only`. Where it installs is the package feed's decision;
+  see the stunmesh-openwrt repository. Disabled by
   default; see "Two services, pick one" below.
 - `hotplug-iface` -- installs to `/etc/hotplug.d/iface/95-stunmesh-agent`.
 - `stunmesh-provd.init` -- installs to `/etc/init.d/stunmesh-provd`.
@@ -136,25 +137,17 @@ daemon: fetch, decrypt, check, apply UCI/firewall, *and* manage the
 embedded stunmesh-go app's lifecycle as the fetched bundle's stunmesh
 text or interfaces change.
 
-`stunmesh-only.init` (`/etc/init.d/stunmesh-only`) runs `stunmesh-agent
---stunmesh-only`: only the embedded stunmesh-go app, reading its own
+`stunmesh-only.init` runs `stunmesh-agent --stunmesh-only`: only the embedded stunmesh-go app, reading its own
 `config.yaml` `stunmesh:` section (or the built-in defaults, since
 `config.yaml` is optional in this mode). No fetch, no DHT, no UCI, no
 `last.json`.
 
 A deployment enables exactly one of the two. Running both would start
 two stunmesh-go instances against the same config file. Neither script
-checks for that mistake: `stunmesh-only.init` is **not** enabled by
-this script, and the package that installs it must not call `enable`
-on it either -- an operator who wants stunmesh-go without this
-repository's fetch/apply pipeline enables it explicitly:
-
-```
-/etc/init.d/stunmesh-only enable
-/etc/init.d/stunmesh-only start
-```
-
-and leaves `/etc/init.d/stunmesh-agent` disabled.
+checks for that mistake: `stunmesh-only.init` must never start by
+default. How an operator activates it is the package feed's business
+(see the stunmesh-openwrt repository); whatever the path, the operator
+enables it explicitly and leaves `stunmesh-agent` disabled.
 
 ## 4. Hotplug: which events restart the daemon
 
