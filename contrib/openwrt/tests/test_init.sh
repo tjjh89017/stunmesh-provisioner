@@ -328,16 +328,18 @@ test_install_cron_returns_1_when_removal_unconfirmed() {
 test_stop_service_leaves_no_managed_line() {
 	d=$(scratch_dir)
 	CRONTAB="$d/crontab"
-	printf '%s\n%s\n' \
+	printf '%s\n%s\n%s\n' \
 		"* * * * * /usr/bin/other-thing" \
 		"*/5 * * * * /usr/sbin/stunmesh-agent fetch $CRON_TAG" \
+		"0 */24 * * * /usr/sbin/stunmesh-agent fetch --full-apply $CRON_TAG_FULL" \
 		> "$CRONTAB"
 
 	stop_service
 	rc=$?
 
 	assert_eq "$rc" "0" "stop_service rc" || return 1
-	grep -qF "$CRON_TAG" "$CRONTAB" && { echo "  managed line survived stop_service" >&2; return 1; }
+	grep -qF "$CRON_TAG_FULL" "$CRONTAB" && { echo "  full-apply managed line survived stop_service" >&2; return 1; }
+	grep -qF "$CRON_TAG" "$CRONTAB" && { echo "  diff-based managed line survived stop_service" >&2; return 1; }
 	grep -qF "other-thing" "$CRONTAB" || { echo "  unrelated line was lost by stop_service" >&2; return 1; }
 	assert_no_stray_temp "$d" "crontab"
 }
@@ -428,6 +430,96 @@ test_build_fetch_args_backend_unset() {
 	assert_eq "$args" "$expected" "build_fetch_args emits no --backend flag when the option is unset, so the binary's own default applies"
 }
 
+# --- build_full_apply_args --------------------------------------------------
+#
+# build_full_apply_args must produce exactly build_fetch_args's own
+# argument list with "--full-apply" appended, and must not clobber a
+# caller's own $args (see build_full_apply_args's doc comment: it uses
+# "local fetch_args" internally for exactly this reason).
+
+test_build_full_apply_args_appends_full_apply_flag() {
+	namespace="mymesh-7f3a"
+	node_id="alpha"
+	controller_pubkey="pk123"
+	private_key_file="/etc/stunmesh/provd/identity.key"
+	lock_file="/var/lock/stunmesh-agent.lock"
+	proxies="https://dhtproxy2.jami.net"
+	backend=""
+
+	full_apply_args="$(build_full_apply_args)"
+
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --full-apply"
+	assert_eq "$full_apply_args" "$expected" "build_full_apply_args appends --full-apply to build_fetch_args's own list"
+}
+
+test_build_full_apply_args_does_not_clobber_callers_args() {
+	namespace="mymesh-7f3a"
+	node_id="alpha"
+	controller_pubkey="pk123"
+	private_key_file="/etc/stunmesh/provd/identity.key"
+	lock_file="/var/lock/stunmesh-agent.lock"
+	proxies=""
+	backend=""
+
+	args="sentinel-untouched-value"
+	build_full_apply_args >/dev/null
+
+	assert_eq "$args" "sentinel-untouched-value" "build_full_apply_args must not overwrite the caller's own \$args"
+}
+
+# --- install_cron_line / remove_cron_tag: two independently tagged ---------
+# lines coexist ------------------------------------------------------------
+#
+# install_cron (CRON_TAG) and the full-apply line (CRON_TAG_FULL) are
+# both install_cron_line under the hood, with independent tags. This
+# pins that installing, then replacing, one of the two never touches
+# the other's line -- the actual guarantee start_service/stop_service
+# rely on to manage both schedules without interference.
+
+test_install_cron_line_two_tags_coexist() {
+	d=$(scratch_dir)
+	CRONTAB="$d/crontab"
+	BIN="/usr/sbin/stunmesh-agent"
+	stub mkdir 'return 0'
+
+	install_cron_line "$CRON_TAG" "*/5 * * * *" "fetch --namespace test"
+	rc1=$?
+	install_cron_line "$CRON_TAG_FULL" "0 */24 * * *" "fetch --namespace test --full-apply"
+	rc2=$?
+
+	assert_eq "$rc1" "0" "install_cron_line rc (diff-based line)" || return 1
+	assert_eq "$rc2" "0" "install_cron_line rc (full-apply line)" || return 1
+
+	expected="$(printf '%s\n%s' \
+		"*/5 * * * * $BIN fetch --namespace test >/dev/null 2>&1 $CRON_TAG" \
+		"0 */24 * * * $BIN fetch --namespace test --full-apply >/dev/null 2>&1 $CRON_TAG_FULL")"
+	assert_eq "$(cat "$CRONTAB")" "$expected" "both tagged lines are present after both installs" || return 1
+
+	# Replacing the diff-based line (a second install_cron_line under
+	# the same tag, the way a repeated "service ... restart" would)
+	# must not disturb the full-apply line's own content -- removing
+	# the old diff-based line and appending its replacement moves it to
+	# the end of the file, so the full-apply line (untouched) now comes
+	# first; what matters is that both lines are still present, each
+	# under its own tag, and the diff-based one carries the new
+	# schedule.
+	install_cron_line "$CRON_TAG" "*/10 * * * *" "fetch --namespace test"
+	rc3=$?
+	assert_eq "$rc3" "0" "install_cron_line rc (replacing the diff-based line)" || return 1
+
+	expected2="$(printf '%s\n%s' \
+		"0 */24 * * * $BIN fetch --namespace test --full-apply >/dev/null 2>&1 $CRON_TAG_FULL" \
+		"*/10 * * * * $BIN fetch --namespace test >/dev/null 2>&1 $CRON_TAG")"
+	assert_eq "$(cat "$CRONTAB")" "$expected2" "replacing the diff-based line leaves the full-apply line's content untouched" || return 1
+
+	# remove_cron_tag on one tag must leave the other's line alone.
+	remove_cron_tag "$CRON_TAG_FULL"
+	rc4=$?
+	assert_eq "$rc4" "0" "remove_cron_tag rc (full-apply line)" || return 1
+	grep -qF "$CRON_TAG_FULL" "$CRONTAB" && { echo "  full-apply line survived remove_cron_tag" >&2; return 1; }
+	grep -qF "$CRON_TAG" "$CRONTAB" || { echo "  diff-based line was lost by remove_cron_tag on the other tag" >&2; return 1; }
+}
+
 # --- read_config -----------------------------------------------------------
 
 test_read_config_missing_file() {
@@ -474,6 +566,7 @@ EOF
 	assert_eq "$rc" "0" "read_config rc on a complete minimal config" || return 1
 	assert_eq "$boot_delay" "$DEFAULT_BOOT_DELAY" "boot_delay falls back to its default" || return 1
 	assert_eq "$fetch_interval" "$DEFAULT_FETCH_INTERVAL" "fetch_interval falls back to its default" || return 1
+	assert_eq "$full_apply_interval_hours" "$DEFAULT_FULL_APPLY_INTERVAL_HOURS" "full_apply_interval_hours falls back to its default" || return 1
 	assert_eq "$lock_file" "$DEFAULT_LOCK_FILE" "lock_file falls back to its default" || return 1
 	assert_eq "$proxies" "" "proxies is empty when the section has no proxy entries" || return 1
 	assert_eq "$backend" "" "backend has no default and stays empty when the section has none"
@@ -491,6 +584,7 @@ list proxy https://dhtproxy3.jami.net
 option private_key_file /etc/stunmesh/provd/identity.key
 option boot_delay 30
 option fetch_interval 10
+option full_apply_interval_hours 6
 option lock_file /tmp/custom.lock
 option backend sentinel-backend
 EOF
@@ -507,6 +601,7 @@ EOF
 	assert_eq "$proxies" "https://dhtproxy2.jami.net https://dhtproxy3.jami.net" "proxies" || return 1
 	assert_eq "$boot_delay" "30" "boot_delay" || return 1
 	assert_eq "$fetch_interval" "10" "fetch_interval" || return 1
+	assert_eq "$full_apply_interval_hours" "6" "full_apply_interval_hours" || return 1
 	assert_eq "$lock_file" "/tmp/custom.lock" "lock_file" || return 1
 	assert_eq "$backend" "sentinel-backend" "backend"
 }
@@ -648,7 +743,9 @@ EOF
 	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN by the boot-time fetch" || return 1
 	expected_cron="*/$DEFAULT_FETCH_INTERVAL * * * * $BIN $expected >/dev/null 2>&1 $CRON_TAG"
-	assert_eq "$(cat "$CRONTAB")" "$expected_cron" "installed cron line matches the args built from config"
+	expected_full_cron="0 */$DEFAULT_FULL_APPLY_INTERVAL_HOURS * * * $BIN $expected --full-apply >/dev/null 2>&1 $CRON_TAG_FULL"
+	expected_crontab="$(printf '%s\n%s' "$expected_cron" "$expected_full_cron")"
+	assert_eq "$(cat "$CRONTAB")" "$expected_crontab" "installed cron lines (diff-based and full-apply) match the args built from config"
 }
 
 test_start_service_skips_when_config_incomplete() {
@@ -698,6 +795,9 @@ run_test "build_fetch_args: full option set, exact argument list" test_build_fet
 run_test "build_fetch_args: no --proxy flags when none configured" test_build_fetch_args_no_proxies
 run_test "build_fetch_args: appends --backend when configured" test_build_fetch_args_backend_set
 run_test "build_fetch_args: omits --backend when unset" test_build_fetch_args_backend_unset
+run_test "build_full_apply_args: appends --full-apply to build_fetch_args's list" test_build_full_apply_args_appends_full_apply_flag
+run_test "build_full_apply_args: does not clobber the caller's \$args" test_build_full_apply_args_does_not_clobber_callers_args
+run_test "install_cron_line/remove_cron_tag: two independently tagged lines coexist" test_install_cron_line_two_tags_coexist
 run_test "read_config: rc 1 when /etc/config/stunmesh-agent is missing" test_read_config_missing_file
 run_test "read_config: rc 1 when a required field is missing" test_read_config_missing_required_field
 run_test "read_config: applies boot_delay/fetch_interval/lock_file defaults" test_read_config_applies_defaults

@@ -27,6 +27,16 @@ type Config struct {
 	LastPath           string
 	LockPath           string
 	StunmeshConfigPath string
+	// FullApply forces fetch to skip the "no change since last apply"
+	// shortcut (PLAN.md 4.5) and rewrite every step of the apply
+	// procedure (PLAN.md 6) -- UCI, the commits, both reloads, ifup,
+	// the stunmesh config file, and last.json -- even when the newest
+	// bundle's content is identical to last.json. It is set only by
+	// --full-apply; there is no --config file equivalent (see
+	// registerFlags), since the 24-hour schedule that uses it lives in
+	// the OpenWrt cron integration (contrib/openwrt/stunmesh-agent.init),
+	// not in a value an operator would keep in a file.
+	FullApply bool
 }
 
 // Default paths, backend, and proxies (PLAN.md section 3). A flag or
@@ -82,6 +92,7 @@ func registerFlags(fs *flag.FlagSet) *flagSeam {
 	fs.StringVar(&cfg.LastPath, "last", defaultLastPath, "last-applied bundle file")
 	fs.StringVar(&cfg.LockPath, "lock", defaultLockPath, "lock file")
 	fs.StringVar(&cfg.StunmeshConfigPath, "stunmesh-config", defaultStunmeshConfigPath, "stunmesh-go config file")
+	fs.BoolVar(&cfg.FullApply, "full-apply", false, "force a full re-apply even when nothing changed since last.json")
 
 	configPath := fs.String("config", "", "flat key=value file supplying any of the settings above")
 

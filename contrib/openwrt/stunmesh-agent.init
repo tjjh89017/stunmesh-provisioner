@@ -11,15 +11,29 @@
 # instance as a crash to recover from -- exactly wrong for a command
 # whose whole job is to run once and stop.
 #
-# Instead, this script uses cron as the recurring trigger:
-#   - start() runs one fetch in the background after option boot_delay
-#     seconds, then (re)installs a cron line built from option
-#     fetch_interval, so the delayed boot fetch never blocks boot.
-#   - stop() removes that cron line. Nothing else needs to stop: every
+# Instead, this script uses cron as the recurring trigger, and installs
+# two independent cron lines, each with its own tag so remove/install
+# can find and replace exactly one of them without touching the other:
+#   - The frequent, diff-based line: "fetch" every option fetch_interval
+#     minutes (CRON_TAG). This is the normal path: fetch does nothing
+#     when the bundle has not changed (PLAN.md 4.5, exit code 3).
+#   - The periodic full-apply line: "fetch --full-apply" every option
+#     full_apply_interval_hours hours, default 24 (CRON_TAG_FULL). This
+#     skips the "no change" shortcut and rewrites every apply step
+#     (PLAN.md 6) even when nothing changed, so UCI, the firewall zone,
+#     and the stunmesh config converge back to what the bundle actually
+#     says on a fixed schedule, independent of whether any fetch in
+#     between happened to see a real change. See
+#     cmd/stunmesh-agent's Config.FullApply doc comment for why this
+#     schedule lives here and not inside the Go binary.
+#   - start() runs one diff-based fetch in the background after option
+#     boot_delay seconds, then (re)installs both cron lines, so the
+#     delayed boot fetch never blocks boot.
+#   - stop() removes both cron lines. Nothing else needs to stop: every
 #     fetch has already exited by the time stop() runs.
 #   - A repeated start() (for example "service stunmesh-agent restart")
 #     removes any existing cron line before adding the new one, so the
-#     crontab never ends up with two lines for stunmesh-agent.
+#     crontab never ends up with two lines for the same tag.
 #
 # The init.d enable/disable mechanism (/etc/init.d/stunmesh-agent
 # enable|disable) controls whether start() runs at boot at all, the
@@ -34,8 +48,10 @@ UCI_SECTION="main"
 BIN="/usr/sbin/stunmesh-agent"
 CRONTAB="/etc/crontabs/root"
 CRON_TAG="# stunmesh-agent: managed by /etc/init.d/stunmesh-agent, do not edit"
+CRON_TAG_FULL="# stunmesh-agent: full-apply, managed by /etc/init.d/stunmesh-agent, do not edit"
 DEFAULT_BOOT_DELAY=15
 DEFAULT_FETCH_INTERVAL=5
+DEFAULT_FULL_APPLY_INTERVAL_HOURS=24
 DEFAULT_LOCK_FILE="/var/lock/stunmesh-agent.lock"
 
 . /lib/functions.sh
@@ -64,6 +80,7 @@ read_config() {
 	config_get proxies "$UCI_SECTION" proxy
 	config_get boot_delay "$UCI_SECTION" boot_delay "$DEFAULT_BOOT_DELAY"
 	config_get fetch_interval "$UCI_SECTION" fetch_interval "$DEFAULT_FETCH_INTERVAL"
+	config_get full_apply_interval_hours "$UCI_SECTION" full_apply_interval_hours "$DEFAULT_FULL_APPLY_INTERVAL_HOURS"
 	config_get lock_file "$UCI_SECTION" lock_file "$DEFAULT_LOCK_FILE"
 	config_get backend "$UCI_SECTION" backend
 
@@ -101,6 +118,18 @@ build_fetch_args() {
 	echo "$@"
 }
 
+# build_full_apply_args is build_fetch_args's argument list plus
+# --full-apply, appended at the end. It reuses build_fetch_args
+# rather than re-deriving the same namespace/node_id/proxy/backend
+# handling a second time, so the two argument lists can never drift
+# apart on anything but the one flag that actually differs between
+# them.
+build_full_apply_args() {
+	local fetch_args
+	fetch_args="$(build_fetch_args)"
+	echo "$fetch_args --full-apply"
+}
+
 # run_fetch runs stunmesh-agent fetch once and logs the outcome.
 # Exit code 3 (no change) is success, the same as 0 (applied, or
 # nothing to do): PLAN.md section 5 defines only these two as
@@ -122,20 +151,38 @@ run_fetch() {
 
 # install_cron writes one cron line that runs fetch every
 # fetch_interval minutes, replacing any line this script wrote before.
-#
-# It appends only after remove_cron confirms the old line is gone. If
-# remove_cron cannot confirm that (see its own comment), appending
-# anyway risks a second, duplicate CRON_TAG line -- so install_cron
-# skips the append, logs, and returns 1 instead. Returns 0 once the
-# new line is written.
+# It is install_cron_line with this script's usual (diff-based) tag,
+# schedule, and argument list; see install_cron_line for what it
+# actually does and why it takes a tag.
 install_cron() {
-	if ! remove_cron; then
+	install_cron_line "$CRON_TAG" "*/$fetch_interval * * * *" "$args"
+}
+
+# install_cron_line writes one cron line under tag, replacing any line
+# this script wrote before under that same tag. Two independent calls
+# with two different tags (see install_cron and start_service's
+# full-apply line) can coexist in the same crontab without touching
+# each other, because remove_cron_tag only ever matches its own tag's
+# literal text.
+#
+# It appends only after remove_cron_tag confirms the old line under
+# tag is gone. If remove_cron_tag cannot confirm that (see its own
+# comment), appending anyway risks a second, duplicate line under that
+# tag -- so install_cron_line skips the append, logs, and returns 1
+# instead. Returns 0 once the new line is written.
+install_cron_line() {
+	local tag schedule line_args
+	tag="$1"
+	schedule="$2"
+	line_args="$3"
+
+	if ! remove_cron_tag "$tag"; then
 		log "could not confirm removal of the existing cron line; leaving crontab as-is instead of risking a duplicate"
 		return 1
 	fi
 
 	mkdir -p /etc/crontabs
-	echo "*/$fetch_interval * * * * $BIN $args >/dev/null 2>&1 $CRON_TAG" >> "$CRONTAB"
+	echo "$schedule $BIN $line_args >/dev/null 2>&1 $tag" >> "$CRONTAB"
 	# crond notices a crontab whose mtime changed within about a
 	# minute on its own; nudge it now so a fresh install does not
 	# wait a full poll interval for its first scheduled run.
@@ -143,13 +190,22 @@ install_cron() {
 	return 0
 }
 
-# remove_cron deletes only the line install_cron wrote (matched by the
-# literal substring CRON_TAG), and leaves every other crontab line
-# untouched. This uses awk's index(), not sed: CRON_TAG itself starts
-# with "#". A sed address needs a delimiter character, and every
-# delimiter choice is also a character sed treats as significant, so
-# a tag that contains it breaks the pattern. awk's index() takes
-# CRON_TAG as inert data, so this holds no matter what the tag text is.
+# remove_cron deletes only the line install_cron wrote under CRON_TAG.
+# It is remove_cron_tag with this script's usual (diff-based) tag; see
+# remove_cron_tag for what it actually does and why it takes a tag.
+remove_cron() {
+	remove_cron_tag "$CRON_TAG"
+}
+
+# remove_cron_tag deletes only the line install_cron_line wrote under
+# tag (matched by the literal substring tag), and leaves every other
+# crontab line -- including a line under a different tag, such as
+# CRON_TAG_FULL -- untouched. This uses awk's index(), not sed: a tag
+# can start with "#". A sed address needs a delimiter character, and
+# every delimiter choice is also a character sed treats as
+# significant, so a tag that contains it breaks the pattern. awk's
+# index() takes tag as inert data, so this holds no matter what the
+# tag text is.
 #
 # The replacement is built and checked in a private temp file before
 # it ever touches $CRONTAB, and $CRONTAB is only ever read, never
@@ -175,13 +231,16 @@ install_cron() {
 # file behind.
 #
 # Return value is a promise, not just a log-worthy detail: 0 means the
-# CRON_TAG line is confirmed absent from $CRONTAB (either it never had
+# tag's line is confirmed absent from $CRONTAB (either it never had
 # one, or this call just removed it). 1 means removal could not be
-# confirmed -- $CRONTAB is untouched, but if it had a CRON_TAG line
+# confirmed -- $CRONTAB is untouched, but if it had a line under tag
 # before the call, that line may still be there. Callers that need the
-# trigger gone (install_cron, stop_service) must treat 1 as "still
-# possibly installed", not as "nothing to worry about".
-remove_cron() {
+# trigger gone (install_cron_line, stop_service) must treat 1 as
+# "still possibly installed", not as "nothing to worry about".
+remove_cron_tag() {
+	local tag
+	tag="$1"
+
 	[ -f "$CRONTAB" ] || return 0
 
 	local tmp
@@ -192,7 +251,7 @@ remove_cron() {
 		return 1
 	fi
 
-	if ! awk -v tag="$CRON_TAG" 'index($0, tag) == 0' "$CRONTAB" > "$tmp"; then
+	if ! awk -v tag="$tag" 'index($0, tag) == 0' "$CRONTAB" > "$tmp"; then
 		rm -f "$tmp"
 		return 1
 	fi
@@ -220,24 +279,40 @@ start_service() {
 
 	# Run the boot-time fetch in the background so start_service (and
 	# therefore boot) never blocks on boot_delay or on the fetch
-	# itself.
+	# itself. Only the frequent, diff-based fetch runs at boot; the
+	# periodic full-apply line (installed below) runs on its own
+	# schedule, not once per boot.
 	( sleep "$boot_delay"; run_fetch ) &
 
+	rc=0
 	if ! install_cron; then
 		log "start: cron trigger not installed; fetch will only run from this boot's background job, not on a schedule"
-		return 1
+		rc=1
 	fi
+
+	full_apply_args="$(build_full_apply_args)"
+	if ! install_cron_line "$CRON_TAG_FULL" "0 */$full_apply_interval_hours * * *" "$full_apply_args"; then
+		log "start: full-apply cron trigger not installed; the periodic full re-apply will not run on a schedule"
+		rc=1
+	fi
+
+	return $rc
 }
 
-# stop_service's job is to make the recurring trigger go away. It
-# reports what actually happened: 0 only when remove_cron confirms the
-# CRON_TAG line is gone, 1 when it cannot confirm that, so "service
-# stunmesh-agent stop" does not claim success while a scheduled fetch
-# can still fire.
+# stop_service's job is to make both recurring triggers go away (the
+# diff-based line and the full-apply line). It reports what actually
+# happened: 0 only when both are confirmed gone, 1 when either cannot
+# be confirmed, so "service stunmesh-agent stop" does not claim
+# success while a scheduled fetch can still fire.
 stop_service() {
+	rc=0
 	if ! remove_cron; then
 		log "stop: could not confirm removal of the cron trigger; it may still be installed"
-		return 1
+		rc=1
 	fi
-	return 0
+	if ! remove_cron_tag "$CRON_TAG_FULL"; then
+		log "stop: could not confirm removal of the full-apply cron trigger; it may still be installed"
+		rc=1
+	fi
+	return $rc
 }

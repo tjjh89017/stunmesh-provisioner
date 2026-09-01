@@ -129,20 +129,38 @@ type Diff struct {
 
 // computeDiff computes the diff between b, the new bundle (already
 // past every PLAN.md 4.4 check), and state, the last.json content
-// checkAndApply already read. computeDiff assumes b and state do not
-// carry identical content (checkAndApply's sameContent check already
-// ruled that out); it does not special-case that possibility.
+// checkAndApply already read. Ordinarily (forceAll false) computeDiff
+// assumes b and state do not carry identical content as a whole
+// (checkAndApply's sameContent check already ruled that out); it does
+// not special-case that possibility itself.
+//
+// forceAll is cfg.FullApply (PLAN.md section 3, "--full-apply"): when
+// true, checkAndApply has deliberately skipped that sameContent check
+// (a periodic full re-apply must run even when nothing changed), so
+// computeDiff classifies every interface present in both b and state
+// as InterfaceChanged -- never InterfaceUnchanged -- and every
+// non-empty stunmesh text as StunmeshChanged, even when the content is
+// byte-for-byte identical on both sides. This is what makes a full
+// apply actually rewrite every step (PLAN.md 6): the apply procedure
+// only does work for InterfaceNew/InterfaceChanged/InterfaceRemoved
+// and for a Stunmesh value other than StunmeshUnchanged, so an
+// InterfaceUnchanged/StunmeshUnchanged classification would otherwise
+// make forceAll a no-op for any interface or stunmesh text that
+// genuinely did not change. InterfaceNew and InterfaceRemoved are
+// unaffected by forceAll: there is no "identical content" question for
+// an interface that exists on only one side.
 //
 // state.WG is never nil (last.Read's doc comment, "Missing file"), so
 // computeDiff ranges over it directly.
 //
-// Per-interface content comparison goes through interfaceEqual, which
-// reuses bundle.Bundle.Canonical/Equal -- the same canonicalization
-// path sameContent (fetch_compare.go) already uses for the whole
-// bundle -- so presence (an absent field versus an explicit empty
-// container, PLAN.md 4.3) is respected exactly, and there is only one
-// place in this codebase that decides what "equal content" means.
-func computeDiff(b *bundle.Bundle, state *last.State) (*Diff, error) {
+// Per-interface content comparison (when forceAll is false) goes
+// through interfaceEqual, which reuses bundle.Bundle.Canonical/Equal
+// -- the same canonicalization path sameContent (fetch_compare.go)
+// already uses for the whole bundle -- so presence (an absent field
+// versus an explicit empty container, PLAN.md 4.3) is respected
+// exactly, and there is only one place in this codebase that decides
+// what "equal content" means.
+func computeDiff(b *bundle.Bundle, state *last.State, forceAll bool) (*Diff, error) {
 	names := make(map[string]struct{}, len(b.WG)+len(state.WG))
 	for name := range b.WG {
 		names[name] = struct{}{}
@@ -170,9 +188,13 @@ func computeDiff(b *bundle.Bundle, state *last.State) (*Diff, error) {
 				Content: &content,
 			})
 		case inNew && inOld:
-			equal, err := interfaceEqual(name, newIface, oldIface.Content)
-			if err != nil {
-				return nil, err
+			equal := false
+			if !forceAll {
+				var err error
+				equal, err = interfaceEqual(name, newIface, oldIface.Content)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if equal {
 				diffs = append(diffs, InterfaceDiff{
@@ -208,7 +230,7 @@ func computeDiff(b *bundle.Bundle, state *last.State) (*Diff, error) {
 
 	return &Diff{
 		Interfaces:      diffs,
-		Stunmesh:        diffStunmesh(newStunmesh, state.Stunmesh),
+		Stunmesh:        diffStunmesh(newStunmesh, state.Stunmesh, forceAll),
 		StunmeshContent: newStunmesh,
 	}, nil
 }
@@ -217,12 +239,15 @@ func computeDiff(b *bundle.Bundle, state *last.State) (*Diff, error) {
 // An empty newStunmesh always classifies as StunmeshEmpty, even when
 // oldStunmesh is also "": PLAN.md 6 treats an empty stunmesh as a real
 // instruction (delete the file, stop stunmesh-go), not as the absence
-// of a change.
-func diffStunmesh(newStunmesh, oldStunmesh string) StunmeshChange {
+// of a change. forceAll (see computeDiff's doc comment) promotes an
+// otherwise-StunmeshUnchanged non-empty text to StunmeshChanged, so a
+// full apply rewrites the stunmesh config file and reloads stunmesh-go
+// even when the text did not actually change.
+func diffStunmesh(newStunmesh, oldStunmesh string, forceAll bool) StunmeshChange {
 	if newStunmesh == "" {
 		return StunmeshEmpty
 	}
-	if newStunmesh == oldStunmesh {
+	if newStunmesh == oldStunmesh && !forceAll {
 		return StunmeshUnchanged
 	}
 	return StunmeshChanged

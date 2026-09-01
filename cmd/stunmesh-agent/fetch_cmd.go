@@ -263,6 +263,13 @@ func backendDialConfig(env *Env, cfg *Config) dial.Config {
 //
 // When the content differs, checkAndApply hands off to applyChanges,
 // the seam the next item (the per-interface diff) fills in.
+//
+// --full-apply (cfg.FullApply) skips the "equal" shortcut below
+// entirely: a periodic full re-apply's whole point is to rewrite
+// every step even when the newest bundle's content is byte-for-byte
+// what last.json already has. The 24-hour schedule that sets this
+// flag lives in the OpenWrt cron integration, not in this binary; see
+// Config.FullApply's doc comment.
 func checkAndApply(env *Env, cfg *Config, b *bundle.Bundle) int {
 	state, err := last.Read(cfg.LastPath)
 	if err != nil {
@@ -270,17 +277,19 @@ func checkAndApply(env *Env, cfg *Config, b *bundle.Bundle) int {
 		return ExitError
 	}
 
-	equal, err := sameContent(state, b)
-	if err != nil {
-		// sameContent's error comes from bundle.Canonical, which never
-		// includes field values in its own errors (see internal/bundle's
-		// doc); safe to print as-is.
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: compare with last.json: %v\n", err)
-		return ExitError
-	}
-	if equal {
-		fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: no change since last apply")
-		return ExitNoChange
+	if !cfg.FullApply {
+		equal, err := sameContent(state, b)
+		if err != nil {
+			// sameContent's error comes from bundle.Canonical, which never
+			// includes field values in its own errors (see internal/bundle's
+			// doc); safe to print as-is.
+			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: compare with last.json: %v\n", err)
+			return ExitError
+		}
+		if equal {
+			fmt.Fprintln(env.Stderr, "stunmesh-agent: fetch: no change since last apply")
+			return ExitNoChange
+		}
 	}
 
 	return applyChanges(env, cfg, b, state)
