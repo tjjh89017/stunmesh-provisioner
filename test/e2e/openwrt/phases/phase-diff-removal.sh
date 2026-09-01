@@ -53,9 +53,8 @@
 # kernel device get replaced.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
-# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY and FAKEPROXY_GUEST_URL, all set by run.sh or
-# lib.sh before any phase runs.
+# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
+# all set by run.sh or lib.sh before any phase runs.
 set -euo pipefail
 
 # render_two_iface_bundle OUT_DIR WG1_PEER_PUBKEY -- writes a two-
@@ -116,7 +115,7 @@ ifindex_of() {
 
 phase_diff_removal() {
 	local fetch_cmd
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
 
 	read -r DIFF_REMOVAL_WG0_PRIV _ < <(generate_wg_keypair)
 	read -r _ DIFF_REMOVAL_WG0_PEER_PUBKEY < <(generate_wg_keypair)
@@ -140,6 +139,14 @@ phase_diff_removal() {
 		"ubus call network.interface.wg0 status" '"up": true'
 	assert_ssh_output_contains "v1: ubus reports wg1 up" \
 		"ubus call network.interface.wg1 status" '"up": true'
+
+	# The bundle's non-empty stunmesh text (fixtures/reload-removal/
+	# stunmesh.yaml) makes applyStunmeshConfig write this file
+	# (fetch_apply.go); the embedded stunmesh-go app is not under test
+	# here (its own package covers that), only whether the agent wrote
+	# and later removed its config file at the right steps.
+	assert_ssh_ok "v1: the stunmesh config file exists" \
+		"test -f /etc/stunmesh/config.yaml"
 
 	local wg0_ifindex_v1
 	wg0_ifindex_v1=$(ifindex_of wg0)
@@ -230,12 +237,6 @@ phase_diff_removal() {
 		"$(ifindex_of wg0)" "absent"
 	assert_ssh_ok "check 5: the stunmesh config file is gone" \
 		"! test -f /etc/stunmesh/config.yaml"
-
-	# StunmeshEmpty makes applyDiff run "/etc/init.d/stunmesh stop",
-	# not "reload" (fetch_apply.go); the stand-in logs the literal
-	# argument it was called with.
-	assert_ssh_output_contains "check 5: the stunmesh stand-in was told to stop, not reload" \
-		"tail -1 /tmp/stunmesh-stub-actions.log" "stop"
 
 	# The sentinel section this phase created by hand, moments ago,
 	# must survive: the agent's last.json never recorded it, so

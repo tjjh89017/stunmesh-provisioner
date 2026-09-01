@@ -11,9 +11,9 @@
 # the bundle, and nothing derived from a peer's allowed_ips.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
-# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY and FAKEPROXY_GUEST_URL, all set by run.sh or
-# lib.sh before any phase runs. Self-contained like every other phase
+# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
+# all set by run.sh or lib.sh before any phase runs. Self-contained
+# like every other phase
 # (see run.sh's own doc comment): it publishes its own fixture and
 # does not assume any other phase's wg0 state.
 set -euo pipefail
@@ -46,7 +46,7 @@ phase_routes() {
 	render_routes_fixture
 	publish_fixture "$ROUTES_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
 	assert_ssh_exit_code "fetch applies the route_allowed_ips: false bundle (exit 0)" "$fetch_cmd" 0
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 

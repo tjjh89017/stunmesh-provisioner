@@ -199,15 +199,16 @@ build_agent_binary() {
 # exactly what a device would have after an operator ran keygen for real.
 # The guest is x86-64 and so is this runner, so the just-built AGENT_BIN
 # (linux/amd64) runs directly here; no guest boot is needed to generate it.
-# Sets IDENTITY_KEY_PATH and IDENTITY_PUBKEY. keygen's stdout is only ever
-# the public key (see doKeygen in cmd/stunmesh-agent/keygen_cmd.go); it is
-# captured into a variable, here, for setup_controller's `node add` to
-# consume below, and is never printed or logged, so no key material
-# reaches any harness output.
+#
+# keygen only takes --config-dir and always writes "identity.key" inside
+# it. Sets IDENTITY_KEY_PATH and IDENTITY_PUBKEY. keygen's stdout is only
+# ever the public key; it is captured into a variable, here, for
+# setup_controller's `node add` to consume below, and never printed or
+# logged, so no key material reaches any harness output.
 generate_identity_key() {
 	IDENTITY_KEY_PATH="${WORK}/identity.key"
 	log "Generating the node identity key (stunmesh-agent keygen)..."
-	IDENTITY_PUBKEY=$("$AGENT_BIN" keygen --identity-key "$IDENTITY_KEY_PATH") \
+	IDENTITY_PUBKEY=$("$AGENT_BIN" keygen --config-dir "$WORK") \
 		|| die "stunmesh-agent keygen failed."
 	[[ -f "$IDENTITY_KEY_PATH" ]] || die "keygen did not create ${IDENTITY_KEY_PATH}."
 	[[ -n "$IDENTITY_PUBKEY" ]] || die "keygen produced no public key on stdout."
@@ -453,15 +454,52 @@ publish_fixture() {
 	log "Published, DHT key: ${PUBLISHED_KEY}"
 }
 
+# write_guest_config PATH PROXY_URL -- writes a config.yaml to PATH in
+# the already-booted guest, pointed at PROXY_URL, using
+# E2E_NAMESPACE/E2E_NODE_ID/CONTROLLER_PUBKEY. phase-lock.sh's only
+# caller: its second fetch needs its own config.yaml pointed at the
+# delayed proxy, since the primary config.yaml stays pointed at the
+# main fake dhtproxy every other phase uses.
+#
+# Base64-encoded across the ssh command line, not a remote heredoc:
+# PROXY_URL and the controller pubkey can both contain characters a
+# double-quoted remote heredoc would need escaping for.
+write_guest_config() {
+	local path="$1" proxy_url="$2" content b64
+	content=$(cat <<YAML
+namespace: "${E2E_NAMESPACE}"
+node_id: "${E2E_NODE_ID}"
+controller_pubkey: "${CONTROLLER_PUBKEY}"
+identity_key: "/etc/stunmesh/agent/identity.key"
+last: "/etc/stunmesh/agent/last.json"
+lock: "/var/lock/stunmesh-agent.lock"
+use_plugin: "e2e"
+plugins:
+  e2e:
+    type: "dhtproxy"
+    proxies:
+      - "${proxy_url}"
+YAML
+	)
+	b64=$(printf '%s' "$content" | base64 -w0)
+	guest_exec "$SSH_PORT" "$SSH_KEY" \
+		"echo '${b64}' | base64 -d > '${path}' && chmod 0600 '${path}'" \
+		|| die "Could not write ${path} in the guest."
+}
+
 # inject_guest_files PUBKEY_PATH AGENT_BIN IDENTITY_KEY NAMESPACE NODE_ID
 #   CONTROLLER_PUBKEY PROXY_URL -- loop-mounts IMAGE_PATH's rootfs partition
 # and writes everything a provisioned node needs before first boot: the SSH
 # key and network config the harness itself needs to reach the guest, plus
 # the full stunmesh-agent payload -- binary, identity key,
 # /etc/config/stunmesh-agent, the real init and hotplug scripts from
-# contrib/openwrt, and a stand-in
-# /etc/init.d/stunmesh. After this, the guest looks exactly like a freshly
-# flashed device an operator has just finished the manual key exchange on,
+# contrib/openwrt, and /etc/stunmesh/agent/config.yaml itself (same
+# values as the UCI section, so both agree). Writing config.yaml
+# directly lets most phases run `stunmesh-agent --oneshot` without
+# starting the procd service first; phase-daemon.sh is the one phase
+# that exercises UCI -> config.yaml generation through the real init
+# script. After this, the guest looks exactly like a freshly flashed
+# device an operator has just finished the manual key exchange on,
 # except nothing has fetched anything yet.
 #
 # A stock OpenWrt image ships no /etc/config/network at all -- /etc/board.d
@@ -545,16 +583,41 @@ NETCONF
 	log "Writing /etc/config/stunmesh-agent..."
 	sudo tee "${MOUNT_DIR}/etc/config/stunmesh-agent" >/dev/null <<STUNMESH_AGENT_UCI
 config stunmesh-agent 'main'
-	option namespace          '${namespace}'
-	option node_id            '${node_id}'
-	option controller_pubkey  '${controller_pubkey}'
-	list   proxy              '${proxy_url}'
-	option private_key_file   '/etc/stunmesh/agent/identity.key'
-	option boot_delay         '15'
-	option fetch_interval     '5'
-	option lock_file          '/var/lock/stunmesh-agent.lock'
+	option namespace            '${namespace}'
+	option node_id              '${node_id}'
+	option controller_pubkey    '${controller_pubkey}'
+	option use_plugin           'e2e'
+	option refresh_interval     '${E2E_REFRESH_INTERVAL}'
+	option full_apply_interval  '0'
+	option identity_key         '/etc/stunmesh/agent/identity.key'
+	option last                 '/etc/stunmesh/agent/last.json'
+	option lock                 '/var/lock/stunmesh-agent.lock'
+
+config stunmesh-agent-plugin 'e2e'
+	option type    'dhtproxy'
+	list   proxies '${proxy_url}'
 STUNMESH_AGENT_UCI
 	sudo chmod 0644 "${MOUNT_DIR}/etc/config/stunmesh-agent"
+
+	# Written directly, not only derived from UCI at boot -- see this
+	# function's own doc comment above for why both exist and why they
+	# carry the same values.
+	log "Writing /etc/stunmesh/agent/config.yaml..."
+	sudo tee "${MOUNT_DIR}/etc/stunmesh/agent/config.yaml" >/dev/null <<CONFIG_YAML
+namespace: "${namespace}"
+node_id: "${node_id}"
+controller_pubkey: "${controller_pubkey}"
+identity_key: "/etc/stunmesh/agent/identity.key"
+last: "/etc/stunmesh/agent/last.json"
+lock: "/var/lock/stunmesh-agent.lock"
+use_plugin: "e2e"
+plugins:
+  e2e:
+    type: "dhtproxy"
+    proxies:
+      - "${proxy_url}"
+CONFIG_YAML
+	sudo chmod 0600 "${MOUNT_DIR}/etc/stunmesh/agent/config.yaml"
 
 	# The real init and hotplug scripts, installed as-is from contrib/ --
 	# never a copy kept in this harness, which would drift from what
@@ -565,19 +628,6 @@ STUNMESH_AGENT_UCI
 	sudo mkdir -p "${MOUNT_DIR}/etc/hotplug.d/iface"
 	sudo install -m 0755 "${CONTRIB_DIR}/hotplug-iface" \
 		"${MOUNT_DIR}/etc/hotplug.d/iface/95-stunmesh-agent"
-
-	# stunmesh-go itself is not under test here (see phases/phase-payload.sh);
-	# what is under test is whether stunmesh-agent calls
-	# /etc/init.d/stunmesh at the right moments, with the right action.
-	# This stand-in records every action it is asked to perform and always
-	# exits 0, the same as a real reload/stop would report on success.
-	log "Installing the stunmesh stand-in..."
-	sudo tee "${MOUNT_DIR}/etc/init.d/stunmesh" >/dev/null <<'STUNMESH_STUB'
-#!/bin/sh
-echo "$1" >> /tmp/stunmesh-stub-actions.log
-exit 0
-STUNMESH_STUB
-	sudo chmod 0755 "${MOUNT_DIR}/etc/init.d/stunmesh"
 
 	sync
 	sudo umount "$MOUNT_DIR"

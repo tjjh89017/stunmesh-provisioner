@@ -15,9 +15,9 @@
 # alone is to add one by hand and read it back after.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
-# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY and FAKEPROXY_GUEST_URL, all set by run.sh or
-# lib.sh before any phase runs. Self-contained like every other phase
+# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
+# all set by run.sh or lib.sh before any phase runs. Self-contained
+# like every other phase
 # (see run.sh's own doc comment): it publishes its own two-revision
 # fixture and does not assume any other phase's wg0 state.
 set -euo pipefail
@@ -51,7 +51,7 @@ phase_firewall_survives() {
 	read -r _ peer1_pub < <(generate_wg_keypair)
 	read -r _ peer2_pub < <(generate_wg_keypair)
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
 
 	v1_dir=$(render_firewall_fixture v1 "$peer1_pub")
 	publish_fixture "$v1_dir" "$E2E_NAMESPACE" "$E2E_NODE_ID"

@@ -31,8 +31,12 @@ Be precise about what it does not prove:
 - It talks to `test/e2e/openwrt/fakeproxy`, a minimal stand-in for
   `dhtproxy` (see section 6), not a real Jami `dhtproxy` instance and
   not real OpenDHT.
-- `stunmesh-go` itself is stubbed out (see section 8). Nothing here
-  tests `stunmesh-go`.
+- `stunmesh-go` is embedded in `stunmesh-agent` (this repository's
+  top-level `CLAUDE.md`); the one fixture with a non-empty
+  `stunmesh.yaml` uses `interfaces: {}` (see section 6), so the
+  embedded app has nothing to publish or establish and its own
+  STUN/WireGuard behavior stays untested here -- that is
+  `stunmesh-go`'s own package's job, not this harness's.
 
 ## 2. Running it locally
 
@@ -127,27 +131,31 @@ order).
   checks the injected payload landed correctly before anything runs.
   `stunmesh-agent --version` runs; the init and hotplug scripts are
   installed, executable, and byte-identical (by SHA-256) to the real
-  files under `contrib/openwrt/`; the identity key is mode 0600;
-  `/etc/config/stunmesh-agent` parses as UCI; the `stunmesh` stand-in runs and
-  logs the action it was given.
+  files under `contrib/openwrt/`; the identity key and the
+  directly-injected `config.yaml` are both mode 0600; `/etc/config/
+  stunmesh-agent` parses as UCI and its values match what was
+  injected.
 - **`phase_fetch_basic`** (`phases/phase-fetch-basic.sh`) -- the
-  first real fetch: publishes one interface with one peer, fetches it,
-  and reads back `wg show`, `ubus call network.interface.wg0 status`
-  and the `uci` sections it should have created, plus `last.json`'s
-  path and mode (0600). A second fetch of the same bundle exits 3 (no
-  change) and leaves `/etc/config/network`, `last.json` and the
-  `stunmesh` stand-in's action log byte-identical.
+  first real `--oneshot` run: publishes one interface with one peer,
+  runs it, and reads back `wg show`, `ubus call
+  network.interface.wg0 status` and the `uci` sections it should have
+  created, plus `last.json`'s path and mode (0600). `--oneshot`
+  always exits 0 (cli.go's `ExitOK` doc comment); a second run against
+  the same bundle also exits 0 and leaves `/etc/config/network` and
+  `last.json` byte-identical, proving it changed nothing.
 - **`phase_diff_removal`** (`phases/phase-diff-removal.sh`) --
-  publishes and fetches four bundle revisions on the same guest: (v1)
-  a two-interface baseline; (v2) only `wg1`'s peer key changes, wg0
-  untouched -- checks that the apply pipeline (`network reload`
-  followed by `ifup wg1`) pushes the new peer into the kernel, and
-  that `wg0`'s netdev (by its unchanged `ifindex`) was not restarted;
-  (v3) `wg1` removed from the bundle -- checks its UCI sections and kernel
-  netdev are both gone, `wg0` still untouched; (v4) full teardown --
-  checks every agent-created UCI section and netdev is gone, the
-  `stunmesh` stand-in was told `stop`, and a UCI section this phase
-  added by hand (never recorded in the agent's `last.json`) survives.
+  publishes and applies four bundle revisions on the same guest: (v1)
+  a two-interface baseline, its non-empty `stunmesh` text making the
+  agent write `/etc/stunmesh/config.yaml`; (v2) only `wg1`'s peer key
+  changes, wg0 untouched -- checks that the apply pipeline (`network
+  reload` followed by `ifup wg1`) pushes the new peer into the kernel,
+  and that `wg0`'s netdev (by its unchanged `ifindex`) was not
+  restarted; (v3) `wg1` removed from the bundle -- checks its UCI
+  sections and kernel netdev are both gone, `wg0` still untouched;
+  (v4) full teardown -- checks every agent-created UCI section and
+  netdev is gone, `/etc/stunmesh/config.yaml` is gone, and a UCI
+  section this phase added by hand (never recorded in the agent's
+  `last.json`) survives.
 - **`phase_routes`** (`phases/phase-routes.sh`) -- publishes a bundle
   with `route_allowed_ips: false` and an explicit `routes:` list.
   Checks the kernel's main routing table for `wg0` holds exactly the
@@ -158,37 +166,35 @@ order).
   PLAN.md 2.7), then publishes a second revision that forces `wg0`'s
   own UCI sections to be deleted and recreated. Checks the hand-added
   zone, and its reference to `wg0`, survive untouched.
-- **`phase_cron_line`** (`phases/phase-cron.sh`) -- `service
-  stunmesh-agent start` installs a tagged cron line using
-  `fetch_interval` from `/etc/config/stunmesh-agent`, leaves a foreign
-  crontab line alone, and a real `crond` picks up the new file
-  (checked via a fresh `crond (busybox...` syslog line). A repeated
-  `start` leaves exactly one managed line, never two. `stop` removes
-  the managed line, leaves the foreign one, and the crontab file's
-  mode survives every rewrite.
-- **`phase_hotplug_wan_ifup`** (`phases/phase-hotplug.sh`) -- defines
-  two bridge-backed logical interfaces (`wan`, `testif`) with no real
-  hardware behind them, then fires real `ifup`/`ifdown` through the
-  real tools. A real `ifup wan` runs exactly one hotplug-triggered
-  fetch (counted via a `hotplug fetch` syslog line the hotplug script
-  alone logs); `ifdown wan` and `ifup testif` run none.
+- **`phase_daemon`** (`phases/phase-daemon.sh`) -- `/etc/init.d/
+  stunmesh-agent start` hands the process to procd; checks it is
+  actually running (by pid), that it regenerated `config.yaml` from
+  UCI at mode 0600, and that its own first cycle applied a published
+  fixture. `reload` regenerates `config.yaml` and restarts the process
+  (a new pid); `stop` leaves no process behind.
+- **`phase_hotplug_wan_ifup`** (`phases/phase-hotplug.sh`) -- starts
+  the daemon service, then defines two bridge-backed logical
+  interfaces (`wan`, `testif`) with no real hardware behind them and
+  fires real `ifup`/`ifdown` through the real tools. A real `ifup wan`
+  restarts the daemon exactly once (a new pid, and one matching
+  syslog line from `hotplug-iface`); `ifdown wan` and `ifup testif`
+  restart it not at all (same pid).
 - **`phase_lock_overlap`** (`phases/phase-lock.sh`) -- launches two
-  real `stunmesh-agent fetch` processes in the guest, staggered by 1s,
-  against a second fake dhtproxy instance that deliberately delays its
-  GET so the two overlap for real. Checks exactly one of the two logs
-  the lock-contention message, only the winner's action reaches the
-  `stunmesh` stand-in, and the winner's bundle reaches the kernel.
+  real `stunmesh-agent --oneshot` processes in the guest, staggered by
+  1s, against a second fake dhtproxy instance that deliberately delays
+  its GET so the two overlap for real. Checks exactly one of the two
+  logs the lock-contention message, and the winner's bundle reaches
+  the kernel.
 - **`phase_reboot_uci_persistence`** (`phases/phase-reboot.sh`) --
-  applies a known-good bundle, stops the fake dhtproxy entirely (so no
-  boot-delay fetch, cron line or hotplug event could possibly reach
-  it), reboots the guest for real, and checks `wg0` is back up with
-  the same key and peer, `/etc/config/network` is byte-identical
-  across the reboot, and the `stunmesh` stand-in's action log --
-  written to tmpfs, so it cannot survive by accident -- is absent,
-  proving no agent code ran. It runs last: a real guest reboot costs
-  about 24s, more than every other phase combined, and leaves the
-  guest freshly booted -- a poor starting point for any phase after
-  it.
+  applies a known-good bundle, stops the fake dhtproxy and the daemon
+  service entirely (so nothing could possibly reach it), reboots the
+  guest for real, and checks `wg0` is back up with the same key and
+  peer, `/etc/config/network` is byte-identical across the reboot, and
+  no `stunmesh-agent` process is running and no `stunmesh-agent` line
+  appears in the syslog since boot, proving no agent code ran. It runs
+  last: a real guest reboot costs about 24s, more than every other
+  phase combined, and leaves the guest freshly booted -- a poor
+  starting point for any phase after it.
 
 ## 6. Fixtures and the fake proxy
 
@@ -209,6 +215,13 @@ thing about the agent's `uci`/`ubus` calls without needing one.
 `fixtures/empty/` is the one plain (non-template) fixture: `wg: {}`,
 the teardown bundle used both as the very first published state and
 by `phase_diff_removal`'s teardown step.
+
+`fixtures/reload-removal/stunmesh.yaml` is the one fixture with a
+non-empty `stunmesh.yaml`: `interfaces: {}`, a legitimate
+`stunmesh-go` config with no interfaces, so the embedded app it makes
+the agent run has nothing to publish or establish and returns quickly,
+with no dependency on real STUN or network reachability from the
+guest.
 
 `fakeproxy/` (`main.go`) is a minimal stand-in for a real `dhtproxy`
 instance. It speaks the same wire shape `internal/dhtproxy.Client`
@@ -305,11 +318,12 @@ single function in isolation:
   `lan` on DHCP instead, before first boot, which lands the guest in
   QEMU's own `10.0.2.0/24` network that a plain `hostfwd` already
   reaches.
-- **`stunmesh-go` is stubbed, not built or installed.** The injected
-  `/etc/init.d/stunmesh` is a two-line stand-in that logs whatever
-  action it was called with and always exits 0. What is under test
-  here is whether `stunmesh-agent` calls it at the right moments with
-  the right action, never `stunmesh-go` itself.
+- **`stunmesh-go` is embedded in `stunmesh-agent`, not stubbed.**
+  `fixtures/reload-removal/stunmesh.yaml`'s `interfaces: {}` keeps the
+  embedded app's own run fast and network-free (see section 6): what
+  is under test here is whether `stunmesh-agent` writes and removes
+  `/etc/stunmesh/config.yaml` at the right steps, never `stunmesh-go`'s
+  own STUN/WireGuard behavior.
 - **`-accel kvm` is hardcoded and never falls back to TCG.** A TCG
   boot is slow enough to hide the timing-sensitive `uci`/`ubus`/
   `netifd` races this harness exists to catch, so a silent fallback

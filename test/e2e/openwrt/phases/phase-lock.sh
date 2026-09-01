@@ -22,10 +22,10 @@
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY, FAKEPROXY_HOST_URL and FAKEPROXY_BIN, all set by
-# run.sh or lib.sh before any phase runs. Self-contained like every
-# other phase (see run.sh's own doc comment): it does not assume any
-# other phase already ran or already applied wg0.
+# FAKEPROXY_HOST_URL and FAKEPROXY_BIN, all set by run.sh or lib.sh
+# before any phase runs. Self-contained like every other phase (see
+# run.sh's own doc comment): it does not assume any other phase
+# already ran or already applied wg0.
 set -euo pipefail
 
 # lockGetDelay must comfortably exceed the stagger between launching
@@ -62,7 +62,7 @@ render_lock_fixture() {
 }
 
 phase_lock_overlap() {
-	local delayed_fetch_cmd before_actions after_actions locked_count
+	local delayed_fetch_cmd lock_config locked_count
 
 	render_lock_fixture
 	start_delayed_fake_proxy "$LOCK_FAKEPROXY_PORT" "$LOCK_GET_DELAY"
@@ -76,9 +76,9 @@ phase_lock_overlap() {
 	publish_fixture "$LOCK_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 	point_proxies_at "$E2E_NAMESPACE" "$FAKEPROXY_HOST_URL"
 
-	delayed_fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${DELAYED_FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
-
-	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log" 0)
+	lock_config="/etc/stunmesh/agent/config-lock.yaml"
+	write_guest_config "$lock_config" "$DELAYED_FAKEPROXY_GUEST_URL"
+	delayed_fetch_cmd="/usr/sbin/stunmesh-agent --oneshot --config ${lock_config}"
 
 	# The real overlap: one guest_exec, one shell, one fetch backgrounded
 	# and a second launched 1s later while the first is still asleep
@@ -101,11 +101,11 @@ phase_lock_overlap() {
 
 	# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
 	# guest_capture for why a failed read here must not abort the
-	# harness under `set -e`. FALLBACK "0": like before_actions/
-	# after_actions above, this is a count, and 0 is the real,
-	# meaningful "no lockout observed" value -- the assert_equal below
-	# then reports it as a count that is wrong (0 instead of 1), not as
-	# a silent abort. The remote pipeline itself needs no `|| true`:
+	# harness under `set -e`. FALLBACK "0": this is a count, and 0 is
+	# the real, meaningful "no lockout observed" value -- the
+	# assert_equal below then reports it as a count that is wrong (0
+	# instead of 1), not as a silent abort. The remote pipeline itself
+	# needs no `|| true`:
 	# its last command is awk, which exits 0 whether or not grep found
 	# a match, so guest_exec's own exit status already never reflects
 	# grep's "no match" case.
@@ -113,10 +113,6 @@ phase_lock_overlap() {
 		"grep -c 'already locked by another instance, exiting' /tmp/lock-a.out /tmp/lock-b.out | awk -F: '{s+=\$2} END {print s}'" 0)
 	assert_equal "exactly one of the two overlapping fetches was locked out" \
 		"$locked_count" "1"
-
-	after_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log" 0)
-	assert_equal "only the winner reached apply: the stunmesh stand-in ran exactly once, not twice" \
-		"$((after_actions - before_actions))" "1"
 
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 	assert_ssh_output_contains "the winner's own bundle reached the kernel (the loser never got this far)" \
