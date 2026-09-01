@@ -63,14 +63,14 @@ phase_daemon() {
 		"/etc/init.d/stunmesh-agent start"
 	# start_service hands the process to procd, which forks it; the
 	# daemon's own first cycle (fetch, decrypt, apply) then needs a
-	# moment to reach the kernel, the same as every other phase's
-	# post-fetch sleep.
-	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
+	# moment to reach the kernel. wait_for_pgrep polls for the pid
+	# instead of sleeping a fixed amount and reading once, since procd
+	# gives no fixed deadline for "forked and past its first cycle"
+	# (lib.sh's wait_for_pgrep doc comment).
+	pid_after_start=$(wait_for_pgrep "$SSH_PORT" "$SSH_KEY" "stunmesh-agent")
 
 	assert_ssh_ok "procd reports the service running" \
 		"/etc/init.d/stunmesh-agent running"
-	pid_after_start=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
-	[[ -n "$pid_after_start" ]] || die "No stunmesh-agent pid after start; cannot use it as restart evidence below."
 
 	# config.yaml was regenerated from UCI, not just left over from
 	# run.sh's own direct injection (lib.sh's inject_guest_files writes
@@ -88,10 +88,9 @@ phase_daemon() {
 
 	assert_ssh_ok "/etc/init.d/stunmesh-agent reload exits 0" \
 		"/etc/init.d/stunmesh-agent reload"
-	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
+	pid_after_reload=$(wait_for_pgrep "$SSH_PORT" "$SSH_KEY" "stunmesh-agent" 10 1 "$pid_after_start")
 	assert_ssh_ok "procd reports the service running after reload" \
 		"/etc/init.d/stunmesh-agent running"
-	pid_after_reload=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	assert_ssh_ok "reload restarted the daemon (new pid)" \
 		"[ '${pid_after_reload}' != '${pid_after_start}' ] && [ -n '${pid_after_reload}' ]"
 
