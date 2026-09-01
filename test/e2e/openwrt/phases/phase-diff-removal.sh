@@ -113,6 +113,31 @@ ifindex_of() {
 		"cat /sys/class/net/${iface}/ifindex 2>/dev/null || echo absent"
 }
 
+# daemon_cycle_apply DESC -- applies whatever fixture is currently
+# published by running exactly one forceAll=false cycle: start the
+# daemon (procd forks it, its startup cycle runs immediately -- see
+# daemon.go's runDaemon, "runCycle(false, true)"), give it a moment to
+# reach the kernel, then stop it. Checks 3 and 4 below need this
+# instead of "stunmesh-agent --oneshot": --oneshot always calls
+# runFetchApply with forceAll=true (cli.go's ExitOK doc comment,
+# daemon.go's runOneshot doc comment -- "always a full apply, ignoring
+# last.json's diff"), which reclassifies every interface present in
+# both the bundle and last.json as InterfaceChanged even when its
+# content did not change (fetch_diff.go's computeDiff), so wg0 would
+# get deleted, recreated, and ifup'd right along with wg1 on every
+# --oneshot call, making an "unchanged ifindex" claim meaningless. The
+# daemon's own startup cycle is the only CLI-reachable forceAll=false
+# path, so it is the one that can actually prove wg0 was left alone.
+daemon_cycle_apply() {
+	local desc="$1"
+	assert_ssh_ok "${desc}: daemon start applies the published fixture (exit 0)" \
+		"/etc/init.d/stunmesh-agent start"
+	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
+	assert_ssh_ok "${desc}: daemon stop exits 0" \
+		"/etc/init.d/stunmesh-agent stop"
+	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 1" || true
+}
+
 phase_diff_removal() {
 	local fetch_cmd
 	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
@@ -155,15 +180,14 @@ phase_diff_removal() {
 	# --- v2: only wg1's peer changes; wg0 is untouched byte-for-byte --
 	render_two_iface_bundle "$rendered" "$diff_removal_wg1_peer_b_pubkey"
 	publish_fixture "$rendered" "$E2E_NAMESPACE" "$E2E_NODE_ID"
-	assert_ssh_exit_code "v2: fetch applies wg1's changed peer (exit 0)" "$fetch_cmd" 0
-	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
+	daemon_cycle_apply "v2"
 
 	# Check 1 (stage5 checklist item 8, PLAN.md 6): does the apply
 	# pipeline -- "ubus call network reload" followed by an explicit
 	# "ifup wg1" (fetch_apply.go's applyDiff step 4,
 	# ifupChangedInterfaces) -- make the kernel pick up wg1's new
-	# peer? The SSH command above runs "stunmesh-agent fetch" once,
-	# which always performs both steps together; it cannot isolate the
+	# peer? The daemon's own startup cycle runs both steps together
+	# (applyDiff), the same as --oneshot does; it cannot isolate the
 	# reload from the ifup that follows it. This is read straight off
 	# wg show, not inferred from exit codes: fetch_apply.go's reload
 	# call always exits 0 regardless of what netifd/wg actually did
@@ -189,8 +213,7 @@ phase_diff_removal() {
 	# --- v3: wg1 removed from the bundle; wg0 untouched ---------------
 	render_wg0_only_bundle "$rendered"
 	publish_fixture "$rendered" "$E2E_NAMESPACE" "$E2E_NODE_ID"
-	assert_ssh_exit_code "v3: fetch applies wg1's removal (exit 0)" "$fetch_cmd" 0
-	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
+	daemon_cycle_apply "v3"
 
 	# Check 2 (stage5 checklist item 9): the deleted UCI section must
 	# actually take the kernel interface down, not just vanish from

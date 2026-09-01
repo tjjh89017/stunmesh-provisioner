@@ -110,7 +110,7 @@ phase_hotplug_wan_ifup() {
 	assert_ssh_ok "the daemon is running before any hotplug event" \
 		"/etc/init.d/stunmesh-agent running"
 
-	pid_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	pid_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	[[ -n "$pid_before" ]] || die "No stunmesh-agent pid before the hotplug event; cannot use it as restart evidence below."
 
 	before=$(hotplug_restart_count)
@@ -119,7 +119,7 @@ phase_hotplug_wan_ifup() {
 	after=$(hotplug_restart_count)
 	assert_hotplug_delta "a real 'ifup wan' event logged exactly one restart" \
 		"$before" "$after" "1"
-	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	assert_ssh_ok "'ifup wan' actually restarted the daemon (new pid)" \
 		"[ '${pid_after}' != '${pid_before}' ] && [ -n '${pid_after}' ]"
 
@@ -130,7 +130,7 @@ phase_hotplug_wan_ifup() {
 	after=$(hotplug_restart_count)
 	assert_hotplug_delta "'ifdown wan' (ACTION != ifup) logged no restart" \
 		"$before" "$after" "0"
-	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	assert_equal "'ifdown wan' did not actually restart the daemon (same pid)" \
 		"$pid_after" "$pid_before"
 

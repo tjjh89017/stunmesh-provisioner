@@ -86,7 +86,7 @@ phase_reboot_uci_persistence() {
 		true" \
 		|| true
 	assert_ssh_ok "no stunmesh-agent process survives into the reboot" \
-		"! pgrep -f /usr/sbin/stunmesh-agent"
+		"! pgrep -x stunmesh-agent"
 
 	# guest_capture, not a plain `var=$(guest_exec ...)`: see
 	# phase-fetch-basic.sh's identical comment on the same pattern, and
@@ -125,7 +125,7 @@ phase_reboot_uci_persistence() {
 	# service was never enabled, and nothing else on the box invokes
 	# the binary.
 	assert_ssh_ok "no stunmesh-agent process is running after the reboot (no agent run)" \
-		"! pgrep -f /usr/sbin/stunmesh-agent"
+		"! pgrep -x stunmesh-agent"
 	assert_ssh_ok "the syslog carries no stunmesh-agent line since boot (no agent run)" \
 		"! logread | grep -q stunmesh-agent"
 

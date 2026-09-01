@@ -49,8 +49,15 @@ phase_daemon() {
 	render_daemon_fixture
 	publish_fixture "$DAEMON_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 
+	# "-x" (match by process name), not "-f" (match by full command
+	# line): "-f /usr/sbin/stunmesh-agent" self-matches the very ssh
+	# "sh -c '...pgrep -f /usr/sbin/stunmesh-agent...'" invocation
+	# running the check, since that shell's own cmdline contains the
+	# pattern as a substring. That false match makes every one of
+	# these checks fail unconditionally, whether or not the daemon is
+	# actually running.
 	assert_ssh_ok "no stunmesh-agent process is running before the test" \
-		"! pgrep -f /usr/sbin/stunmesh-agent"
+		"! pgrep -x stunmesh-agent"
 
 	assert_ssh_ok "/etc/init.d/stunmesh-agent start exits 0" \
 		"/etc/init.d/stunmesh-agent start"
@@ -62,7 +69,7 @@ phase_daemon() {
 
 	assert_ssh_ok "procd reports the service running" \
 		"/etc/init.d/stunmesh-agent running"
-	pid_after_start=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	pid_after_start=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	[[ -n "$pid_after_start" ]] || die "No stunmesh-agent pid after start; cannot use it as restart evidence below."
 
 	# config.yaml was regenerated from UCI, not just left over from
@@ -84,7 +91,7 @@ phase_daemon() {
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
 	assert_ssh_ok "procd reports the service running after reload" \
 		"/etc/init.d/stunmesh-agent running"
-	pid_after_reload=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	pid_after_reload=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -x stunmesh-agent" "")
 	assert_ssh_ok "reload restarted the daemon (new pid)" \
 		"[ '${pid_after_reload}' != '${pid_after_start}' ] && [ -n '${pid_after_reload}' ]"
 
@@ -92,5 +99,5 @@ phase_daemon() {
 		"/etc/init.d/stunmesh-agent stop"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 1" || true
 	assert_ssh_ok "no stunmesh-agent process is running after stop" \
-		"! pgrep -f /usr/sbin/stunmesh-agent"
+		"! pgrep -x stunmesh-agent"
 }
