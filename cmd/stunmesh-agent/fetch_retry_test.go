@@ -121,15 +121,15 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 
 	const namespace, nodeID = "retry-ns", "retry-node"
 	cfg := &Config{
-		Namespace:          namespace,
-		NodeID:             nodeID,
-		ControllerPubkey:   controllerPub.String(),
-		Backend:            "dhtproxy",
-		Proxies:            []string{proxy.srv.URL},
-		IdentityKeyPath:    keyPath,
-		LastPath:           filepath.Join(dir, "last.json"),
-		LockPath:           filepath.Join(dir, "agent.lock"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		Namespace:        namespace,
+		NodeID:           nodeID,
+		ControllerPubkey: controllerPub.String(),
+		Backend:          "dhtproxy",
+		Proxies:          []string{proxy.srv.URL},
+		IdentityKeyPath:  keyPath,
+		LastPath:         filepath.Join(dir, "last.json"),
+		LockPath:         filepath.Join(dir, "agent.lock"),
+		Stunmesh:         StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 
 	publish := func(t *testing.T, plain []byte) {
@@ -147,7 +147,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 		env := newEnv(strings.NewReader(""), &stdout, &stderrBuf)
 		env.HTTPClient = proxy.srv.Client()
 		env.Runner = runner
-		code = doFetch(env, cfg)
+		code = runFetchApplyForTest(env, cfg, false)
 		return code, runner.Calls(), stderrBuf.String()
 	}
 
@@ -266,15 +266,15 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 
 	const namespace, nodeID = "retry-create-ns", "retry-create-node"
 	cfg := &Config{
-		Namespace:          namespace,
-		NodeID:             nodeID,
-		ControllerPubkey:   controllerPub.String(),
-		Backend:            "dhtproxy",
-		Proxies:            []string{proxy.srv.URL},
-		IdentityKeyPath:    keyPath,
-		LastPath:           filepath.Join(dir, "last.json"),
-		LockPath:           filepath.Join(dir, "agent.lock"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		Namespace:        namespace,
+		NodeID:           nodeID,
+		ControllerPubkey: controllerPub.String(),
+		Backend:          "dhtproxy",
+		Proxies:          []string{proxy.srv.URL},
+		IdentityKeyPath:  keyPath,
+		LastPath:         filepath.Join(dir, "last.json"),
+		LockPath:         filepath.Join(dir, "agent.lock"),
+		Stunmesh:         StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 
 	publish := func(t *testing.T, plain []byte) {
@@ -292,7 +292,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 		env := newEnv(strings.NewReader(""), &stdout, &stderrBuf)
 		env.HTTPClient = proxy.srv.Client()
 		env.Runner = runner
-		code = doFetch(env, cfg)
+		code = runFetchApplyForTest(env, cfg, false)
 		return code, runner.Calls(), stderrBuf.String()
 	}
 
@@ -346,7 +346,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 	newIface := testInterface(t, wg0)
 	want := uciClearListCalls(uci.ListOptions("wg0", newIface))
 	want = append(want, uciCalls(uci.BuildInterface("wg0", newIface))...)
-	want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
+	want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"))
 	if !reflect.DeepEqual(calls2, want) {
 		t.Fatalf("run 2 (retry) Calls() =\n%+v\nwant\n%+v", calls2, want)
 	}

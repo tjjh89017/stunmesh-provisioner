@@ -1,128 +1,162 @@
 # stunmesh-provisioner OpenWrt scripts
 
-The first two files are the OpenWrt integration for `stunmesh-agent`
-(`PLAN.md` section 3 and M4); the third is an optional init script for
-the controller, `stunmesh-provd` (see section 7). The
-`stunmesh-openwrt` package repository copies all three from a release
-tarball; this repository does not build an OpenWrt package (`PLAN.md`
-M6).
+Four files here are the OpenWrt integration; a fifth is an optional
+init script for the controller, `stunmesh-provd`. The `stunmesh-openwrt`
+package repository copies all five from a release tarball; this
+repository does not build an OpenWrt package.
 
 - `stunmesh-agent.init` -- installs to `/etc/init.d/stunmesh-agent`.
+  procd service for `stunmesh-agent` (the daemon, default mode).
+- `stunmesh-only.init` -- installs to `/etc/init.d/stunmesh-only`.
+  procd service for `stunmesh-agent --stunmesh-only`. Disabled by
+  default; see "Two services, pick one" below.
 - `hotplug-iface` -- installs to `/etc/hotplug.d/iface/95-stunmesh-agent`.
 - `stunmesh-provd.init` -- installs to `/etc/init.d/stunmesh-provd`.
+- `tests/` -- shell tests for `stunmesh-agent.init` and `hotplug-iface`,
+  run with no VM (see "Tests" below).
 
-## 1. `stunmesh-agent` is not a daemon
+## 1. `stunmesh-agent` is a daemon
 
-`stunmesh-agent fetch` runs once and exits (`PLAN.md` section 5). It is
-cron-driven, the same as any OpenWrt one-shot maintenance task.
-`stunmesh-agent.init` reflects this on purpose:
+`stunmesh-agent` is a long-running process, not a cron-driven one-shot
+command any more (see this repository's top-level `CLAUDE.md`). Its
+default mode -- no flags beyond `--config-dir`/`--config` -- fetches,
+decrypts, checks, and applies once at start, then keeps running: it
+ticks on its own `refresh_interval` (a normal cycle) and
+`full_apply_interval` (a periodic full re-apply), both read from
+`config.yaml`. There is no more cron integration, and no more exit
+code 3 for "nothing changed" -- see this repository's top-level
+`CLAUDE.md` for the exit code table.
 
-- It never calls `procd_open_instance`. If it did, procd would manage
-  `stunmesh-agent fetch` as a supervised service and would treat every
-  normal exit as a crash to recover from, restarting it in a tight
-  loop.
-- `start()` runs one fetch in the background, after `option
-  boot_delay` seconds, and installs a cron line built from `option
-  fetch_interval`.
-- `stop()` removes that cron line. Nothing else needs to stop: every
-  fetch has already exited by the time `stop()` runs.
-- A repeated `start()` (for example `service stunmesh-agent restart`)
-  removes any cron line it installed before adding the new one. The
-  crontab never ends up with two lines for `stunmesh-agent`.
+`stunmesh-agent.init` reflects this:
+
+- It calls `procd_open_instance` and `procd_set_param respawn`: procd
+  supervises the process and restarts it if it exits unexpectedly, the
+  normal shape for a daemon.
+- `start_service` first (re)generates `/etc/stunmesh/agent/config.yaml`
+  from UCI (`write_config`), then hands the command line to procd. A
+  node with no `/etc/config/stunmesh-agent`, or a `main` section
+  missing a required option, is treated as "not provisioned yet":
+  `write_config` returns 1, and `start_service` returns 0 without
+  ever opening a procd instance -- calm and quiet, not an error.
+- There is no `reload_signal`: `stunmesh-agent` has no SIGHUP handler
+  in any mode. `/etc/init.d/stunmesh-agent reload` (`reload_service`)
+  regenerates `config.yaml` from the current UCI state and then
+  restarts the process outright (the default rc.common `restart`,
+  stop then start). The daemon's own startup already does "read
+  config.yaml, run one cycle immediately", so a restart already is
+  the reload an operator wants.
+- There is no `boot_delay` any more. A cycle that fails at startup
+  (WAN not up yet, dhtproxy unreachable) is logged and retried on the
+  next `refresh_interval` tick, not fatal -- the daemon's own retry
+  loop already covers what a fixed boot delay used to work around, so
+  reintroducing one here would only add a fixed wait with no benefit.
 - `/etc/init.d/stunmesh-agent enable|disable` -- the standard
-  rc.common mechanism -- controls whether `start()` runs at boot at
-  all. No separate UCI "enabled" option is needed for that.
-
-Exit code 3 (`PLAN.md` section 5: no change) is success, not failure.
-Both scripts log it as "no change" and never treat it as an error.
+  rc.common mechanism -- controls whether the service starts at boot
+  at all.
 
 ## 2. `/etc/config/stunmesh-agent`
 
-Both scripts read the `main` section of `/etc/config/stunmesh-agent`
-(`PLAN.md` section 3):
+`stunmesh-agent.init` reads the `main` section, plus one
+`stunmesh-agent-plugin` section per backend plugin a deployment
+configures:
 
 ```
 config stunmesh-agent 'main'
     option namespace                  'mymesh-7f3a'
     option node_id                    'alpha'
     option controller_pubkey          '...'
-    list   proxy                      'https://dhtproxy2.jami.net'
-    list   proxy                      'https://dhtproxy3.jami.net'
-    option private_key_file           '/etc/stunmesh/agent/identity.key'
-    option boot_delay                 '15'
-    option fetch_interval             '5'
-    option full_apply_interval_hours  '24'
-    option lock_file                  '/var/lock/stunmesh-agent.lock'
-    option backend                    'dhtproxy'
+    option use_plugin                 'mydht'
+    option refresh_interval           '5m'
+    option full_apply_interval        '24h'
+    option identity_key               '/etc/stunmesh/agent/identity.key'
+    option last                       '/etc/stunmesh/agent/last.json'
+    option lock                       '/var/lock/stunmesh-agent.lock'
+
+config stunmesh-agent-plugin 'mydht'
+    option type    'dhtproxy'
+    list  proxies  'https://dhtproxy2.jami.net'
+    list  proxies  'https://dhtproxy3.jami.net'
 ```
 
-| UCI option | stunmesh-agent flag | Required |
+Every UCI option name is the same as its `config.yaml` key: this
+mapping is purely mechanical, `option` for a scalar and `list` for an
+array, with no renaming in either direction. There is only `list
+proxies` (plural) inside a `stunmesh-agent-plugin` section -- no `list
+proxy` (singular): that was the old, retired UCI option name from the
+cron-driven agent, and it no longer exists.
+
+| UCI option (`main`) | `config.yaml` key | Required |
 |---|---|---|
-| `namespace` | `--namespace` | yes |
-| `node_id` | `--node-id` | yes |
-| `controller_pubkey` | `--controller-pubkey` | yes |
-| `proxy` (list) | `--proxy` (repeated, once per entry) | no -- falls back to the binary's built-in default list when the section has none |
-| `private_key_file` | `--identity-key` | no -- defaults to `/etc/stunmesh/agent/identity.key`, the same default `stunmesh-agent keygen` writes to when it is not given `--identity-key` either |
-| `boot_delay` | sleep before the first fetch (init only) | no -- defaults to 15 |
-| `fetch_interval` | minutes between the frequent, diff-based cron runs (init only) | no -- defaults to 5 |
-| `full_apply_interval_hours` | hours between the periodic `--full-apply` cron runs (init only) | no -- defaults to 24 |
-| `lock_file` | `--lock` | no -- defaults to `/var/lock/stunmesh-agent.lock` |
-| `backend` | `--backend` | no -- omitted when unset, so the binary's own default (`dhtproxy`) applies |
+| `namespace` | `namespace` | yes |
+| `node_id` | `node_id` | yes |
+| `controller_pubkey` | `controller_pubkey` | yes |
+| `use_plugin` | `use_plugin` | no -- omitted, the built-in default `dhtproxy` backend and proxy list apply |
+| `refresh_interval` | `refresh_interval` | no -- defaults to `5m` |
+| `full_apply_interval` | `full_apply_interval` | no -- defaults to `24h`; `0` disables the periodic full apply |
+| `identity_key` | `identity_key` | no -- defaults to `identity.key` alongside `config.yaml` |
+| `last` | `last` | no -- defaults to `last.json` alongside `config.yaml` |
+| `lock` | `lock` | no -- defaults to `/var/lock/stunmesh-agent.lock` |
 
-`--last` and `--stunmesh-config` are not in the UCI schema. Both
-scripts omit those flags and let `stunmesh-agent` use its own
-defaults (`/etc/stunmesh/agent/last.json` and
-`/etc/stunmesh/config.yaml`).
+| UCI option (`stunmesh-agent-plugin`) | `config.yaml` key | Required |
+|---|---|---|
+| `type` | `plugins.<name>.type` | yes (only `dhtproxy` exists) |
+| `proxies` (list) | `plugins.<name>.proxies` | yes for `dhtproxy` |
 
-The identity private key itself is never in `/etc/config/stunmesh-agent`. That
-file is mode 0644 on OpenWrt (readable by anyone on the box); only
-`private_key_file`'s *path* goes in it. The key file it points to must
+The section's own UCI name (`'mydht'` above) is the key `use_plugin`
+must name and the key under `plugins` in the rendered `config.yaml`.
+
+`stunmesh-agent.init` has no UCI option for the embedded stunmesh-go
+app's own settings (`config.yaml`'s `stunmesh:` section): that section
+is either left out entirely (the embedded app falls back to its own
+built-in search path, normally `/etc/stunmesh/config.yaml`) or written
+by hand into `config.yaml` -- there is no UCI schema for it today.
+
+The identity private key itself is never in
+`/etc/config/stunmesh-agent`. That file is mode 0644 on OpenWrt
+(readable by anyone on the box); only `identity_key`'s *path* goes in
+it. `config.yaml` itself is written at mode 0600 by `write_config`
+(it carries the same non-secret values UCI already had, but is kept
+private out of caution); the key file `identity_key` points to must
 be mode 0600, written once by `stunmesh-agent keygen`.
 
 ### Missing or incomplete configuration
 
-Both scripts treat a missing `/etc/config/stunmesh-agent`, or a `main` section
-missing `namespace`, `node_id`, or `controller_pubkey`, as "not provisioned
-yet": they log one line with
-`logger -t stunmesh-agent` and exit 0. Neither script fails, retries in
-a loop, or writes a cron line in this case. This is the state of a
-freshly flashed node before an operator has run the manual key
-exchange (`PLAN.md` 2.3, 2.7): boring and quiet, not an error.
+`write_config` treats a missing `/etc/config/stunmesh-agent`, or a
+`main` section missing `namespace`, `node_id`, or `controller_pubkey`,
+as "not provisioned yet": it logs one line with `logger -t
+stunmesh-agent` and returns 1 without writing `config.yaml`.
+`start_service` then returns 0 without starting anything. This is the
+state of a freshly flashed node before an operator has run the manual
+key exchange: boring and quiet, not an error.
 
-## 3. The cron lines
+## 3. Two services, pick one
 
-`start()` installs two independently tagged cron lines, each through
-the shared `install_cron_line` helper (tag, schedule, argument list):
+`stunmesh-agent.init` (`/etc/init.d/stunmesh-agent`) is the full
+daemon: fetch, decrypt, check, apply UCI/firewall, *and* manage the
+embedded stunmesh-go app's lifecycle as the fetched bundle's stunmesh
+text or interfaces change.
 
-- The frequent, diff-based line: `*/<fetch_interval> * * * * <bin>
-  fetch <flags>`, tagged with a fixed comment (`CRON_TAG`). `fetch`
-  does nothing (exit 3) when the newest bundle has not changed since
-  `last.json` (PLAN.md 4.5), so this line is cheap to run often.
-- The periodic full-apply line: `0 */<full_apply_interval_hours> * *
-  * <bin> fetch <flags> --full-apply`, tagged with a second, distinct
-  comment (`CRON_TAG_FULL`). `--full-apply` skips the "no change"
-  shortcut and rewrites every apply step (PLAN.md 6) -- UCI, both
-  commits, both reloads, `ifup`, the stunmesh config file, and
-  `last.json` -- even when nothing changed, so the node's actual state
-  converges back to what the bundle says on a fixed schedule
-  regardless of whether any diff-based fetch in between happened to
-  see a real change. It exists at the Go binary level as
-  `stunmesh-agent fetch --full-apply`; only the 24-hour default
-  schedule and its UCI knob live here.
+`stunmesh-only.init` (`/etc/init.d/stunmesh-only`) runs `stunmesh-agent
+--stunmesh-only`: only the embedded stunmesh-go app, reading its own
+`config.yaml` `stunmesh:` section (or the built-in defaults, since
+`config.yaml` is optional in this mode). No fetch, no DHT, no UCI, no
+`last.json`.
 
-Each line's tag is a literal, fixed comment appended to it, so
-removing or replacing one line by its tag never touches the other.
-Both installs nudge `crond` with `/etc/init.d/cron reload` so the new
-schedule takes effect at once instead of waiting for crond's own poll
-interval. `stop()` removes both tagged lines the same way.
+A deployment enables exactly one of the two. Running both would start
+two stunmesh-go instances against the same config file. Neither script
+checks for that mistake: `stunmesh-only.init` is **not** enabled by
+this script, and the package that installs it must not call `enable`
+on it either -- an operator who wants stunmesh-go without this
+repository's fetch/apply pipeline enables it explicitly:
 
-None of the values written into either cron line are secret:
-`controller_pubkey` is a public key, and `private_key_file` is only a
-path. The key material itself never appears in the crontab, in a log
-line, or on a command line that another process on the box could read
-from `/proc`.
+```
+/etc/init.d/stunmesh-only enable
+/etc/init.d/stunmesh-only start
+```
 
-## 4. Hotplug: which events run a fetch
+and leaves `/etc/init.d/stunmesh-agent` disabled.
+
+## 4. Hotplug: which events restart the daemon
 
 `hotplug-iface` runs on every interface hotplug event OpenWrt fires,
 so it must filter hard:
@@ -133,60 +167,62 @@ so it must filter hard:
   is up, `stunmesh-agent` can already reach the dhtproxy over
   whichever address family is available.
 
+On a match, it restarts `stunmesh-agent` -- `/etc/init.d/stunmesh-agent
+restart` -- but only when the service is already running (`/etc/init.d/stunmesh-agent
+running`, an rc.common command procd's `USE_PROCD=1` provides): a
+node with no `/etc/config/stunmesh-agent` yet, or with the service
+deliberately disabled or stopped, is left alone. `stunmesh-agent` has
+no SIGHUP handler, so a restart -- which makes the daemon reread
+`config.yaml` and run one cycle immediately, the same as any other
+startup -- is the trigger, not a signal.
+
 If a deployment's WAN logical interface is not named `wan`, this
 script needs its interface name changed (or made configurable) before
-it will trigger. `PLAN.md`'s UCI schema (section 3) has no option for
-this yet; a deployment with a non-default WAN name is a case for the
-`stunmesh-openwrt` packaging repository to resolve, not this
-repository.
-
-`stunmesh-agent`'s own `--lock` file is the only thing that keeps this
-hotplug-triggered fetch from overlapping a cron-triggered one; a
-second instance that loses the lock exits 0 with one log line
-(`PLAN.md` section 5, stage 3 item 2), so no separate locking is added
-here.
+it will trigger. There is no UCI option for this yet; a deployment
+with a non-default WAN name is a case for the `stunmesh-openwrt`
+packaging repository to resolve, not this repository.
 
 ## 5. Shell dialect
 
-Both scripts target BusyBox ash (OpenWrt's `/bin/sh`), not bash: no
+Every script targets BusyBox ash (OpenWrt's `/bin/sh`), not bash: no
 arrays, no `[[ ]]`, no `local` outside of what ash itself supports
 (ash's `local` is fine; POSIX `sh` in general is not guaranteed to
 have it, but BusyBox ash does), no `function` keyword, no
 process substitution, no `$'...'` strings. `set -- ...` and `"$@"`
-build each command's argument list, since ash has no arrays; this
-also avoids the word-splitting bugs a plain string of flags would
-have if a value ever contained a space. Checked with
-`shellcheck -s dash`.
+build an argument list where one is needed, since ash has no arrays.
+Checked with `shellcheck -s dash`.
 
 ## 6. Tests
 
 `contrib/openwrt/tests/` (`run.sh`, `test_init.sh`, `test_hotplug.sh`,
-`lib.sh`) tests both scripts. `make test` (and so CI) runs
-`test-openwrt` before `go test ./...`; run it alone with
-`make test-openwrt` or `sh contrib/openwrt/tests/run.sh`.
+`lib.sh`) tests `stunmesh-agent.init` and `hotplug-iface` with no VM.
+`make test` (and so CI) runs `test-openwrt` before `go test ./...`;
+run it alone with `make test-openwrt` or `sh contrib/openwrt/tests/run.sh`.
 
 `test_init.sh` loads `stunmesh-agent.init`'s functions by sourcing a
-filtered copy with only the `. /lib/functions.sh` line removed (that
-line pulls in OpenWrt's UCI helpers, which do not exist off an
-OpenWrt device, and only `read_config` -- not tested here -- needs
-them). Every function body it tests is the real, unmodified script
-text. It covers `remove_cron`, `install_cron`, and `stop_service`:
-normal removal keeps other entries and the file mode; a missing
-crontab; an unreadable crontab; mktemp and awk failures while
-building the replacement; a failed `cp` or `mv`; a repeated start
-does not duplicate the managed line; and a stop leaves no managed
-line -- every one of those also asserts no stray temp file is left
-and the crontab is never truncated or corrupted on a failure path.
+filtered copy with only the `. /lib/functions.sh` line (and
+`CONFIG_DIR`) replaced -- OpenWrt's real `config_load`/`config_get`
+and procd's `procd_*` functions do not exist off an OpenWrt device, so
+this file supplies minimal fakes for both. Every function body it
+tests is the real, unmodified script text. It covers `write_config`'s
+rendering of every scalar and of a `use_plugin`/`plugins` entry,
+mode 0600, skipping an incomplete or absent UCI config, and
+`start_service`'s dispatch (skips procd entirely when not
+provisioned; passes `--config-dir` and `respawn` to procd otherwise).
+Every rendered `config.yaml` is parsed back with a real YAML parser
+(Python's PyYAML, skipped if unavailable) and its values checked --
+including one case with a `"` and a `\` in a UCI value, to prove
+`yaml_quote`'s escaping survives a real round trip, not just a string
+comparison against the expected escaped text.
 
 `test_hotplug.sh` runs the real, unmodified `hotplug-iface` for its
 guard clauses (only `ACTION=ifup` on `INTERFACE=wan` proceeds; every
-other event exits 0 before the script ever sources
-`/lib/functions.sh`). For the full read-config-and-dispatch path it
-uses a filtered copy with a minimal fake UCI library standing in for
-`/lib/functions.sh` and a fake `$BIN` that records its arguments; this
-proves the script reads the right option names and builds the right
-`--proxy` repeats and dispatch, not that OpenWrt's real
-`config_load`/`config_get` parse UCI syntax that way.
+other event exits 0 before the script ever touches
+`/etc/init.d/stunmesh-agent`). For the restart-dispatch path it uses a
+filtered copy pointing `$INIT` at a fake init script that records
+which subcommands (`running`, `restart`) it was called with, proving
+`hotplug-iface` restarts only when the service reports itself running,
+and does nothing when the init script is missing.
 
 Both test files run twice: once under `sh` (dash on the Debian/Ubuntu
 CI runner) and, when a `busybox` binary is on `PATH`, once under
@@ -195,10 +231,7 @@ is not installed -- the common case on a stock CI runner -- only the
 `sh` pass runs, and `run.sh` says so. Neither pass proves BusyBox
 *utility* behaviour (its `awk`, `sed`, `mktemp`, etc. can differ from
 GNU coreutils in edge cases): both prove the scripts' own control
-flow and POSIX-ish shell syntax under an ash-family shell, which is
-what an untested `remove_cron` defect actually looked like in
-practice (a `sed` delimiter collision, an unchecked `mv`) -- logic
-bugs a GNU-utility test run still catches.
+flow and POSIX-ish shell syntax under an ash-family shell.
 
 ## 7. `stunmesh-provd.init` (the controller service)
 
@@ -211,4 +244,5 @@ Reads `/etc/config/stunmesh-provd` (`dir`, default
 when the config section or the `dir` tree (provisioned with
 `stunmesh-provd init`/`node add`) is missing. Never writes to that
 tree. No test file yet -- its only real logic is the `dir`-exists
-guard in `start_service`.
+guard in `start_service`. This script is unchanged by the
+agent-embeds-stunmesh-go rework in this repository's other files.

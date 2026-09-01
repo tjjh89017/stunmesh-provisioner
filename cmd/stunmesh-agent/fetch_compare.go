@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/tjjh89017/stunmesh-provisioner/internal/bundle"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/last"
 )
@@ -64,30 +62,4 @@ func stateToBundle(state *last.State, ref *bundle.Bundle) *bundle.Bundle {
 		WG:        wg,
 		Stunmesh:  &stunmesh,
 	}
-}
-
-// applyChanges computes the diff between b and state (stage 3 item 6,
-// fetch_diff.go: computeDiff, Diff, InterfaceDiff) and hands it, along
-// with state, to applyDiff (fetch_apply.go, stage 3 item 8): the UCI
-// batch and the apply (PLAN.md 6). state is the last.json content
-// checkAndApply already read, handed forward so neither this item nor
-// applyDiff needs to read it again; applyDiff also needs state to
-// carry forward the recorded UCI sections of every unchanged
-// interface into the new last.json (see applyDiff's doc comment).
-//
-// cfg.FullApply is threaded into computeDiff unchanged: see its
-// forceAll parameter's doc comment for what it does to the
-// classification.
-func applyChanges(env *Env, cfg *Config, b *bundle.Bundle, state *last.State) int {
-	diff, err := computeDiff(b, state, cfg.FullApply)
-	if err != nil {
-		// computeDiff's only error source is bundle.Bundle.Canonical
-		// (via interfaceEqual), which never includes field values in
-		// its own errors (see internal/bundle's doc); safe to print
-		// as-is.
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: diff: %v\n", err)
-		return ExitError
-	}
-
-	return applyDiff(env, cfg, diff, state)
 }

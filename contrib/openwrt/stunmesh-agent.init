@@ -1,43 +1,32 @@
 #!/bin/sh /etc/rc.common
-# stunmesh-agent.init -- procd init script for stunmesh-agent.
+# stunmesh-agent.init -- procd service for stunmesh-agent (daemon mode).
 #
-# See contrib/openwrt/README.md for the full explanation. In short:
+# stunmesh-agent is a long-running daemon (README.md, CLAUDE.md), not a
+# cron-driven one-shot command any more: it fetches, decrypts, checks,
+# and applies once at start, then ticks on its own refresh_interval and
+# full_apply_interval (both read from config.yaml). This script's only
+# job is to (re)generate /etc/stunmesh/agent/config.yaml from UCI, then
+# hand the process to procd as a supervised, respawned instance.
 #
-# stunmesh-agent fetch is a one-shot command. It runs once and exits; it
-# is not a daemon. This script never calls procd_open_instance, so procd
-# never registers a running instance for it and never respawns it. If it
-# did, procd would see the process exit after every fetch and restart it
-# in a tight loop, because procd treats an unexpected exit of a managed
-# instance as a crash to recover from -- exactly wrong for a command
-# whose whole job is to run once and stop.
+# # No reload_signal
 #
-# Instead, this script uses cron as the recurring trigger, and installs
-# two independent cron lines, each with its own tag so remove/install
-# can find and replace exactly one of them without touching the other:
-#   - The frequent, diff-based line: "fetch" every option fetch_interval
-#     minutes (CRON_TAG). This is the normal path: fetch does nothing
-#     when the bundle has not changed (PLAN.md 4.5, exit code 3).
-#   - The periodic full-apply line: "fetch --full-apply" every option
-#     full_apply_interval_hours hours, default 24 (CRON_TAG_FULL). This
-#     skips the "no change" shortcut and rewrites every apply step
-#     (PLAN.md 6) even when nothing changed, so UCI, the firewall zone,
-#     and the stunmesh config converge back to what the bundle actually
-#     says on a fixed schedule, independent of whether any fetch in
-#     between happened to see a real change. See
-#     cmd/stunmesh-agent's Config.FullApply doc comment for why this
-#     schedule lives here and not inside the Go binary.
-#   - start() runs one diff-based fetch in the background after option
-#     boot_delay seconds, then (re)installs both cron lines, so the
-#     delayed boot fetch never blocks boot.
-#   - stop() removes both cron lines. Nothing else needs to stop: every
-#     fetch has already exited by the time stop() runs.
-#   - A repeated start() (for example "service stunmesh-agent restart")
-#     removes any existing cron line before adding the new one, so the
-#     crontab never ends up with two lines for the same tag.
+# stunmesh-agent has no SIGHUP handler: an operator-facing "reload"
+# (a UCI edit, `/etc/init.d/stunmesh-agent reload`) regenerates
+# config.yaml and restarts the process outright, through the default
+# rc.common restart() (stop then start). The daemon's own startup
+# already does "read config.yaml, run one cycle immediately", so a
+# restart already is the reload an operator wants; there is nothing a
+# signal would do that a restart does not.
 #
-# The init.d enable/disable mechanism (/etc/init.d/stunmesh-agent
-# enable|disable) controls whether start() runs at boot at all, the
-# normal rc.common behaviour. It needs nothing extra here.
+# # No boot_delay
+#
+# Earlier revisions of this script slept before the first fetch, so a
+# not-yet-up WAN link would not fail the very first attempt. The
+# daemon does not need that any more: a failed cycle at startup (no
+# route to the dhtproxy yet) is logged and retried on the next
+# refresh_interval tick, not fatal (cmd/stunmesh-agent/daemon.go's doc
+# comment on runDaemon) -- the daemon's own retry loop already covers
+# what boot_delay used to work around, so it is not reintroduced here.
 
 START=95
 STOP=10
@@ -46,278 +35,162 @@ USE_PROCD=1
 UCI_PACKAGE="stunmesh-agent"
 UCI_SECTION="main"
 BIN="/usr/sbin/stunmesh-agent"
-CRONTAB="/etc/crontabs/root"
-CRON_TAG="# stunmesh-agent: managed by /etc/init.d/stunmesh-agent, do not edit"
-CRON_TAG_FULL="# stunmesh-agent: full-apply, managed by /etc/init.d/stunmesh-agent, do not edit"
-DEFAULT_BOOT_DELAY=15
-DEFAULT_FETCH_INTERVAL=5
-DEFAULT_FULL_APPLY_INTERVAL_HOURS=24
-DEFAULT_LOCK_FILE="/var/lock/stunmesh-agent.lock"
-# Matches stunmesh-agent's own --identity-key default
-# (cmd/stunmesh-agent/config.go defaultIdentityKeyPath): keygen already
-# writes the identity key here when no --identity-key is given, so
-# leaving private_key_file unset in UCI still finds it.
-DEFAULT_PRIVATE_KEY_FILE="/etc/stunmesh/agent/identity.key"
+CONFIG_DIR="/etc/stunmesh/agent"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 
 . /lib/functions.sh
 
 # log writes one line to the system log, tagged so it is easy to find
 # with "logread | grep stunmesh-agent". It never receives a value that
-# could be a secret: callers pass fixed text only.
+# could be a secret: every caller passes fixed text only.
 log() {
 	logger -t stunmesh-agent "$1"
 }
 
-# read_config loads /etc/config/stunmesh-agent's "main" section into the shell
-# variables build_fetch_args and install_cron both need. It returns 1
-# when the file is absent or the section is missing required options;
-# callers must treat that as "not provisioned yet", not as an error.
-read_config() {
+# yaml_quote renders one scalar for use inside a YAML double-quoted
+# string ("..."), escaping backslash and double-quote (the two
+# characters double-quoted YAML style itself treats specially). Every
+# value this script writes into config.yaml -- namespace, node_id,
+# controller_pubkey, a proxy URL, a path -- goes through this, so a
+# value containing ":", "#", or any other YAML-significant character
+# is always safe inside the quotes it is wrapped in, and never
+# reinterpreted as YAML syntax.
+yaml_quote() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# yaml_scalar prints "key: \"value\"" for one config.yaml top-level
+# key, only when value is non-empty: every optional key this script
+# can emit falls back to stunmesh-agent's own default when it is
+# simply absent from config.yaml (config.go's buildConfig), so an
+# empty UCI option is rendered as "omit the key", never as an empty
+# string value.
+yaml_scalar() {
+	local key="$1" value="$2"
+	[ -n "$value" ] || return 0
+	printf '%s: "%s"\n' "$key" "$(yaml_quote "$value")"
+}
+
+# write_plugin_entry renders one "stunmesh-agent-plugin" UCI section
+# (identified by uci_name, its own section name -- UCI named sections
+# use the given name as the section id, so this is exactly the name a
+# "main" section's use_plugin option must reference) as one entry of
+# config.yaml's "plugins" map. Only "type" and "proxies" exist today
+# (docs/format.md section 3); "list proxies" is the only accepted list
+# name (no "list proxy": that was the old, retired UCI option name).
+write_plugin_entry() {
+	local uci_name="$1"
+	local type proxies
+	config_get type "$uci_name" type
+	config_get proxies "$uci_name" proxies
+
+	printf '  "%s":\n' "$(yaml_quote "$uci_name")"
+	printf '    type: "%s"\n' "$(yaml_quote "$type")"
+	if [ -n "$proxies" ]; then
+		printf '    proxies:\n'
+		local p
+		for p in $proxies; do
+			printf '      - "%s"\n' "$(yaml_quote "$p")"
+		done
+	fi
+}
+
+# write_config reads /etc/config/stunmesh-agent's "main" section (plus
+# every "stunmesh-agent-plugin" section, when "main" names one with
+# use_plugin) and writes config.yaml (mode 0600). It returns 1 (and
+# leaves any existing config.yaml untouched) when the file is absent
+# or "main" is missing a required option -- "not provisioned yet", not
+# an error; start_service treats that as "do not start" (see below),
+# the same calm-and-quiet behavior the old cron-driven script had.
+write_config() {
 	config_load "$UCI_PACKAGE" || {
 		log "no /etc/config/$UCI_PACKAGE; skipping"
 		return 1
 	}
 
+	local namespace node_id controller_pubkey use_plugin
+	local refresh_interval full_apply_interval
+	local identity_key last lock
 	config_get namespace "$UCI_SECTION" namespace
 	config_get node_id "$UCI_SECTION" node_id
 	config_get controller_pubkey "$UCI_SECTION" controller_pubkey
-	config_get private_key_file "$UCI_SECTION" private_key_file "$DEFAULT_PRIVATE_KEY_FILE"
-	config_get proxies "$UCI_SECTION" proxy
-	config_get boot_delay "$UCI_SECTION" boot_delay "$DEFAULT_BOOT_DELAY"
-	config_get fetch_interval "$UCI_SECTION" fetch_interval "$DEFAULT_FETCH_INTERVAL"
-	config_get full_apply_interval_hours "$UCI_SECTION" full_apply_interval_hours "$DEFAULT_FULL_APPLY_INTERVAL_HOURS"
-	config_get lock_file "$UCI_SECTION" lock_file "$DEFAULT_LOCK_FILE"
-	config_get backend "$UCI_SECTION" backend
+	config_get use_plugin "$UCI_SECTION" use_plugin
+	config_get refresh_interval "$UCI_SECTION" refresh_interval
+	config_get full_apply_interval "$UCI_SECTION" full_apply_interval
+	config_get identity_key "$UCI_SECTION" identity_key
+	config_get last "$UCI_SECTION" last
+	config_get lock "$UCI_SECTION" lock
 
-	if [ -z "$namespace" ] || [ -z "$node_id" ] || \
-	   [ -z "$controller_pubkey" ]; then
+	if [ -z "$namespace" ] || [ -z "$node_id" ] || [ -z "$controller_pubkey" ]; then
 		log "incomplete /etc/config/$UCI_PACKAGE (need namespace, node_id, controller_pubkey); skipping"
 		return 1
 	fi
 
-	return 0
-}
-
-# build_fetch_args sets the positional parameters ($@) to the
-# "fetch"-and-flags argument list stunmesh-agent needs, from the
-# variables read_config set. None of these values are secret: the
-# controller key is a public key, and private_key_file is only a path,
-# never the key material itself.
-build_fetch_args() {
-	set -- fetch \
-		--namespace "$namespace" \
-		--node-id "$node_id" \
-		--controller-pubkey "$controller_pubkey" \
-		--identity-key "$private_key_file" \
-		--lock "$lock_file"
-
-	if [ -n "$backend" ]; then
-		set -- "$@" --backend "$backend"
-	fi
-
-	local p
-	for p in $proxies; do
-		set -- "$@" --proxy "$p"
-	done
-
-	echo "$@"
-}
-
-# build_full_apply_args is build_fetch_args's argument list plus
-# --full-apply, appended at the end. It reuses build_fetch_args
-# rather than re-deriving the same namespace/node_id/proxy/backend
-# handling a second time, so the two argument lists can never drift
-# apart on anything but the one flag that actually differs between
-# them.
-build_full_apply_args() {
-	local fetch_args
-	fetch_args="$(build_fetch_args)"
-	echo "$fetch_args --full-apply"
-}
-
-# run_fetch runs stunmesh-agent fetch once and logs the outcome.
-# Exit code 3 (no change) is success, the same as 0 (applied, or
-# nothing to do): PLAN.md section 5 defines only these two as
-# non-failure. Only a nonzero code other than 3 is logged as an error.
-# run_fetch itself always returns 0: a failed fetch is not a failure of
-# this init script, and the next cron run or hotplug event tries again.
-run_fetch() {
-	# shellcheck disable=SC2086 # word splitting is exactly what we want here: $args is a shell argument list, not a single value
-	set -- $args
-	"$BIN" "$@" >/dev/null 2>&1
-	rc=$?
-	case "$rc" in
-		0) log "fetch applied" ;;
-		3) log "fetch: no change" ;;
-		*) log "fetch failed, exit code $rc" ;;
-	esac
-	return 0
-}
-
-# install_cron writes one cron line that runs fetch every
-# fetch_interval minutes, replacing any line this script wrote before.
-# It is install_cron_line with this script's usual (diff-based) tag,
-# schedule, and argument list; see install_cron_line for what it
-# actually does and why it takes a tag.
-install_cron() {
-	install_cron_line "$CRON_TAG" "*/$fetch_interval * * * *" "$args"
-}
-
-# install_cron_line writes one cron line under tag, replacing any line
-# this script wrote before under that same tag. Two independent calls
-# with two different tags (see install_cron and start_service's
-# full-apply line) can coexist in the same crontab without touching
-# each other, because remove_cron_tag only ever matches its own tag's
-# literal text.
-#
-# It appends only after remove_cron_tag confirms the old line under
-# tag is gone. If remove_cron_tag cannot confirm that (see its own
-# comment), appending anyway risks a second, duplicate line under that
-# tag -- so install_cron_line skips the append, logs, and returns 1
-# instead. Returns 0 once the new line is written.
-install_cron_line() {
-	local tag schedule line_args
-	tag="$1"
-	schedule="$2"
-	line_args="$3"
-
-	if ! remove_cron_tag "$tag"; then
-		log "could not confirm removal of the existing cron line; leaving crontab as-is instead of risking a duplicate"
+	mkdir -p "$CONFIG_DIR" || {
+		log "could not create $CONFIG_DIR"
 		return 1
-	fi
-
-	mkdir -p /etc/crontabs
-	echo "$schedule $BIN $line_args >/dev/null 2>&1 $tag" >> "$CRONTAB"
-	# crond notices a crontab whose mtime changed within about a
-	# minute on its own; nudge it now so a fresh install does not
-	# wait a full poll interval for its first scheduled run.
-	/etc/init.d/cron reload >/dev/null 2>&1
-	return 0
-}
-
-# remove_cron deletes only the line install_cron wrote under CRON_TAG.
-# It is remove_cron_tag with this script's usual (diff-based) tag; see
-# remove_cron_tag for what it actually does and why it takes a tag.
-remove_cron() {
-	remove_cron_tag "$CRON_TAG"
-}
-
-# remove_cron_tag deletes only the line install_cron_line wrote under
-# tag (matched by the literal substring tag), and leaves every other
-# crontab line -- including a line under a different tag, such as
-# CRON_TAG_FULL -- untouched. This uses awk's index(), not sed: a tag
-# can start with "#". A sed address needs a delimiter character, and
-# every delimiter choice is also a character sed treats as
-# significant, so a tag that contains it breaks the pattern. awk's
-# index() takes tag as inert data, so this holds no matter what the
-# tag text is.
-#
-# The replacement is built and checked in a private temp file before
-# it ever touches $CRONTAB, and $CRONTAB is only ever read, never
-# written directly, until the very last step:
-#   - "mktemp" creates the temp file next to $CRONTAB, so the final
-#     "mv" is a same-filesystem rename: atomic, and never a partial
-#     write.
-#   - "cp -p" seeds it with $CRONTAB's own content and mode. A failed
-#     copy (for example an unreadable $CRONTAB) is caught here, before
-#     anything is filtered, and leaves $CRONTAB untouched.
-#   - awk's filtered output is written into that same temp file. A
-#     redirection onto a file that already exists replaces its
-#     content, not its mode, so the mode "cp -p" set survives. If awk
-#     fails partway (an unreadable $CRONTAB, or a write error on the
-#     temp file), its nonzero exit is checked before anything is
-#     promoted, so a truncated or empty result never reaches
-#     $CRONTAB.
-#   - Only then does "mv" promote the temp file onto $CRONTAB. Its
-#     exit status is checked too: a same-filesystem rename can still
-#     fail, for example onto an immutable target.
-# On every failure path the temp file is removed and $CRONTAB is left
-# exactly as it was: original content, original mode, no stray temp
-# file behind.
-#
-# Return value is a promise, not just a log-worthy detail: 0 means the
-# tag's line is confirmed absent from $CRONTAB (either it never had
-# one, or this call just removed it). 1 means removal could not be
-# confirmed -- $CRONTAB is untouched, but if it had a line under tag
-# before the call, that line may still be there. Callers that need the
-# trigger gone (install_cron_line, stop_service) must treat 1 as
-# "still possibly installed", not as "nothing to worry about".
-remove_cron_tag() {
-	local tag
-	tag="$1"
-
-	[ -f "$CRONTAB" ] || return 0
+	}
 
 	local tmp
-	tmp="$(mktemp "$CRONTAB.XXXXXX")" || return 1
+	tmp="$(mktemp "$CONFIG_FILE.XXXXXX")" || {
+		log "mktemp failed while rendering config.yaml"
+		return 1
+	}
 
-	if ! cp -p "$CRONTAB" "$tmp"; then
+	if ! {
+		yaml_scalar namespace "$namespace"
+		yaml_scalar node_id "$node_id"
+		yaml_scalar controller_pubkey "$controller_pubkey"
+		yaml_scalar refresh_interval "$refresh_interval"
+		yaml_scalar full_apply_interval "$full_apply_interval"
+		yaml_scalar identity_key "$identity_key"
+		yaml_scalar last "$last"
+		yaml_scalar lock "$lock"
+
+		if [ -n "$use_plugin" ]; then
+			yaml_scalar use_plugin "$use_plugin"
+			printf 'plugins:\n'
+			write_plugin_entry "$use_plugin"
+		fi
+	} >"$tmp"; then
 		rm -f "$tmp"
+		log "failed to render config.yaml"
 		return 1
 	fi
 
-	if ! awk -v tag="$tag" 'index($0, tag) == 0' "$CRONTAB" > "$tmp"; then
+	chmod 0600 "$tmp"
+	if ! mv "$tmp" "$CONFIG_FILE"; then
 		rm -f "$tmp"
+		log "failed to install config.yaml"
 		return 1
 	fi
-
-	if ! mv "$tmp" "$CRONTAB"; then
-		rm -f "$tmp"
-		return 1
-	fi
-
-	/etc/init.d/cron reload >/dev/null 2>&1
 	return 0
-}
-
-boot() {
-	# Run after network's own boot() (START=95 is well after network's),
-	# but "network started" does not mean the WAN address is up yet, so
-	# still wait boot_delay before the first fetch.
-	start "$@"
 }
 
 start_service() {
-	read_config || return 0
+	write_config || return 0
 
-	args="$(build_fetch_args)"
-
-	# Run the boot-time fetch in the background so start_service (and
-	# therefore boot) never blocks on boot_delay or on the fetch
-	# itself. Only the frequent, diff-based fetch runs at boot; the
-	# periodic full-apply line (installed below) runs on its own
-	# schedule, not once per boot.
-	( sleep "$boot_delay"; run_fetch ) &
-
-	rc=0
-	if ! install_cron; then
-		log "start: cron trigger not installed; fetch will only run from this boot's background job, not on a schedule"
-		rc=1
-	fi
-
-	full_apply_args="$(build_full_apply_args)"
-	if ! install_cron_line "$CRON_TAG_FULL" "0 */$full_apply_interval_hours * * *" "$full_apply_args"; then
-		log "start: full-apply cron trigger not installed; the periodic full re-apply will not run on a schedule"
-		rc=1
-	fi
-
-	return $rc
+	procd_open_instance
+	procd_set_param command "$BIN" --config-dir "$CONFIG_DIR"
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
 }
 
-# stop_service's job is to make both recurring triggers go away (the
-# diff-based line and the full-apply line). It reports what actually
-# happened: 0 only when both are confirmed gone, 1 when either cannot
-# be confirmed, so "service stunmesh-agent stop" does not claim
-# success while a scheduled fetch can still fire.
 stop_service() {
-	rc=0
-	if ! remove_cron; then
-		log "stop: could not confirm removal of the cron trigger; it may still be installed"
-		rc=1
-	fi
-	if ! remove_cron_tag "$CRON_TAG_FULL"; then
-		log "stop: could not confirm removal of the full-apply cron trigger; it may still be installed"
-		rc=1
-	fi
-	return $rc
+	:
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$UCI_PACKAGE"
+}
+
+# reload_service regenerates config.yaml from the (possibly just
+# edited) UCI state, then restarts the daemon outright -- see the
+# "No reload_signal" note above for why a restart, not a signal, is
+# the reload here.
+reload_service() {
+	write_config
+	restart
 }

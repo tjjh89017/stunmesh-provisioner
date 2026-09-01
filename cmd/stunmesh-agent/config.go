@@ -1,437 +1,388 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"sigs.k8s.io/yaml"
+
+	stunmeshapp "github.com/tjjh89017/stunmesh-go/app"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
-// Config holds every setting fetch or keygen needs, after flags and
-// --config have been merged (see resolveConfig). Which fields are
-// actually required differs by command; ValidateFetch and
-// ValidateKeygen each check their own subset.
-type Config struct {
-	Namespace          string
-	NodeID             string
-	ControllerPubkey   string
-	Backend            string
-	Proxies            []string
-	IdentityKeyPath    string
-	LastPath           string
-	LockPath           string
-	StunmeshConfigPath string
-	// FullApply forces fetch to skip the "no change since last apply"
-	// shortcut (PLAN.md 4.5) and rewrite every step of the apply
-	// procedure (PLAN.md 6) -- UCI, the commits, both reloads, ifup,
-	// the stunmesh config file, and last.json -- even when the newest
-	// bundle's content is identical to last.json. It is set only by
-	// --full-apply; there is no --config file equivalent (see
-	// registerFlags), since the 24-hour schedule that uses it lives in
-	// the OpenWrt cron integration (contrib/openwrt/stunmesh-agent.init),
-	// not in a value an operator would keep in a file.
-	FullApply bool
-}
+// defaultConfigDir is --config-dir's default: the directory
+// stunmesh-agent searches for config.yaml, then config.yml, when
+// --config is not given. It is also keygen's default directory for
+// deriving identity.key's path.
+const defaultConfigDir = "/etc/stunmesh/agent"
 
-// Default paths, backend, and proxies (PLAN.md section 3). A flag or
-// --config setting overrides its default; see resolveConfig.
+// defaultLockPath is Config.LockPath's default when config.yaml omits
+// "lock".
+const defaultLockPath = "/var/lock/stunmesh-agent.lock"
+
+// defaultStunmeshConfigPath is the path the agent writes the bundle's
+// stunmesh text to, and the embedded stunmesh-go app's config file,
+// when config.yaml omits the whole "stunmesh" section or leaves both
+// of its keys unset.
+const defaultStunmeshConfigPath = "/etc/stunmesh/config.yaml"
+
+// defaultRefreshInterval and defaultFullApplyInterval are
+// "refresh_interval" and "full_apply_interval"'s defaults when
+// config.yaml omits them.
 const (
-	// defaultIdentityKeyPath and defaultLastPath share one directory,
-	// /etc/stunmesh/agent/, distinct from the controller's own
-	// /etc/stunmesh/provd/ tree (they run on different machines in
-	// the normal deployment, but giving the agent its own directory
-	// keeps the two from ever colliding if they don't). keygen creates
-	// this directory (see loadOrCreateIdentityKey) before fetch ever
-	// needs it for last.json, since keygen always runs first (PLAN.md
-	// section 5).
-	defaultIdentityKeyPath    = "/etc/stunmesh/agent/identity.key"
-	defaultLastPath           = "/etc/stunmesh/agent/last.json"
-	defaultLockPath           = "/var/lock/stunmesh-agent.lock"
-	defaultStunmeshConfigPath = "/etc/stunmesh/config.yaml"
-
-	// defaultBackend is --backend's default (docs/format.md section
-	// 3): dhtproxy is the only backend this agent implements today.
-	defaultBackend = backend.TypeDHTProxy
+	defaultRefreshInterval   = 5 * time.Minute
+	defaultFullApplyInterval = 24 * time.Hour
 )
 
-// defaultProxies is DHT_PROXY's default (PLAN.md section 3): the
-// public Jami dhtproxy instances. fetch uses this list only when
-// neither a --proxy flag nor a config file "proxy" line supplies any
-// proxy at all.
+// defaultProxies is the built-in dhtproxy list used when config.yaml
+// has neither "use_plugin" nor "plugins" (docs/format.md section 3):
+// the public Jami dhtproxy instances.
 var defaultProxies = []string{
 	"https://dhtproxy2.jami.net",
 	"https://dhtproxy3.jami.net",
 }
 
-// defaultProxiesText is defaultProxies rendered for the usage text.
-var defaultProxiesText = strings.Join(defaultProxies, ", ")
+// ErrConfigMalformed means config.yaml exists but its content is not
+// well-formed: bad YAML, an unknown key, a missing required key, or a
+// field that fails its own rule (a bad duration, an invalid key). The
+// wrapped detail never includes file content -- only a path and, at
+// most, a key name (see parseRawConfig and buildConfig).
+var ErrConfigMalformed = errors.New("config: malformed content")
 
-// flagSeam bundles the pieces registerFlags wires up that resolveConfig
-// needs after fs.Parse: cfg is filled in directly by the flag package,
-// configPath is where --config's argument lands, and fs itself is
-// kept so resolveConfig can call fs.Visit to see which flags the
-// caller actually passed (as opposed to a flag sitting at its zero or
-// default value because it was never mentioned).
-type flagSeam struct {
-	fs         *flag.FlagSet
-	cfg        *Config
-	configPath *string
+// Config holds every setting the daemon/--oneshot mode needs, after
+// config.yaml has been loaded and validated (loadConfig). It is
+// distinct from stunmeshapp.Options: that one configures the embedded
+// stunmesh-go app (its own config.yaml), not this agent.
+type Config struct {
+	Namespace        string
+	NodeID           string
+	ControllerPubkey string
+
+	// RefreshInterval is the daemon's fetch/apply tick. Always
+	// positive; a zero or negative value is a config error.
+	RefreshInterval time.Duration
+	// FullApplyInterval is the daemon's periodic full re-apply tick.
+	// Zero disables the periodic full apply entirely; a negative value
+	// is a config error.
+	FullApplyInterval time.Duration
+
+	IdentityKeyPath string
+	LastPath        string
+	LockPath        string
+
+	Backend string
+	Proxies []string
+
+	Stunmesh StunmeshConfig
 }
 
-// registerFlags adds every stunmesh-agent flag (PLAN.md section 3,
-// stage 3 item 1) to fs and returns the seam resolveConfig needs to
-// finish building a Config. fetch and keygen both call this: they
-// accept the same flag set and differ only in which settings they
-// require (see ValidateFetch, ValidateKeygen).
-func registerFlags(fs *flag.FlagSet) *flagSeam {
+// StunmeshConfig is the settings the daemon needs to write the
+// bundle's `stunmesh` text to disk and to build the embedded
+// stunmesh-go app pointed at it.
+type StunmeshConfig struct {
+	// WritePath is where applyStunmeshConfig writes the bundle's
+	// stunmesh text (fetch_apply.go), and always names the same file
+	// AppOptions.ConfigFile or AppOptions.ConfigDir would resolve to,
+	// so the embedded app always reads what the agent just wrote.
+	WritePath string
+	// AppOptions is passed to stunmeshapp.New to build (or rebuild) the
+	// embedded stunmesh-go app.
+	AppOptions stunmeshapp.Options
+}
+
+// rawConfig is config.yaml's on-disk shape. Every field is a pointer
+// (or, for Plugins, a map whose nilness is itself meaningful) so a
+// key's absence is distinguishable from an explicit empty or zero
+// value; see buildConfig for how each is resolved to its default.
+//
+// json tags match config.yaml's documented keys exactly (README.md,
+// this repository's top-level CLAUDE.md). Decoding goes through
+// sigs.k8s.io/yaml.YAMLToJSON and then encoding/json with
+// DisallowUnknownFields, the same strict pattern internal/bundle uses
+// for the wire format, so a typo in a key name is rejected rather
+// than silently ignored (unlike internal/store's permissive provd.yaml
+// decode, which predates this rule and is left as-is elsewhere).
+type rawConfig struct {
+	Namespace         *string                       `json:"namespace"`
+	NodeID            *string                       `json:"node_id"`
+	ControllerPubkey  *string                       `json:"controller_pubkey"`
+	RefreshInterval   *durationString               `json:"refresh_interval"`
+	FullApplyInterval *durationString               `json:"full_apply_interval"`
+	IdentityKey       *string                       `json:"identity_key"`
+	Last              *string                       `json:"last"`
+	Lock              *string                       `json:"lock"`
+	UsePlugin         *string                       `json:"use_plugin"`
+	Plugins           map[string]backend.PluginSpec `json:"plugins"`
+	Stunmesh          *rawStunmesh                  `json:"stunmesh"`
+}
+
+// rawStunmesh is config.yaml's "stunmesh" section: the args for the
+// embedded stunmesh-go app, not this agent's own config.
+type rawStunmesh struct {
+	Config    *string `json:"config"`
+	ConfigDir *string `json:"config_dir"`
+}
+
+// findConfigFile resolves which file loadConfig should read:
+// configFile (an exact file, "-c/--config") wins when given; not
+// finding it there is an error, since an explicit path is a promise
+// the file exists. Otherwise it searches configDir for config.yaml,
+// then config.yml; finding neither is not an error -- it returns ""
+// -- since a freshly flashed node has no config.yaml yet (this
+// mirrors stunmesh-go's own config.Load semantics, per this
+// repository's top-level CLAUDE.md).
+func findConfigFile(configFile, configDir string) (string, error) {
+	if configFile != "" {
+		if _, err := os.Stat(configFile); err != nil {
+			return "", fmt.Errorf("--config %s: %w", configFile, err)
+		}
+		return configFile, nil
+	}
+
+	for _, name := range []string{"config.yaml", "config.yml"} {
+		p := filepath.Join(configDir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", nil
+}
+
+// loadConfig reads and validates the full config.yaml at path
+// (daemon and --oneshot mode: every field is required or defaulted).
+// See loadStunmeshOnlyConfig for the --stunmesh-only mode, which
+// tolerates every other section being absent.
+func loadConfig(path string) (*Config, error) {
+	rc, err := parseRawConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return buildConfig(rc, path)
+}
+
+// parseRawConfig reads path and decodes it into a rawConfig, strictly
+// (unknown top-level keys are rejected). Its errors never include the
+// file's content, only the path and, for an unknown key, the key name
+// (from encoding/json's own DisallowUnknownFields message, which never
+// echoes a value).
+func parseRawConfig(path string) (*rawConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+
+	jsonBytes, err := yaml.YAMLToJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: not valid yaml", ErrConfigMalformed, path)
+	}
+
+	var rc rawConfig
+	dec := json.NewDecoder(bytes.NewReader(jsonBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rc); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrConfigMalformed, path, err)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("%w: %s: trailing data after the yaml document", ErrConfigMalformed, path)
+	}
+
+	return &rc, nil
+}
+
+// buildConfig resolves rc (already strictly decoded) into a Config,
+// applying every default and rule this package's doc / README.md
+// document. configPath is used only to derive IdentityKeyPath's and
+// LastPath's own defaults (same directory as config.yaml) and to name
+// the file in an error.
+func buildConfig(rc *rawConfig, configPath string) (*Config, error) {
+	dir := filepath.Dir(configPath)
 	cfg := &Config{}
 
-	fs.StringVar(&cfg.Namespace, "namespace", "", "deployment namespace")
-	fs.StringVar(&cfg.NodeID, "node-id", "", "this node's ID")
-	fs.StringVar(&cfg.ControllerPubkey, "controller-pubkey", "", "controller public key, base64")
-	fs.StringVar(&cfg.Backend, "backend", defaultBackend, "storage backend (dhtproxy)")
-	fs.Var(&proxyFlag{&cfg.Proxies}, "proxy", "dhtproxy base URL (repeatable)")
-	fs.StringVar(&cfg.IdentityKeyPath, "identity-key", defaultIdentityKeyPath, "node identity private key file")
-	fs.StringVar(&cfg.LastPath, "last", defaultLastPath, "last-applied bundle file")
-	fs.StringVar(&cfg.LockPath, "lock", defaultLockPath, "lock file")
-	fs.StringVar(&cfg.StunmeshConfigPath, "stunmesh-config", defaultStunmeshConfigPath, "stunmesh-go config file")
-	fs.BoolVar(&cfg.FullApply, "full-apply", false, "force a full re-apply even when nothing changed since last.json")
-
-	configPath := fs.String("config", "", "flat key=value file supplying any of the settings above")
-
-	return &flagSeam{fs: fs, cfg: cfg, configPath: configPath}
-}
-
-// proxyFlag implements flag.Value for a repeatable --proxy flag. Each
-// occurrence appends one URL to *values, in the order given on the
-// command line.
-type proxyFlag struct {
-	values *[]string
-}
-
-func (p *proxyFlag) String() string {
-	if p == nil || p.values == nil {
-		return ""
+	var missing []string
+	if rc.Namespace == nil || *rc.Namespace == "" {
+		missing = append(missing, "namespace")
+	} else {
+		cfg.Namespace = *rc.Namespace
 	}
-	return strings.Join(*p.values, ",")
-}
-
-func (p *proxyFlag) Set(v string) error {
-	if v == "" {
-		return errors.New("proxy: must not be empty")
+	if rc.NodeID == nil || *rc.NodeID == "" {
+		missing = append(missing, "node_id")
+	} else {
+		cfg.NodeID = *rc.NodeID
 	}
-	*p.values = append(*p.values, v)
-	return nil
-}
+	if rc.ControllerPubkey == nil || *rc.ControllerPubkey == "" {
+		missing = append(missing, "controller_pubkey")
+	} else {
+		cfg.ControllerPubkey = *rc.ControllerPubkey
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%w: %s: missing required key(s): %s", ErrConfigMalformed, configPath, strings.Join(missing, ", "))
+	}
 
-// resolveConfig finishes building the Config that seam's fs.Parse
-// already started: it merges in --config's settings, then the
-// package defaults, and returns the result.
-//
-// # Precedence
-//
-// An explicit flag always wins over the same setting in --config. A
-// setting that neither supplies falls back to its default (--last,
-// --lock, --stunmesh-config already carry theirs from registerFlags;
-// --proxy falls back to defaultProxies).
-//
-// This is the least surprising rule for the two deployments PLAN.md
-// section 3 and 5 describe. On OpenWrt, the init.d script reads UCI
-// and always launches stunmesh-agent with flags built from the
-// current UCI state; it never writes a --config file. A flag there is
-// the freshest, most specific expression of "what to do right now",
-// so it must win. On another system, an operator (or a wrapper
-// script) using --config expects an explicit flag on the same
-// invocation to be a deliberate one-off override of the file, the
-// normal shape of "flag beats config file" in most CLIs -- not the
-// reverse, which would make a file silently unoverridable without
-// editing it.
-//
-// resolveConfig tells "a flag was explicitly given" apart from "a
-// flag sits at its zero-value default" with fs.Visit, which the flag
-// package documents as visiting only flags that were actually set on
-// the command line. This is why --last, --lock, --stunmesh-config,
-// and --backend's defaults are registered directly on the flag
-// (registerFlags), rather than applied here: an unset --last flag
-// still reads as defaultLastPath after fs.Parse, and fs.Visit
-// correctly leaves it out of the visited set either way, so --config
-// (and, failing that, the package default already sitting in the
-// field) still gets a chance to apply.
-func resolveConfig(seam *flagSeam) (*Config, error) {
-	cfg := seam.cfg
+	// crypto.ParseKey's error never echoes its input; wrapping it here
+	// still names only the field, never the value.
+	if _, err := crypto.ParseKey(cfg.ControllerPubkey); err != nil {
+		return nil, fmt.Errorf("%w: %s: controller_pubkey: not a valid key", ErrConfigMalformed, configPath)
+	}
 
-	set := map[string]bool{}
-	seam.fs.Visit(func(f *flag.Flag) {
-		set[f.Name] = true
-	})
+	refresh, err := parseDuration(rc.RefreshInterval, defaultRefreshInterval, false, "refresh_interval", configPath)
+	if err != nil {
+		return nil, err
+	}
+	if refresh <= 0 {
+		return nil, fmt.Errorf("%w: %s: refresh_interval must be positive", ErrConfigMalformed, configPath)
+	}
+	cfg.RefreshInterval = refresh
 
-	if *seam.configPath != "" {
-		data, err := os.ReadFile(*seam.configPath)
+	fullApply, err := parseDuration(rc.FullApplyInterval, defaultFullApplyInterval, true, "full_apply_interval", configPath)
+	if err != nil {
+		return nil, err
+	}
+	if fullApply < 0 {
+		return nil, fmt.Errorf("%w: %s: full_apply_interval must not be negative", ErrConfigMalformed, configPath)
+	}
+	cfg.FullApplyInterval = fullApply
+
+	cfg.IdentityKeyPath = filepath.Join(dir, "identity.key")
+	if rc.IdentityKey != nil && *rc.IdentityKey != "" {
+		cfg.IdentityKeyPath = *rc.IdentityKey
+	}
+	cfg.LastPath = filepath.Join(dir, "last.json")
+	if rc.Last != nil && *rc.Last != "" {
+		cfg.LastPath = *rc.Last
+	}
+	cfg.LockPath = defaultLockPath
+	if rc.Lock != nil && *rc.Lock != "" {
+		cfg.LockPath = *rc.Lock
+	}
+
+	cfg.Backend = backend.TypeDHTProxy
+	cfg.Proxies = append([]string(nil), defaultProxies...)
+	usePlugin := ""
+	if rc.UsePlugin != nil {
+		usePlugin = *rc.UsePlugin
+	}
+	if usePlugin != "" || rc.Plugins != nil {
+		resolved, err := backend.Resolve(backend.Selection{Plugins: rc.Plugins, UsePlugin: usePlugin})
 		if err != nil {
-			return nil, fmt.Errorf("--config %s: %w", *seam.configPath, err)
+			return nil, fmt.Errorf("%w: %s: %v", ErrConfigMalformed, configPath, err)
 		}
-		fc, err := parseConfigFile(strings.NewReader(string(data)))
-		if err != nil {
-			return nil, fmt.Errorf("--config %s: %w", *seam.configPath, err)
-		}
-		applyFileConfig(cfg, fc, set)
+		cfg.Backend = resolved.Type
+		cfg.Proxies = resolved.Proxies
 	}
 
-	if !set["proxy"] && len(cfg.Proxies) == 0 {
-		cfg.Proxies = append([]string(nil), defaultProxies...)
-	}
+	cfg.Stunmesh = resolveStunmeshConfig(rc.Stunmesh)
 
 	return cfg, nil
 }
 
-// applyFileConfig copies each setting fc carries into cfg, skipping
-// any field whose flag was explicitly given (set[name] is true): that
-// is the precedence rule resolveConfig documents. proxy is handled
-// separately: fc.Proxies is used whole, in file order, only when the
-// --proxy flag was never given at all; a --config "proxy" line never
-// merges with --proxy flag values, so the effective list is always
-// exactly one source's list, never a mix of two.
-func applyFileConfig(cfg *Config, fc *fileConfig, set map[string]bool) {
-	if !set["namespace"] && fc.Namespace != nil {
-		cfg.Namespace = *fc.Namespace
-	}
-	if !set["node-id"] && fc.NodeID != nil {
-		cfg.NodeID = *fc.NodeID
-	}
-	if !set["controller-pubkey"] && fc.ControllerPubkey != nil {
-		cfg.ControllerPubkey = *fc.ControllerPubkey
-	}
-	if !set["backend"] && fc.Backend != nil {
-		cfg.Backend = *fc.Backend
-	}
-	if !set["identity-key"] && fc.IdentityKey != nil {
-		cfg.IdentityKeyPath = *fc.IdentityKey
-	}
-	if !set["last"] && fc.Last != nil {
-		cfg.LastPath = *fc.Last
-	}
-	if !set["lock"] && fc.Lock != nil {
-		cfg.LockPath = *fc.Lock
-	}
-	if !set["stunmesh-config"] && fc.StunmeshConfig != nil {
-		cfg.StunmeshConfigPath = *fc.StunmeshConfig
-	}
-	if !set["proxy"] && len(fc.Proxies) > 0 {
-		cfg.Proxies = append([]string(nil), fc.Proxies...)
-	}
-}
+// durationString decodes a YAML/JSON duration value that may be
+// written either quoted ("5m", "0") or bare (0): sigs.k8s.io/yaml
+// turns an unquoted YAML "0" into the JSON number 0, not the string
+// "0", and a plain *string field would then fail to decode with a
+// confusing "cannot unmarshal number into Go string" error -- exactly
+// the spelling an operator writing "full_apply_interval: 0" to disable
+// the periodic full apply (this package's own doc, and the README) is
+// likely to reach for. UnmarshalJSON accepts both spellings and
+// normalizes to text that time.ParseDuration reads the same way
+// either way ("0" parses with no unit, matching time.ParseDuration's
+// own special case for a zero value).
+type durationString string
 
-// fileConfig is the result of parsing a --config file (parseConfigFile).
-// Every field is a pointer so a key's absence (nil) is distinguishable
-// from an explicit empty value (a non-nil pointer to ""); Proxies is
-// the exception, since its own zero value, nil, already means
-// "absent" (an empty slice cannot appear here: every "proxy" line
-// carries a non-empty value, see proxyFlag.Set and the same rule
-// enforced in parseConfigFile).
-type fileConfig struct {
-	Namespace        *string
-	NodeID           *string
-	ControllerPubkey *string
-	Backend          *string
-	IdentityKey      *string
-	Last             *string
-	Lock             *string
-	StunmeshConfig   *string
-	Proxies          []string
-}
-
-// configFileKeys are the only keys parseConfigFile accepts. Anything
-// else is a mistake -- most likely a typo of one of these -- and is
-// rejected rather than silently ignored.
-var configFileKeys = map[string]bool{
-	"namespace":         true,
-	"node_id":           true,
-	"controller_pubkey": true,
-	"backend":           true,
-	"proxy":             true,
-	"identity_key":      true,
-	"last":              true,
-	"lock":              true,
-	"stunmesh_config":   true,
-}
-
-// parseConfigFile reads stunmesh-agent's flat --config file grammar
-// from r:
-//
-//   - One setting per line, "key=value".
-//   - A blank line (empty, or whitespace only) is ignored.
-//   - A line whose first non-whitespace character is "#" is a
-//     comment; it is ignored, in full, whatever else is on it.
-//   - Leading and trailing whitespace around both key and value is
-//     trimmed. The value is otherwise taken literally: no quoting, no
-//     escaping, no continuation lines.
-//   - The key must be one of: namespace, node_id, controller_pubkey,
-//     backend, proxy, identity_key, last, lock, stunmesh_config. Any
-//     other key is rejected -- most likely it is a typo of one of
-//     these.
-//   - "proxy" may appear more than once; each occurrence adds one URL
-//     to the list, in file order. Every other key may appear at most
-//     once; a repeat is rejected, since a second value for the same
-//     setting almost always means the file was edited by hand and
-//     something was left behind by mistake, not that the second value
-//     should silently replace the first.
-//   - A non-blank, non-comment line with no "=" is rejected as
-//     malformed.
-//   - An empty value (e.g. "namespace=") is rejected: every one of
-//     these keys names a required-when-present setting, so an empty
-//     value can only be an editing mistake, never a deliberate
-//     "unset".
-//
-// Every error names the line number and, where it applies, the key --
-// never the value, so a mistake in controller_pubkey or identity_key
-// is never echoed back.
-func parseConfigFile(r io.Reader) (*fileConfig, error) {
-	fc := &fileConfig{}
-	seen := map[string]bool{}
-
-	scanner := bufio.NewScanner(r)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
+func (d *durationString) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
 		}
-
-		idx := strings.IndexByte(trimmed, '=')
-		if idx < 0 {
-			return nil, fmt.Errorf("line %d: malformed line, expected key=value", lineNo)
-		}
-
-		key := strings.TrimSpace(trimmed[:idx])
-		value := strings.TrimSpace(trimmed[idx+1:])
-
-		if key == "" {
-			return nil, fmt.Errorf("line %d: malformed line, expected key=value", lineNo)
-		}
-		if !configFileKeys[key] {
-			return nil, fmt.Errorf("line %d: unknown key %q", lineNo, key)
-		}
-		if value == "" {
-			return nil, fmt.Errorf("line %d: %s: value must not be empty", lineNo, key)
-		}
-
-		if key == "proxy" {
-			fc.Proxies = append(fc.Proxies, value)
-			continue
-		}
-
-		if seen[key] {
-			return nil, fmt.Errorf("line %d: %s: given more than once", lineNo, key)
-		}
-		seen[key] = true
-
-		switch key {
-		case "namespace":
-			fc.Namespace = &value
-		case "node_id":
-			fc.NodeID = &value
-		case "controller_pubkey":
-			fc.ControllerPubkey = &value
-		case "backend":
-			fc.Backend = &value
-		case "identity_key":
-			fc.IdentityKey = &value
-		case "last":
-			fc.Last = &value
-		case "lock":
-			fc.Lock = &value
-		case "stunmesh_config":
-			fc.StunmeshConfig = &value
-		}
+		*d = durationString(s)
+		return nil
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-
-	return fc, nil
-}
-
-// ValidateFetch reports whether cfg has everything `fetch` needs
-// (PLAN.md section 5's fetch row). It does not touch the network or
-// the filesystem; it only checks the settings themselves. --identity-key,
-// like --last, --lock, and --stunmesh-config, always carries at least
-// its default (registerFlags), so it is checked alongside them below,
-// not in the "missing" list: only an explicit --identity-key "" can
-// still trip it.
-func (cfg *Config) ValidateFetch() error {
-	var missing []string
-	if cfg.Namespace == "" {
-		missing = append(missing, "--namespace")
-	}
-	if cfg.NodeID == "" {
-		missing = append(missing, "--node-id")
-	}
-	if cfg.ControllerPubkey == "" {
-		missing = append(missing, "--controller-pubkey")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required setting(s): %s", strings.Join(missing, ", "))
-	}
-
-	// crypto.ParseKey's error never echoes its input (see its doc
-	// comment), so wrapping it here still names only the field, never
-	// the value.
-	if _, err := crypto.ParseKey(cfg.ControllerPubkey); err != nil {
-		return fmt.Errorf("--controller-pubkey: not a valid key")
-	}
-
-	// dhtproxy is the only backend this agent implements (docs/format.md
-	// section 3); this mirrors --controller-pubkey above: the error
-	// names the field, never cfg.Backend's actual value, so a typo is
-	// never echoed back.
-	if cfg.Backend != backend.TypeDHTProxy {
-		return errors.New("--backend: unknown backend type")
-	}
-
-	if len(cfg.Proxies) == 0 {
-		return errors.New("no proxy configured")
-	}
-	for _, p := range cfg.Proxies {
-		if p == "" {
-			return errors.New("--proxy: must not be empty")
-		}
-	}
-
-	if cfg.IdentityKeyPath == "" {
-		return errors.New("--identity-key: must not be empty")
-	}
-	if cfg.LastPath == "" {
-		return errors.New("--last: must not be empty")
-	}
-	if cfg.LockPath == "" {
-		return errors.New("--lock: must not be empty")
-	}
-	if cfg.StunmeshConfigPath == "" {
-		return errors.New("--stunmesh-config: must not be empty")
-	}
-
+	*d = durationString(data)
 	return nil
 }
 
-// ValidateKeygen reports whether cfg has everything `keygen` needs
-// (PLAN.md section 5's keygen row). keygen only ever writes one file,
-// the identity key, so it needs nothing else: not --namespace,
-// --node-id, --controller-pubkey, --proxy, --last, --lock, or
-// --stunmesh-config. --identity-key always carries at least its
-// default (registerFlags), so this only ever fires against an
-// explicit --identity-key "".
-func (cfg *Config) ValidateKeygen() error {
-	if cfg.IdentityKeyPath == "" {
-		return errors.New("--identity-key: must not be empty")
+// parseDuration parses *s with time.ParseDuration, returning def when
+// s is nil. allowZero lets a caller accept "0" (or any duration that
+// parses to exactly zero) as a valid value with its own meaning
+// (full_apply_interval: 0 disables the periodic full apply); the
+// negative-value rule is still enforced by the caller, not here, since
+// "negative" means something different for each of the two duration
+// settings (an error for both, but buildConfig phrases the two error
+// messages separately to match this package's per-field style).
+func parseDuration(s *durationString, def time.Duration, allowZero bool, field, configPath string) (time.Duration, error) {
+	if s == nil {
+		return def, nil
 	}
-	return nil
+	d, err := time.ParseDuration(string(*s))
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s: %s: %v", ErrConfigMalformed, configPath, field, err)
+	}
+	if d == 0 && !allowZero {
+		return 0, fmt.Errorf("%w: %s: %s must be positive", ErrConfigMalformed, configPath, field)
+	}
+	return d, nil
+}
+
+// resolveStunmeshConfig builds StunmeshConfig from config.yaml's
+// "stunmesh" section (rs may be nil: the whole section is optional).
+//
+// # Precedence
+//
+//   - rs.Config set: that exact file is both WritePath (where the
+//     agent writes the bundle's stunmesh text) and
+//     AppOptions.ConfigFile (what the embedded app reads); the app
+//     never needs to search, because the agent just wrote the one
+//     file it names.
+//   - rs.Config unset, rs.ConfigDir set: WritePath is
+//     "<config_dir>/config.yaml" (the app.Options.ConfigDir search
+//     order tries config.yaml before config.yml, per stunmesh-go's
+//     own config.Load; writing that name first guarantees the app
+//     finds exactly what the agent wrote, not a stale config.yml left
+//     over from a previous install). AppOptions.ConfigDir is passed
+//     through unchanged, so the app still runs its own search if the
+//     agent has not written anything there yet (--stunmesh-only mode
+//     with no agent loop feeding it, for example).
+//   - Neither set (or the whole "stunmesh" section absent):
+//     defaultStunmeshConfigPath for both.
+func resolveStunmeshConfig(rs *rawStunmesh) StunmeshConfig {
+	if rs != nil && rs.Config != nil && *rs.Config != "" {
+		return StunmeshConfig{
+			WritePath:  *rs.Config,
+			AppOptions: stunmeshapp.Options{ConfigFile: *rs.Config},
+		}
+	}
+	if rs != nil && rs.ConfigDir != nil && *rs.ConfigDir != "" {
+		return StunmeshConfig{
+			WritePath:  filepath.Join(*rs.ConfigDir, "config.yaml"),
+			AppOptions: stunmeshapp.Options{ConfigDir: *rs.ConfigDir},
+		}
+	}
+	return StunmeshConfig{
+		WritePath:  defaultStunmeshConfigPath,
+		AppOptions: stunmeshapp.Options{ConfigFile: defaultStunmeshConfigPath},
+	}
+}
+
+// loadStunmeshOnlyConfig reads path (when non-empty) and returns just
+// its "stunmesh" section, tolerating every other section being absent
+// or, if present, simply ignored: --stunmesh-only never needs
+// namespace/node_id/controller_pubkey/etc, and config.yaml itself is
+// optional in this mode (see findConfigFile). An empty path returns
+// the all-defaults StunmeshConfig.
+func loadStunmeshOnlyConfig(path string) (StunmeshConfig, error) {
+	if path == "" {
+		return resolveStunmeshConfig(nil), nil
+	}
+	rc, err := parseRawConfig(path)
+	if err != nil {
+		return StunmeshConfig{}, err
+	}
+	return resolveStunmeshConfig(rc.Stunmesh), nil
 }

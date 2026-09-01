@@ -63,7 +63,7 @@ func TestDoFetch_RejectedBundleWithSecretsNeverLeaksSecrets(t *testing.T) {
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	env.HTTPClient = srv.Client()
 
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 
 	if code != ExitOK {
 		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
@@ -141,69 +141,27 @@ func assertNoSecrets(t *testing.T, captured string, secrets ...string) {
 	}
 }
 
-// --- Flag-parse error paths (runFetch, runKeygen): a genuine parse
-// error (an unrecognized flag), not the -h/--help case already
-// covered by TestRunFetch_Help and TestRun_Help. ---
-
-func TestRunFetch_UnknownFlagIsExitError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := runFetch(newEnv(strings.NewReader(""), &stdout, &stderr), []string{"--this-flag-does-not-exist"})
-	if code != ExitError {
-		t.Errorf("code = %d, want %d", code, ExitError)
-	}
-	if !strings.Contains(stderr.String(), "Usage: stunmesh-agent") {
-		t.Errorf("stderr = %q, want the usage text on a genuine parse error", stderr.String())
-	}
-}
-
-// TestRunKeygen_Help pins runKeygen's own flag.ErrHelp branch
-// (fetch_cmd.go's twin branch is already pinned by
-// TestRunFetch_Help in fetch_cmd_test.go; the top-level "-h" Run()
-// intercepts before ever reaching a subcommand is pinned by
-// TestRun_Help in cli_test.go). "keygen -h" reaches runKeygen's own
-// fs.Parse, not Run()'s.
-func TestRunKeygen_Help(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := runKeygen(newEnv(strings.NewReader(""), &stdout, &stderr), []string{"-h"})
-	if code != ExitOK {
-		t.Errorf("code = %d, want %d", code, ExitOK)
-	}
-	if !strings.Contains(stdout.String(), "Usage: stunmesh-agent") {
-		t.Errorf("stdout = %q, want usage", stdout.String())
-	}
-}
-
-func TestRunKeygen_UnknownFlagIsExitError(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := runKeygen(newEnv(strings.NewReader(""), &stdout, &stderr), []string{"--this-flag-does-not-exist"})
-	if code != ExitError {
-		t.Errorf("code = %d, want %d", code, ExitError)
-	}
-	if !strings.Contains(stderr.String(), "Usage: stunmesh-agent") {
-		t.Errorf("stderr = %q, want the usage text on a genuine parse error", stderr.String())
-	}
-}
-
-// --- doFetch's own crypto/dhtkey/dhtproxy validation, reached only
-// when doFetch is driven directly with a Config that
-// Config.ValidateFetch would have rejected (the same pattern
-// validFetchConfig-based tests in fetch_cmd_test.go already use). ---
+// --- runFetchApply's own crypto/dhtkey/dhtproxy validation, reached
+// only when it is driven directly with a Config that buildConfig
+// (config.go) would have rejected had it come from a real config.yaml
+// (the same pattern validFetchConfig-based tests in
+// fetch_testhelpers_test.go already use). ---
 //
 // validFetchConfig itself is unsuitable here: its IdentityKeyPath
 // deliberately names a file that does not exist, so that the other
-// validFetchConfig-based tests in fetch_cmd_test.go
-// (TestDoFetch_SecondConcurrentHolderExitsOKWithOneLogLine,
-// TestDoFetch_AcquiresLockThenReadsIdentityKey,
-// TestDoFetch_BadLockPathIsExitError) can pin doFetch's identity-key
-// read failing. loadIdentityKey runs before the controller-pubkey
-// parse, dhtkey.Key, and dhtproxy.New (fetch_cmd.go), so a Config
-// built that way never reaches any of those three branches: every
-// test below would exit ExitError on the identity key read alone,
-// regardless of what it set on cfg.ControllerPubkey, cfg.Namespace, or
-// cfg.Proxies. validFetchConfigWithRealIdentity (below) reuses the
-// full-pipeline tests' crypto.Keygen()+os.WriteFile approach so
-// loadIdentityKey succeeds and doFetch actually reaches the branch
-// each test names.
+// validFetchConfig-based tests in fetch_testhelpers_test.go
+// (TestRunOneshot_SecondConcurrentHolderExitsOKWithOneLogLine,
+// TestRunOneshot_AcquiresLockThenReadsIdentityKey,
+// TestRunOneshot_BadLockPathIsExitError) can pin the identity-key read
+// failing. loadIdentityKey runs before the controller-pubkey parse,
+// dhtkey.Key, and dial.New (fetch.go), so a Config built that way
+// never reaches any of those three branches: every test below would
+// exit ExitError on the identity key read alone, regardless of what
+// it set on cfg.ControllerPubkey, cfg.Namespace, or cfg.Proxies.
+// validFetchConfigWithRealIdentity (below) reuses the full-pipeline
+// tests' crypto.Keygen()+os.WriteFile approach so loadIdentityKey
+// succeeds and runFetchApply actually reaches the branch each test
+// names.
 
 // validFetchConfigWithRealIdentity builds a Config identical to
 // validFetchConfig, except IdentityKeyPath names a real key file (a
@@ -234,13 +192,13 @@ func TestDoFetch_BadControllerPubkeyDirectIsExitErrorNoLeak(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
-	if !strings.Contains(stderr.String(), "--controller-pubkey") {
-		t.Errorf("stderr = %q, want it to name the controller-pubkey branch (proves the branch was reached)", stderr.String())
+	if !strings.Contains(stderr.String(), "controller_pubkey") {
+		t.Errorf("stderr = %q, want it to name the controller_pubkey branch (proves the branch was reached)", stderr.String())
 	}
 	assertNoSecrets(t, stdout.String()+stderr.String(), cfg.ControllerPubkey)
 }
@@ -256,7 +214,7 @@ func TestDoFetch_NamespaceWithSlashIsExitErrorNoLeak(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
@@ -296,7 +254,7 @@ func TestDoFetch_TotalDHTOutageIsExitErrorNoLeak(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 
 	if code != ExitError {
 		t.Errorf("code = %d, want %d (a total DHT outage is a failure, not \"no values\")", code, ExitError)
@@ -317,7 +275,7 @@ func TestDoFetch_BadProxyURLIsExitErrorNoLeak(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
@@ -402,7 +360,7 @@ func TestApplyDiff_CommitFailureIsExitErrorNoLeak(t *testing.T) {
 	env.Runner = execx.NewFake(results...)
 
 	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -422,7 +380,7 @@ func TestApplyDiff_NetworkReloadFailureIsExitErrorNoLeak(t *testing.T) {
 	env.Runner = execx.NewFake(results...)
 
 	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -446,14 +404,14 @@ func TestApplyDiff_StunmeshConfigWriteFailureIsExitErrorNoLeak(t *testing.T) {
 	// A parent directory that does not exist makes os.CreateTemp fail
 	// inside writeStunmeshConfigAtomic, without needing to touch the
 	// runner at all.
-	cfg.StunmeshConfigPath = filepath.Join(cfg.StunmeshConfigPath+"-nonexistent-dir", "stunmesh.yaml")
+	cfg.Stunmesh.WritePath = filepath.Join(cfg.Stunmesh.WritePath+"-nonexistent-dir", "stunmesh.yaml")
 
 	var stdout, stderr strings.Builder
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	env.Runner = execx.NewFake() // every uci/ubus call defaults to success
 
 	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -473,7 +431,7 @@ func TestApplyDiff_IfupFailureIsExitErrorNoLeak(t *testing.T) {
 	env.Runner = execx.NewFake(results...)
 
 	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -485,7 +443,7 @@ func TestApplyDiff_IfupFailureIsExitErrorNoLeak(t *testing.T) {
 	// ifup runs before the stunmesh config file write (applyDiff's doc
 	// comment "Steps", step 4 before step 5): the file must not exist
 	// yet.
-	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(cfg.Stunmesh.WritePath); !os.IsNotExist(err) {
 		t.Errorf("stunmesh config file was written after an ifup failure: err=%v", err)
 	}
 	// No revert after commit succeeded (see applyDiff's doc comment "No
@@ -498,38 +456,11 @@ func TestApplyDiff_IfupFailureIsExitErrorNoLeak(t *testing.T) {
 	}
 }
 
-func TestApplyDiff_InitdFailureIsExitErrorNoLeak(t *testing.T) {
-	cfg := applyTestConfig(t)
-	var stdout, stderr strings.Builder
-	env := newEnv(strings.NewReader(""), &stdout, &stderr)
-	initdIndex := sentinelIfupIndex + 1 // right after the successful ifup
-	results := make([]execx.Result, initdIndex+1)
-	results[initdIndex] = execx.Result{Err: errors.New("boom")}
-	env.Runner = execx.NewFake(results...)
-
-	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
-
-	if code != ExitError {
-		t.Fatalf("code = %d, want %d", code, ExitError)
-	}
-	assertNoSecrets(t, stdout.String()+stderr.String(), sentinels()...)
-	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
-		t.Errorf("last.json was written after an init.d failure: err=%v", err)
-	}
-	// The stunmesh config file must already have been written (step 4
-	// ran and succeeded before step 5's init.d call failed): its
-	// content is expected to hold the sentinel (PLAN.md: this file
-	// legitimately carries the stunmesh text), so this checks presence,
-	// not absence.
-	data, err := os.ReadFile(cfg.StunmeshConfigPath)
-	if err != nil {
-		t.Fatalf("read stunmesh config: %v", err)
-	}
-	if string(data) != "sentinel-stunmesh-text-6a1f" {
-		t.Errorf("stunmesh config = %q, want the sentinel text (it is supposed to be there, on disk)", data)
-	}
-}
+// TestApplyDiff_InitdFailureIsExitErrorNoLeak (a failing
+// "/etc/init.d/stunmesh" call) no longer applies: applyDiff does not
+// shell out to init.d any more (fetch_apply.go's doc comment "Steps");
+// the daemon manages the embedded stunmesh-go app's lifecycle instead
+// (daemon.go's reconcileEmbedded), after applyDiff already returned.
 
 func TestApplyDiff_LastJSONWriteFailureIsExitErrorNoLeak(t *testing.T) {
 	cfg := applyTestConfig(t)
@@ -542,7 +473,7 @@ func TestApplyDiff_LastJSONWriteFailureIsExitErrorNoLeak(t *testing.T) {
 	env.Runner = execx.NewFake() // every uci/ubus call defaults to success
 
 	diff, state := sentinelDiff(t)
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
@@ -594,15 +525,15 @@ func TestDoFetch_FullPipelineSuccessNeverLeaksSecrets(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &Config{
-		Namespace:          namespace,
-		NodeID:             nodeID,
-		ControllerPubkey:   controllerPub.String(),
-		Backend:            "dhtproxy",
-		Proxies:            []string{srv.URL},
-		IdentityKeyPath:    keyPath,
-		LastPath:           filepath.Join(dir, "last.json"),
-		LockPath:           filepath.Join(dir, "agent.lock"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		Namespace:        namespace,
+		NodeID:           nodeID,
+		ControllerPubkey: controllerPub.String(),
+		Backend:          "dhtproxy",
+		Proxies:          []string{srv.URL},
+		IdentityKeyPath:  keyPath,
+		LastPath:         filepath.Join(dir, "last.json"),
+		LockPath:         filepath.Join(dir, "agent.lock"),
+		Stunmesh:         StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -610,7 +541,7 @@ func TestDoFetch_FullPipelineSuccessNeverLeaksSecrets(t *testing.T) {
 	env.HTTPClient = srv.Client()
 	env.Runner = execx.NewFake()
 
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
 	}
@@ -661,15 +592,15 @@ func TestDoFetch_FullPipelineApplyFailureNeverLeaksSecrets(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &Config{
-		Namespace:          namespace,
-		NodeID:             nodeID,
-		ControllerPubkey:   controllerPub.String(),
-		Backend:            "dhtproxy",
-		Proxies:            []string{srv.URL},
-		IdentityKeyPath:    keyPath,
-		LastPath:           filepath.Join(dir, "last.json"),
-		LockPath:           filepath.Join(dir, "agent.lock"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		Namespace:        namespace,
+		NodeID:           nodeID,
+		ControllerPubkey: controllerPub.String(),
+		Backend:          "dhtproxy",
+		Proxies:          []string{srv.URL},
+		IdentityKeyPath:  keyPath,
+		LastPath:         filepath.Join(dir, "last.json"),
+		LockPath:         filepath.Join(dir, "agent.lock"),
+		Stunmesh:         StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -683,7 +614,7 @@ func TestDoFetch_FullPipelineApplyFailureNeverLeaksSecrets(t *testing.T) {
 	// tolerate.
 	env.Runner = execx.NewFake(execx.Result{}, execx.Result{Err: errors.New("boom")})
 
-	code := doFetch(env, cfg)
+	code := runFetchApplyForTest(env, cfg, false)
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d; stderr=%q", code, ExitError, stderr.String())
 	}

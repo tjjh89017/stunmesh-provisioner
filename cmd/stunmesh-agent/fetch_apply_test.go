@@ -21,8 +21,8 @@ func applyTestConfig(t *testing.T) *Config {
 	t.Helper()
 	dir := t.TempDir()
 	return &Config{
-		LastPath:           filepath.Join(dir, "last.json"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		LastPath: filepath.Join(dir, "last.json"),
+		Stunmesh: StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 }
 
@@ -64,7 +64,7 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -136,7 +136,6 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		// diff.Stunmesh is StunmeshEmpty and last.json had no old state:
 		// anyInterfaceChanged is true (a new interface), so step 6 runs
 		// "stop".
-		{Name: "/etc/init.d/stunmesh", Args: []string{"stop"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
@@ -190,7 +189,7 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 	firewall := last.FirewallState{ZoneOwned: true, Members: []string{"wg0"}}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "unchanged text", Firewall: firewall}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -229,14 +228,13 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		{Name: "ifup", Args: []string{"wg0"}},
 		// stunmesh unchanged, but the interface changed: step 6 runs
 		// "reload" (not "stop": stunmesh text is not empty).
-		{Name: "/etc/init.d/stunmesh", Args: []string{"reload"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
 	}
 
 	// The stunmesh config file was not touched: stunmesh is unchanged.
-	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(cfg.Stunmesh.WritePath); !os.IsNotExist(err) {
 		t.Errorf("stunmesh config file exists or errored unexpectedly: %v", err)
 	}
 
@@ -265,7 +263,7 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "text"}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -283,7 +281,6 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 		// (ifupChangedInterfaces's doc comment) -- the e2e harness
 		// measured that "network reload" alone already tears a removed
 		// interface's kernel netdev down.
-		{Name: "/etc/init.d/stunmesh", Args: []string{"reload"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
@@ -300,7 +297,7 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 
 func TestApplyDiff_EmptyWGAndEmptyStunmeshTeardown(t *testing.T) {
 	cfg := applyTestConfig(t)
-	if err := os.WriteFile(cfg.StunmeshConfigPath, []byte("old text"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.Stunmesh.WritePath, []byte("old text"), 0o600); err != nil {
 		t.Fatalf("seed stunmesh config: %v", err)
 	}
 
@@ -318,7 +315,7 @@ func TestApplyDiff_EmptyWGAndEmptyStunmeshTeardown(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "old text"}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -330,13 +327,12 @@ func TestApplyDiff_EmptyWGAndEmptyStunmeshTeardown(t *testing.T) {
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
 		// No "ifup wg0": InterfaceRemoved never gets one (see
 		// TestApplyDiff_RemovedInterface).
-		{Name: "/etc/init.d/stunmesh", Args: []string{"stop"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
 	}
 
-	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(cfg.Stunmesh.WritePath); !os.IsNotExist(err) {
 		t.Errorf("stunmesh config file still exists after teardown: err=%v", err)
 	}
 
@@ -365,7 +361,7 @@ func TestApplyDiff_StunmeshOnlyChange(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "old stunmesh text"}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -378,20 +374,19 @@ func TestApplyDiff_StunmeshOnlyChange(t *testing.T) {
 	want := []execx.Call{
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
-		{Name: "/etc/init.d/stunmesh", Args: []string{"reload"}},
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
 	}
 
-	data, err := os.ReadFile(cfg.StunmeshConfigPath)
+	data, err := os.ReadFile(cfg.Stunmesh.WritePath)
 	if err != nil {
 		t.Fatalf("read stunmesh config: %v", err)
 	}
 	if string(data) != "new stunmesh text" {
 		t.Errorf("stunmesh config = %q, want %q", data, "new stunmesh text")
 	}
-	info, err := os.Stat(cfg.StunmeshConfigPath)
+	info, err := os.Stat(cfg.Stunmesh.WritePath)
 	if err != nil {
 		t.Fatalf("stat stunmesh config: %v", err)
 	}
@@ -432,7 +427,7 @@ func TestApplyDiff_FailurePartwayThroughLeavesLastJSONUnwritten(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -479,7 +474,7 @@ func TestApplyDiff_ErrorNeverLeaksSecrets(t *testing.T) {
 	}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -527,7 +522,7 @@ func TestApplyDiff_IfupRunsOnlyForNewAndChangedInterfaces(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
@@ -547,22 +542,20 @@ func TestApplyDiff_IfupRunsOnlyForNewAndChangedInterfaces(t *testing.T) {
 		t.Errorf("ifup calls = %+v, want %+v (wg2 unchanged and wg3 removed must get none)", ifupCalls, want)
 	}
 
-	// "ifup" must run after "ubus call network reload" and before the
-	// stunmesh init.d call (applyDiff's doc comment "Steps", step 4).
+	// "ifup" must run after "ubus call network reload" (applyDiff's doc
+	// comment "Steps", step 4).
 	calls := fake.Calls()
-	reloadIdx, ifupWG0Idx, initdIdx := -1, -1, -1
+	reloadIdx, ifupWG0Idx := -1, -1
 	for i, call := range calls {
 		switch {
 		case call.Name == "ubus":
 			reloadIdx = i
 		case call.Name == "ifup" && len(call.Args) == 1 && call.Args[0] == "wg0":
 			ifupWG0Idx = i
-		case call.Name == "/etc/init.d/stunmesh":
-			initdIdx = i
 		}
 	}
-	if !(reloadIdx >= 0 && reloadIdx < ifupWG0Idx && ifupWG0Idx < initdIdx) {
-		t.Errorf("call order = %+v: want reload (%d) < ifup wg0 (%d) < init.d stunmesh (%d)", calls, reloadIdx, ifupWG0Idx, initdIdx)
+	if !(reloadIdx >= 0 && reloadIdx < ifupWG0Idx) {
+		t.Errorf("call order = %+v: want reload (%d) < ifup wg0 (%d)", calls, reloadIdx, ifupWG0Idx)
 	}
 }
 
@@ -604,7 +597,7 @@ func TestApplyDiff_IfupFailureIsFatal(t *testing.T) {
 	fake := execx.NewFake(results...)
 	env.Runner = fake
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitError {
 		t.Fatalf("code = %d, want %d", code, ExitError)
 	}
@@ -619,7 +612,7 @@ func TestApplyDiff_IfupFailureIsFatal(t *testing.T) {
 	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
 		t.Errorf("last.json was written after a failing ifup: err=%v", err)
 	}
-	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(cfg.Stunmesh.WritePath); !os.IsNotExist(err) {
 		t.Errorf("stunmesh config file was written after a failing ifup: err=%v", err)
 	}
 }

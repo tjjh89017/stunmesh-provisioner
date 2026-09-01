@@ -1,522 +1,296 @@
 package main
 
 import (
-	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// --- parseConfigFile: the flat --config file grammar ---
-
-func TestParseConfigFile_BasicKeyValue(t *testing.T) {
-	fc, err := parseConfigFile(strings.NewReader("namespace=mymesh-7f3a\nnode_id=alpha\n"))
-	if err != nil {
-		t.Fatalf("parseConfigFile: %v", err)
-	}
-	if fc.Namespace == nil || *fc.Namespace != "mymesh-7f3a" {
-		t.Errorf("Namespace = %v, want mymesh-7f3a", fc.Namespace)
-	}
-	if fc.NodeID == nil || *fc.NodeID != "alpha" {
-		t.Errorf("NodeID = %v, want alpha", fc.NodeID)
-	}
-}
-
-func TestParseConfigFile_BlankLinesAndComments(t *testing.T) {
-	input := `# this is a comment
-namespace=mymesh-7f3a
-
-   # indented comment, ignored
-node_id=alpha
-
-`
-	fc, err := parseConfigFile(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("parseConfigFile: %v", err)
-	}
-	if fc.Namespace == nil || *fc.Namespace != "mymesh-7f3a" {
-		t.Errorf("Namespace = %v, want mymesh-7f3a", fc.Namespace)
-	}
-	if fc.NodeID == nil || *fc.NodeID != "alpha" {
-		t.Errorf("NodeID = %v, want alpha", fc.NodeID)
-	}
-}
-
-func TestParseConfigFile_WhitespaceAroundKeyAndValue(t *testing.T) {
-	fc, err := parseConfigFile(strings.NewReader("  namespace  =   mymesh-7f3a  \n"))
-	if err != nil {
-		t.Fatalf("parseConfigFile: %v", err)
-	}
-	if fc.Namespace == nil || *fc.Namespace != "mymesh-7f3a" {
-		t.Errorf("Namespace = %q, want %q", derefOr(fc.Namespace, "<nil>"), "mymesh-7f3a")
-	}
-}
-
-func TestParseConfigFile_RepeatableProxy(t *testing.T) {
-	input := "proxy=https://a.example\nproxy=https://b.example\n"
-	fc, err := parseConfigFile(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("parseConfigFile: %v", err)
-	}
-	want := []string{"https://a.example", "https://b.example"}
-	if len(fc.Proxies) != len(want) {
-		t.Fatalf("Proxies = %v, want %v", fc.Proxies, want)
-	}
-	for i, p := range want {
-		if fc.Proxies[i] != p {
-			t.Errorf("Proxies[%d] = %q, want %q", i, fc.Proxies[i], p)
-		}
-	}
-}
-
-func TestParseConfigFile_UnknownKeyRejected(t *testing.T) {
-	_, err := parseConfigFile(strings.NewReader("bogus=value\n"))
-	if err == nil {
-		t.Fatal("parseConfigFile: want error for unknown key, got nil")
-	}
-	if !strings.Contains(err.Error(), "bogus") {
-		t.Errorf("error = %v, want it to name the key %q", err, "bogus")
-	}
-	if !strings.Contains(err.Error(), "line 1") {
-		t.Errorf("error = %v, want it to name the line number", err)
-	}
-}
-
-func TestParseConfigFile_MalformedLineRejected(t *testing.T) {
-	_, err := parseConfigFile(strings.NewReader("namespace=mymesh\nthis has no equals sign\n"))
-	if err == nil {
-		t.Fatal("parseConfigFile: want error for malformed line, got nil")
-	}
-	if !strings.Contains(err.Error(), "line 2") {
-		t.Errorf("error = %v, want it to name line 2", err)
-	}
-}
-
-func TestParseConfigFile_EmptyValueRejected(t *testing.T) {
-	_, err := parseConfigFile(strings.NewReader("namespace=\n"))
-	if err == nil {
-		t.Fatal("parseConfigFile: want error for empty value, got nil")
-	}
-}
-
-func TestParseConfigFile_DuplicateNonProxyKeyRejected(t *testing.T) {
-	_, err := parseConfigFile(strings.NewReader("namespace=a\nnamespace=b\n"))
-	if err == nil {
-		t.Fatal("parseConfigFile: want error for duplicate key, got nil")
-	}
-	if !strings.Contains(err.Error(), "namespace") {
-		t.Errorf("error = %v, want it to name the key", err)
-	}
-}
-
-func TestParseConfigFile_ErrorNeverEchoesValue(t *testing.T) {
-	_, err := parseConfigFile(strings.NewReader("controller_pubkey=THIS-SECRET-LOOKING-VALUE\ncontroller_pubkey=again\n"))
-	if err == nil {
-		t.Fatal("want error")
-	}
-	if strings.Contains(err.Error(), "THIS-SECRET-LOOKING-VALUE") || strings.Contains(err.Error(), "again") {
-		t.Errorf("error leaks a value: %v", err)
-	}
-}
-
-func TestParseConfigFile_AllKnownKeys(t *testing.T) {
-	input := strings.Join([]string{
-		"namespace=ns",
-		"node_id=n1",
-		"controller_pubkey=pk",
-		"backend=dhtproxy",
-		"proxy=https://p1.example",
-		"identity_key=/tmp/id.key",
-		"last=/tmp/last.json",
-		"lock=/tmp/lock",
-		"stunmesh_config=/tmp/config.yaml",
-	}, "\n") + "\n"
-
-	fc, err := parseConfigFile(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("parseConfigFile: %v", err)
-	}
-	checks := map[string]*string{
-		"namespace":         fc.Namespace,
-		"node_id":           fc.NodeID,
-		"controller_pubkey": fc.ControllerPubkey,
-		"backend":           fc.Backend,
-		"identity_key":      fc.IdentityKey,
-		"last":              fc.Last,
-		"lock":              fc.Lock,
-		"stunmesh_config":   fc.StunmeshConfig,
-	}
-	for name, got := range checks {
-		if got == nil {
-			t.Errorf("%s not parsed", name)
-		}
-	}
-	if len(fc.Proxies) != 1 || fc.Proxies[0] != "https://p1.example" {
-		t.Errorf("Proxies = %v", fc.Proxies)
-	}
-}
-
-func derefOr(s *string, fallback string) string {
-	if s == nil {
-		return fallback
-	}
-	return *s
-}
-
-// --- resolveConfig: flag/--config precedence ---
-
-func newTestFlagSeam(t *testing.T) *flagSeam {
+func writeConfig(t *testing.T, dir, content string) string {
 	t.Helper()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	return registerFlags(fs)
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	return path
 }
 
-func TestResolveConfig_FlagWinsOverConfigFile(t *testing.T) {
+const validPubkey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+func minimalConfigYAML() string {
+	return "namespace: ns\nnode_id: n1\ncontroller_pubkey: " + validPubkey + "\n"
+}
+
+func TestFindConfigFile_ExactFileMustExist(t *testing.T) {
+	if _, err := findConfigFile(filepath.Join(t.TempDir(), "missing.yaml"), ""); err == nil {
+		t.Errorf("err = nil, want an error for a missing --config file")
+	}
+}
+
+func TestFindConfigFile_ExactFileFound(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "namespace=from-file\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--namespace", "from-flag", "--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	cfg, err := resolveConfig(seam)
+	path := writeConfig(t, dir, minimalConfigYAML())
+	got, err := findConfigFile(path, "/does/not/matter")
 	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+		t.Fatalf("findConfigFile: %v", err)
 	}
-	if cfg.Namespace != "from-flag" {
-		t.Errorf("Namespace = %q, want %q (flag must win)", cfg.Namespace, "from-flag")
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
 	}
 }
 
-func TestResolveConfig_ConfigFileFillsWhatFlagOmits(t *testing.T) {
+func TestFindConfigFile_SearchesConfigDir(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "namespace=from-file\nnode_id=n1\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	cfg, err := resolveConfig(seam)
+	path := writeConfig(t, dir, minimalConfigYAML())
+	got, err := findConfigFile("", dir)
 	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+		t.Fatalf("findConfigFile: %v", err)
 	}
-	if cfg.Namespace != "from-file" {
-		t.Errorf("Namespace = %q, want %q", cfg.Namespace, "from-file")
-	}
-	if cfg.NodeID != "n1" {
-		t.Errorf("NodeID = %q, want %q", cfg.NodeID, "n1")
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
 	}
 }
 
-func TestResolveConfig_ProxyFlagReplacesConfigFileProxiesEntirely(t *testing.T) {
+func TestFindConfigFile_MissingInDirIsNotAnError(t *testing.T) {
+	got, err := findConfigFile("", t.TempDir())
+	if err != nil {
+		t.Fatalf("findConfigFile: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (not provisioned yet)", got)
+	}
+}
+
+func TestFindConfigFile_PrefersYamlOverYml(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "proxy=https://file1.example\nproxy=https://file2.example\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--proxy", "https://flag1.example", "--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "config.yml"), []byte(minimalConfigYAML()), 0o600); err != nil {
+		t.Fatalf("write config.yml: %v", err)
 	}
-
-	cfg, err := resolveConfig(seam)
+	yamlPath := writeConfig(t, dir, minimalConfigYAML())
+	got, err := findConfigFile("", dir)
 	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+		t.Fatalf("findConfigFile: %v", err)
 	}
-	if len(cfg.Proxies) != 1 || cfg.Proxies[0] != "https://flag1.example" {
-		t.Errorf("Proxies = %v, want exactly the flag's list", cfg.Proxies)
+	if got != yamlPath {
+		t.Errorf("got %q, want config.yaml preferred over config.yml", got)
 	}
 }
 
-func TestResolveConfig_ConfigFileProxiesUsedWhenNoProxyFlag(t *testing.T) {
+func TestLoadConfig_MinimalDefaults(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "proxy=https://file1.example\nproxy=https://file2.example\n")
+	path := writeConfig(t, dir, minimalConfigYAML())
 
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	cfg, err := resolveConfig(seam)
+	cfg, err := loadConfig(path)
 	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+		t.Fatalf("loadConfig: %v", err)
 	}
-	want := []string{"https://file1.example", "https://file2.example"}
-	if len(cfg.Proxies) != len(want) {
-		t.Fatalf("Proxies = %v, want %v", cfg.Proxies, want)
+	if cfg.Namespace != "ns" || cfg.NodeID != "n1" || cfg.ControllerPubkey != validPubkey {
+		t.Errorf("cfg = %+v, want the three required fields set", cfg)
 	}
-	for i := range want {
-		if cfg.Proxies[i] != want[i] {
-			t.Errorf("Proxies[%d] = %q, want %q", i, cfg.Proxies[i], want[i])
-		}
+	if cfg.RefreshInterval != defaultRefreshInterval {
+		t.Errorf("RefreshInterval = %v, want %v", cfg.RefreshInterval, defaultRefreshInterval)
 	}
-}
-
-func TestResolveConfig_DefaultProxiesWhenNeitherFlagNorFileGiven(t *testing.T) {
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse(nil); err != nil {
-		t.Fatalf("Parse: %v", err)
+	if cfg.FullApplyInterval != defaultFullApplyInterval {
+		t.Errorf("FullApplyInterval = %v, want %v", cfg.FullApplyInterval, defaultFullApplyInterval)
 	}
-
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+	if cfg.IdentityKeyPath != filepath.Join(dir, "identity.key") {
+		t.Errorf("IdentityKeyPath = %q, want alongside config.yaml", cfg.IdentityKeyPath)
 	}
-	if len(cfg.Proxies) != len(defaultProxies) {
-		t.Fatalf("Proxies = %v, want %v", cfg.Proxies, defaultProxies)
-	}
-	for i := range defaultProxies {
-		if cfg.Proxies[i] != defaultProxies[i] {
-			t.Errorf("Proxies[%d] = %q, want %q", i, cfg.Proxies[i], defaultProxies[i])
-		}
-	}
-}
-
-func TestResolveConfig_DefaultBackendWhenNeitherFlagNorFileGiven(t *testing.T) {
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse(nil); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
-	}
-	if cfg.Backend != defaultBackend {
-		t.Errorf("Backend = %q, want %q", cfg.Backend, defaultBackend)
-	}
-}
-
-func TestResolveConfig_BackendFlagWinsOverConfigFile(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "backend=from-file\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--backend", "from-flag", "--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
-	}
-	if cfg.Backend != "from-flag" {
-		t.Errorf("Backend = %q, want %q (flag must win)", cfg.Backend, "from-flag")
-	}
-}
-
-func TestResolveConfig_ConfigFileBackendUsedWhenNoFlagGiven(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "backend=from-file\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
-	}
-	if cfg.Backend != "from-file" {
-		t.Errorf("Backend = %q, want %q", cfg.Backend, "from-file")
-	}
-}
-
-func TestResolveConfig_DefaultPathsWhenNeitherFlagNorFileGiven(t *testing.T) {
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse(nil); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
-	}
-	if cfg.IdentityKeyPath != defaultIdentityKeyPath {
-		t.Errorf("IdentityKeyPath = %q, want %q", cfg.IdentityKeyPath, defaultIdentityKeyPath)
-	}
-	if cfg.LastPath != defaultLastPath {
-		t.Errorf("LastPath = %q, want %q", cfg.LastPath, defaultLastPath)
+	if cfg.LastPath != filepath.Join(dir, "last.json") {
+		t.Errorf("LastPath = %q, want alongside config.yaml", cfg.LastPath)
 	}
 	if cfg.LockPath != defaultLockPath {
 		t.Errorf("LockPath = %q, want %q", cfg.LockPath, defaultLockPath)
 	}
-	if cfg.StunmeshConfigPath != defaultStunmeshConfigPath {
-		t.Errorf("StunmeshConfigPath = %q, want %q", cfg.StunmeshConfigPath, defaultStunmeshConfigPath)
+	if len(cfg.Proxies) != len(defaultProxies) {
+		t.Errorf("Proxies = %v, want the built-in default list", cfg.Proxies)
+	}
+	if cfg.Stunmesh.WritePath != defaultStunmeshConfigPath {
+		t.Errorf("Stunmesh.WritePath = %q, want %q", cfg.Stunmesh.WritePath, defaultStunmeshConfigPath)
+	}
+	if cfg.Stunmesh.AppOptions.ConfigFile != defaultStunmeshConfigPath {
+		t.Errorf("Stunmesh.AppOptions.ConfigFile = %q, want %q", cfg.Stunmesh.AppOptions.ConfigFile, defaultStunmeshConfigPath)
 	}
 }
 
-func TestResolveConfig_ConfigFilePathOverridesDefault(t *testing.T) {
+func TestLoadConfig_MissingRequiredKeys(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "last=/custom/last.json\n")
+	path := writeConfig(t, dir, "namespace: ns\n")
 
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
+	_, err := loadConfig(path)
+	if err == nil {
+		t.Fatal("err = nil, want an error naming the missing keys")
 	}
-	cfg, err := resolveConfig(seam)
+	if !strings.Contains(err.Error(), "node_id") || !strings.Contains(err.Error(), "controller_pubkey") {
+		t.Errorf("err = %v, want it to name both missing keys", err)
+	}
+}
+
+func TestLoadConfig_UnknownKeyRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, minimalConfigYAML()+"bogus_key: 1\n")
+
+	_, err := loadConfig(path)
+	if err == nil {
+		t.Fatal("err = nil, want an error for an unknown key")
+	}
+	if !strings.Contains(err.Error(), "bogus_key") {
+		t.Errorf("err = %v, want it to name the unknown key", err)
+	}
+}
+
+func TestLoadConfig_BadControllerPubkeyNeverEchoed(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := "sentinel-not-a-real-key-B64=="
+	path := writeConfig(t, dir, "namespace: ns\nnode_id: n1\ncontroller_pubkey: "+sentinel+"\n")
+
+	_, err := loadConfig(path)
+	if err == nil {
+		t.Fatal("err = nil, want an error for a bad controller_pubkey")
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Errorf("err = %v, leaked the bad key value", err)
+	}
+}
+
+func TestLoadConfig_RefreshIntervalZeroIsError(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, minimalConfigYAML()+"refresh_interval: 0\n")
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("err = nil, want refresh_interval: 0 to be rejected")
+	}
+}
+
+func TestLoadConfig_FullApplyIntervalZeroDisablesIt(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, minimalConfigYAML()+"full_apply_interval: 0\n")
+	cfg, err := loadConfig(path)
 	if err != nil {
-		t.Fatalf("resolveConfig: %v", err)
+		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.LastPath != "/custom/last.json" {
-		t.Errorf("LastPath = %q, want %q", cfg.LastPath, "/custom/last.json")
-	}
-}
-
-func TestResolveConfig_MissingConfigFileIsAnError(t *testing.T) {
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", "/no/such/file"}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if _, err := resolveConfig(seam); err == nil {
-		t.Fatal("resolveConfig: want error for a missing --config file, got nil")
+	if cfg.FullApplyInterval != 0 {
+		t.Errorf("FullApplyInterval = %v, want 0 (disabled)", cfg.FullApplyInterval)
 	}
 }
 
-func TestResolveConfig_BadConfigFileIsAnError(t *testing.T) {
+func TestLoadConfig_FullApplyIntervalNegativeIsError(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "agent.conf")
-	writeFile(t, configPath, "not a valid line\n")
-
-	seam := newTestFlagSeam(t)
-	if err := seam.fs.Parse([]string{"--config", configPath}); err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if _, err := resolveConfig(seam); err == nil {
-		t.Fatal("resolveConfig: want error for a malformed --config file, got nil")
+	path := writeConfig(t, dir, minimalConfigYAML()+"full_apply_interval: -1h\n")
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("err = nil, want a negative full_apply_interval to be rejected")
 	}
 }
 
-// --- Config validation ---
+func TestLoadConfig_ExplicitPathsOverrideDefaults(t *testing.T) {
+	dir := t.TempDir()
+	otherDir := t.TempDir()
+	yaml := minimalConfigYAML() +
+		"identity_key: " + filepath.Join(otherDir, "id.key") + "\n" +
+		"last: " + filepath.Join(otherDir, "last.json") + "\n" +
+		"lock: " + filepath.Join(otherDir, "agent.lock") + "\n"
+	path := writeConfig(t, dir, yaml)
 
-func TestValidateFetch_ReportsAllMissingSettings(t *testing.T) {
-	cfg := &Config{}
-	err := cfg.ValidateFetch()
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.IdentityKeyPath != filepath.Join(otherDir, "id.key") {
+		t.Errorf("IdentityKeyPath = %q", cfg.IdentityKeyPath)
+	}
+	if cfg.LastPath != filepath.Join(otherDir, "last.json") {
+		t.Errorf("LastPath = %q", cfg.LastPath)
+	}
+	if cfg.LockPath != filepath.Join(otherDir, "agent.lock") {
+		t.Errorf("LockPath = %q", cfg.LockPath)
+	}
+}
+
+func TestLoadConfig_UsePluginResolvesBackend(t *testing.T) {
+	dir := t.TempDir()
+	yaml := minimalConfigYAML() +
+		"use_plugin: mydht\n" +
+		"plugins:\n" +
+		"  mydht:\n" +
+		"    type: dhtproxy\n" +
+		"    proxies:\n" +
+		"      - https://example.invalid/proxy\n"
+	path := writeConfig(t, dir, yaml)
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.Proxies) != 1 || cfg.Proxies[0] != "https://example.invalid/proxy" {
+		t.Errorf("Proxies = %v, want the one configured proxy", cfg.Proxies)
+	}
+}
+
+func TestLoadConfig_UsePluginMissingEntryIsError(t *testing.T) {
+	dir := t.TempDir()
+	yaml := minimalConfigYAML() + "use_plugin: mydht\n"
+	path := writeConfig(t, dir, yaml)
+
+	_, err := loadConfig(path)
 	if err == nil {
-		t.Fatal("ValidateFetch: want error, got nil")
-	}
-	// --identity-key is not in this list: unlike namespace, node-id,
-	// and controller-pubkey, it always carries a default
-	// (defaultIdentityKeyPath, registerFlags) once resolveConfig has
-	// run, so a bare zero-value Config{} (as here, built without
-	// resolveConfig) is the only way to see it empty at all, and even
-	// then it fails ValidateFetch on its own dedicated check below,
-	// not through this "missing" list.
-	for _, want := range []string{"--namespace", "--node-id", "--controller-pubkey"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %v, want it to mention %q", err, want)
-		}
+		t.Fatal("err = nil, want use_plugin naming a missing entry to be rejected")
 	}
 }
 
-// TestValidateFetch_EmptyIdentityKeyPath pins --identity-key's own
-// check, separate from the "missing" list above: an explicit empty
-// value (only reachable via --identity-key "", since the flag
-// otherwise always carries defaultIdentityKeyPath) must still fail.
-func TestValidateFetch_EmptyIdentityKeyPath(t *testing.T) {
-	cfg := &Config{
-		Namespace:          "ns",
-		NodeID:             "n1",
-		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		Backend:            "dhtproxy",
-		IdentityKeyPath:    "",
-		Proxies:            []string{"https://p.example"},
-		LastPath:           defaultLastPath,
-		LockPath:           defaultLockPath,
-		StunmeshConfigPath: defaultStunmeshConfigPath,
+func TestResolveStunmeshConfig_ConfigFileWins(t *testing.T) {
+	rs := &rawStunmesh{Config: strptr("/etc/stunmesh/custom.yaml"), ConfigDir: strptr("/etc/stunmesh/dir")}
+	got := resolveStunmeshConfig(rs)
+	if got.WritePath != "/etc/stunmesh/custom.yaml" {
+		t.Errorf("WritePath = %q", got.WritePath)
 	}
-	err := cfg.ValidateFetch()
-	if err == nil {
-		t.Fatal("ValidateFetch: want error for an empty --identity-key, got nil")
-	}
-	if !strings.Contains(err.Error(), "--identity-key") {
-		t.Errorf("error = %v, want it to name --identity-key", err)
+	if got.AppOptions.ConfigFile != "/etc/stunmesh/custom.yaml" || got.AppOptions.ConfigDir != "" {
+		t.Errorf("AppOptions = %+v, want only ConfigFile set", got.AppOptions)
 	}
 }
 
-func TestValidateFetch_RejectsBadControllerPubkey(t *testing.T) {
-	cfg := &Config{
-		Namespace:          "ns",
-		NodeID:             "n1",
-		ControllerPubkey:   "not-base64-32-bytes",
-		IdentityKeyPath:    "/tmp/id.key",
-		Proxies:            []string{"https://p.example"},
-		LastPath:           defaultLastPath,
-		LockPath:           defaultLockPath,
-		StunmeshConfigPath: defaultStunmeshConfigPath,
+func TestResolveStunmeshConfig_ConfigDirOnly(t *testing.T) {
+	rs := &rawStunmesh{ConfigDir: strptr("/etc/stunmesh")}
+	got := resolveStunmeshConfig(rs)
+	if got.WritePath != filepath.Join("/etc/stunmesh", "config.yaml") {
+		t.Errorf("WritePath = %q", got.WritePath)
 	}
-	err := cfg.ValidateFetch()
-	if err == nil {
-		t.Fatal("ValidateFetch: want error for a bad controller pubkey, got nil")
-	}
-	if strings.Contains(err.Error(), "not-base64-32-bytes") {
-		t.Errorf("error leaks the bad value: %v", err)
+	if got.AppOptions.ConfigDir != "/etc/stunmesh" || got.AppOptions.ConfigFile != "" {
+		t.Errorf("AppOptions = %+v, want only ConfigDir set", got.AppOptions)
 	}
 }
 
-func TestValidateFetch_RejectsUnknownBackendType(t *testing.T) {
-	cfg := &Config{
-		Namespace:          "ns",
-		NodeID:             "n1",
-		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		Backend:            "sentinel-bogus-backend-type",
-		IdentityKeyPath:    "/tmp/id.key",
-		Proxies:            []string{"https://p.example"},
-		LastPath:           defaultLastPath,
-		LockPath:           defaultLockPath,
-		StunmeshConfigPath: defaultStunmeshConfigPath,
-	}
-	err := cfg.ValidateFetch()
-	if err == nil {
-		t.Fatal("ValidateFetch: want error for an unknown backend type, got nil")
-	}
-	if !strings.Contains(err.Error(), "--backend") {
-		t.Errorf("error = %v, want it to name --backend", err)
-	}
-	if strings.Contains(err.Error(), "sentinel-bogus-backend-type") {
-		t.Errorf("error leaks the bad value: %v", err)
+func TestResolveStunmeshConfig_NilUsesDefault(t *testing.T) {
+	got := resolveStunmeshConfig(nil)
+	if got.WritePath != defaultStunmeshConfigPath {
+		t.Errorf("WritePath = %q, want %q", got.WritePath, defaultStunmeshConfigPath)
 	}
 }
 
-func TestValidateFetch_OKWithEverythingSet(t *testing.T) {
-	cfg := &Config{
-		Namespace:          "ns",
-		NodeID:             "n1",
-		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		Backend:            "dhtproxy",
-		IdentityKeyPath:    "/tmp/id.key",
-		Proxies:            []string{"https://p.example"},
-		LastPath:           defaultLastPath,
-		LockPath:           defaultLockPath,
-		StunmeshConfigPath: defaultStunmeshConfigPath,
+func TestLoadStunmeshOnlyConfig_EmptyPathUsesDefaults(t *testing.T) {
+	got, err := loadStunmeshOnlyConfig("")
+	if err != nil {
+		t.Fatalf("loadStunmeshOnlyConfig: %v", err)
 	}
-	if err := cfg.ValidateFetch(); err != nil {
-		t.Errorf("ValidateFetch: %v, want nil", err)
+	if got.WritePath != defaultStunmeshConfigPath {
+		t.Errorf("WritePath = %q, want %q", got.WritePath, defaultStunmeshConfigPath)
 	}
 }
 
-func TestValidateKeygen_RequiresOnlyIdentityKey(t *testing.T) {
-	cfg := &Config{}
-	if err := cfg.ValidateKeygen(); err == nil {
-		t.Fatal("ValidateKeygen: want error when --identity-key is missing, got nil")
-	}
+// TestLoadStunmeshOnlyConfig_IgnoresOtherRequiredFields proves
+// --stunmesh-only never needs namespace/node_id/controller_pubkey:
+// a config.yaml missing all three, but with a "stunmesh" section, is
+// still accepted.
+func TestLoadStunmeshOnlyConfig_IgnoresOtherRequiredFields(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "stunmesh:\n  config_dir: /etc/stunmesh\n")
 
-	cfg.IdentityKeyPath = "/tmp/id.key"
-	if err := cfg.ValidateKeygen(); err != nil {
-		t.Errorf("ValidateKeygen: %v, want nil (namespace/node-id/controller-pubkey/proxy must not be required)", err)
+	got, err := loadStunmeshOnlyConfig(path)
+	if err != nil {
+		t.Fatalf("loadStunmeshOnlyConfig: %v", err)
+	}
+	if got.AppOptions.ConfigDir != "/etc/stunmesh" {
+		t.Errorf("AppOptions.ConfigDir = %q", got.AppOptions.ConfigDir)
 	}
 }
 
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
+func strptr(s string) *string { return &s }

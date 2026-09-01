@@ -240,16 +240,10 @@ type Node struct {
 // existing, permissive behavior rather than introducing strictness
 // only for the new nested form.
 type provdYAML struct {
-	Proxies           []string              `json:"proxies"`
-	Plugins           map[string]pluginYAML `json:"plugins"`
-	UsePlugin         string                `json:"use_plugin"`
-	RepublishInterval string                `json:"republish_interval"`
-}
-
-// pluginYAML is one entry in provd.yaml's "plugins" map.
-type pluginYAML struct {
-	Type    string   `json:"type"`
-	Proxies []string `json:"proxies"`
+	Proxies           []string                      `json:"proxies"`
+	Plugins           map[string]backend.PluginSpec `json:"plugins"`
+	UsePlugin         string                        `json:"use_plugin"`
+	RepublishInterval string                        `json:"republish_interval"`
 }
 
 // backendConfig resolves p's backend selection into a BackendConfig,
@@ -258,43 +252,23 @@ type pluginYAML struct {
 // never carries a value out of the file itself (an operator-chosen
 // plugin name or type), only the name of the key involved, matching
 // this package's no-file-content rule (package doc "Errors").
+//
+// The actual resolution rules live in backend.Resolve, shared with
+// stunmesh-agent's config.yaml loader (docs/format.md section 3 is
+// one rule table for both readers); this function only adapts
+// provdYAML's shape to backend.Selection and wraps backend.Resolve's
+// error with ErrMalformed and provdPath, so the exact error text this
+// package has always returned does not change.
 func backendConfig(p provdYAML, provdPath string) (BackendConfig, error) {
-	hasProxies := p.Proxies != nil
-	hasPlugins := p.Plugins != nil
-	hasUsePlugin := p.UsePlugin != ""
-
-	switch {
-	case hasProxies:
-		// A top-level "proxies" list is a retired shorthand form; it is
-		// no longer a valid provd.yaml key at all. Point the operator at
-		// the one remaining form instead of silently ignoring the list.
-		return BackendConfig{}, fmt.Errorf("%w: %s: top-level proxies is no longer supported: move the list into a plugins entry (see docs/format.md section 3)", ErrMalformed, provdPath)
-	case !hasPlugins:
-		return BackendConfig{}, fmt.Errorf("%w: %s: plugins is required", ErrMalformed, provdPath)
-	case !hasUsePlugin:
-		return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin is required", ErrMalformed, provdPath)
-	default:
-		plugin, ok := p.Plugins[p.UsePlugin]
-		if !ok {
-			return BackendConfig{}, fmt.Errorf("%w: %s: use_plugin names a missing plugins entry", ErrMalformed, provdPath)
-		}
-		if plugin.Type != backend.TypeDHTProxy {
-			return BackendConfig{}, fmt.Errorf("%w: %s: unknown plugin type", ErrMalformed, provdPath)
-		}
-		// docs/format.md section 3's table marks "plugins.*.proxies" as
-		// "Required when type is dhtproxy". Without this check, a
-		// plugin entry with no proxies (or an explicit empty list)
-		// resolves to a BackendConfig with an empty Proxies slice, and
-		// the failure only ever surfaces later, at publish time, deep
-		// inside dhtproxy.New -- with a message that never names
-		// provd.yaml at all. Catching it here, at the one place every
-		// reader of provd.yaml goes through, gives the operator a clear
-		// error naming the file and the field instead.
-		if len(plugin.Proxies) == 0 {
-			return BackendConfig{}, fmt.Errorf("%w: %s: plugins.*.proxies is required for a dhtproxy plugin", ErrMalformed, provdPath)
-		}
-		return BackendConfig{Type: backend.TypeDHTProxy, Proxies: plugin.Proxies}, nil
+	resolved, err := backend.Resolve(backend.Selection{
+		Plugins:   p.Plugins,
+		UsePlugin: p.UsePlugin,
+		Proxies:   p.Proxies,
+	})
+	if err != nil {
+		return BackendConfig{}, fmt.Errorf("%w: %s: %v", ErrMalformed, provdPath, err)
 	}
+	return BackendConfig{Type: resolved.Type, Proxies: resolved.Proxies}, nil
 }
 
 // Namespaces lists the namespace directories directly under root. It
