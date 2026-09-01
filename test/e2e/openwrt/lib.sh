@@ -772,6 +772,49 @@ guest_capture() {
 	fi
 }
 
+# wait_for_pgrep PORT KEY NAME [ATTEMPTS] [INTERVAL_SECONDS] [EXCLUDE_PID]
+# -- polls `pgrep -x NAME` in the guest every INTERVAL_SECONDS (default
+# 1s), up to ATTEMPTS times (default 10, so 10s total), and prints the
+# first pid it finds. Dies if NAME never shows up within that budget.
+#
+# EXCLUDE_PID, when given, is a pid to treat as "not found yet" -- a
+# restart/reload caller's own pre-restart pid, so a lingering old
+# instance that has not exited yet cannot be mistaken for restart
+# evidence (see daemon.go's rc.common `restart` = stop then start: the
+# old instance is not guaranteed to be gone the instant the reload
+# command returns).
+#
+# Replaces a fixed `sleep N` followed by a single pgrep read: a fixed sleep
+# only proves "the process existed at some earlier instant, if it ever
+# does" when it happens to land after the process is up, and procd gives no
+# fixed deadline for that -- start_service returns as soon as procd has
+# forked the instance, not once its first cycle (fetch, decrypt, apply) has
+# actually reached the kernel, and a respawn (a crash, a reload) reforks on
+# its own schedule too. A single point-in-time pgrep can land in the gap
+# between an old instance exiting and procd forking the next one even while
+# the service is healthy, exactly like this same problem in wait_for_ssh
+# above -- poll instead of guessing one delay that covers every case.
+#
+# guest_capture's own "" fallback (not its no-FALLBACK sentinel) is what
+# makes a plain `[[ -n "$pid" ]]` the right emptiness check below: a failed
+# read and "pgrep found nothing" both come back as "", exactly what this
+# loop should retry either way.
+wait_for_pgrep() {
+	local port="$1" key="$2" name="$3"
+	local attempts="${4:-10}" interval="${5:-1}" exclude_pid="${6:-}"
+	local attempt=1 pid
+	while (( attempt <= attempts )); do
+		pid=$(guest_capture "$port" "$key" "pgrep -x $name" "")
+		if [[ -n "$pid" ]] && [[ "$pid" != "$exclude_pid" ]]; then
+			printf '%s\n' "$pid"
+			return 0
+		fi
+		sleep "$interval"
+		attempt=$((attempt + 1))
+	done
+	die "No $name pid (other than excluded pid '${exclude_pid}') in the guest after polling for $(( attempts * interval ))s."
+}
+
 # guest_capture_failed VALUE -- true when VALUE is one of
 # guest_capture's own no-FALLBACK sentinels, i.e. the read behind it
 # never reached the guest. Callers that need to do arithmetic on a
