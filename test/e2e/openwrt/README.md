@@ -221,7 +221,12 @@ non-empty `stunmesh.yaml`: `interfaces: {}`, a legitimate
 `stunmesh-go` config with no interfaces, so the embedded app it makes
 the agent run has nothing to publish or establish and returns quickly,
 with no dependency on real STUN or network reachability from the
-guest.
+guest. It also carries one `plugins` entry, a builtin `opendht`
+plugin, so `--oneshot` constructs it at startup: an agent build
+missing the `builtin_all` (or `builtin_opendht`) tag fails that
+construction and exits non-zero, which the existing exit-0 assertion
+in `phase-diff-removal.sh` catches. The plugin's endpoint is never
+contacted -- construction only resolves and validates configuration.
 
 `fakeproxy/` (`main.go`) is a minimal stand-in for a real `dhtproxy`
 instance. It speaks the same wire shape `internal/dhtproxy.Client`
@@ -323,7 +328,9 @@ single function in isolation:
   embedded app's own run fast and network-free (see section 6): what
   is under test here is whether `stunmesh-agent` writes and removes
   `/etc/stunmesh/config.yaml` at the right steps, never `stunmesh-go`'s
-  own STUN/WireGuard behavior.
+  own STUN/WireGuard behavior. Its one `plugins` entry does construct a
+  builtin plugin at startup, but never dials it -- that entry exists to
+  catch a missing builtin build tag, not to exercise real plugin I/O.
 - **`-accel kvm` is hardcoded and never falls back to TCG.** A TCG
   boot is slow enough to hide the timing-sensitive `uci`/`ubus`/
   `netifd` races this harness exists to catch, so a silent fallback
