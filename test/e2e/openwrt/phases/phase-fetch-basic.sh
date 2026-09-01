@@ -12,22 +12,22 @@
 # thing the Go unit tests cannot check, since they run against a fake
 # exec (PLAN.md section 5).
 #
-# "Changes nothing" (PLAN.md 4.5, second fetch exits 3) is proven by
-# comparing three things captured before and after the second fetch:
-# a sha256sum of /etc/config/network (the file `uci commit` would
-# have rewritten), a sha256sum of last.json (the file a real apply
-# would have rewritten), and the line count of the stunmesh stand-in's
-# action log (which a real apply would have appended to). All three
-# must be identical, or the second fetch touched something it should
-# not have.
+# "Changes nothing" is proven by comparing two things captured before
+# and after the second fetch: a sha256sum of /etc/config/network (the
+# file `uci commit` would have rewritten) and a sha256sum of last.json
+# (the file a real apply would have rewritten). Both must be
+# identical, or the second fetch touched something it should not
+# have. --oneshot always exits 0 (there is no more separate "no
+# change" exit code, cli.go's ExitOK doc comment), so the exit code
+# itself cannot distinguish "applied" from "changed nothing" -- these
+# file comparisons are what does.
 #
 # Deliberately out of scope here: removing an interface, tearing down
 # stunmesh, and more than one interface. Those are the next item.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
-# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY and FAKEPROXY_GUEST_URL, all set by run.sh or
-# lib.sh before any phase runs.
+# Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
+# all set by run.sh or lib.sh before any phase runs.
 set -euo pipefail
 
 # render_fetch_basic_fixture -- renders fixtures/basic-wg0/wg.yaml.tmpl
@@ -72,7 +72,7 @@ phase_fetch_basic() {
 	render_fetch_basic_fixture
 	publish_fixture "$FETCH_BASIC_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
 
 	assert_ssh_exit_code "first fetch applies the bundle (exit 0)" "$fetch_cmd" 0
 
@@ -124,22 +124,18 @@ phase_fetch_basic() {
 	# missing, a plain read would abort the whole harness under `set -e`
 	# instead of letting assert_equal below report the mismatch and the
 	# run continue (see lib.sh's guest_capture for why).
-	local before_network_sha before_last_sha before_actions
+	local before_network_sha before_last_sha
 	before_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
 	before_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/agent/last.json")
-	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
-	assert_ssh_exit_code "second fetch with the same bundle exits 3 (no change)" "$fetch_cmd" 3
+	assert_ssh_exit_code "second fetch with the same bundle exits 0 (no change)" "$fetch_cmd" 0
 
-	local after_network_sha after_last_sha after_actions
+	local after_network_sha after_last_sha
 	after_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
 	after_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/agent/last.json")
-	after_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
 	assert_equal "second fetch left /etc/config/network byte-identical" \
 		"$after_network_sha" "$before_network_sha"
 	assert_equal "second fetch left last.json byte-identical" \
 		"$after_last_sha" "$before_last_sha"
-	assert_equal "second fetch issued no additional stunmesh stand-in action" \
-		"$after_actions" "$before_actions"
 }

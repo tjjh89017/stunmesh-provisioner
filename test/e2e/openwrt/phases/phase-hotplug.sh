@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# phase-hotplug.sh -- assertions D: hotplug (stage5 checklist item
-# 12's "hotplug runs fetch on WAN ifup"; contrib/openwrt/README.md
-# section 4).
+# phase-hotplug.sh -- assertions D: hotplug restarts the daemon
+# (contrib/openwrt/README.md section 4: hotplug-iface restarts
+# stunmesh-agent on WAN ifup, only when the service is already
+# running).
 #
 # contrib/openwrt/tests/test_hotplug.sh already covers hotplug-iface's
 # own guard clauses and its read-config-and-dispatch path against a
@@ -9,7 +10,8 @@
 # is whether netifd's real hotplug call reaches the real script: this
 # phase fires real "ifup"/"ifdown" through the real `ifup`/`ifdown`
 # tools, on real (if minimal) netifd interfaces, and reads the real
-# syslog for the fetch it should, or should not, have triggered.
+# syslog and process table for the restart it should, or should not,
+# have triggered.
 #
 # Firing real events, not calling /etc/hotplug.d/iface/95-stunmesh-agent
 # by hand with fabricated $ACTION/$INTERFACE, is deliberate: a
@@ -28,10 +30,13 @@
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses SSH_PORT and SSH_KEY, set by run.sh before any phase runs.
 # Self-contained like every other phase (see run.sh's own doc
-# comment): it adds and removes its own "wan"/"testif" UCI sections
-# and does not assume any other phase already defined a "wan"
-# interface (none of the others do).
+# comment): it starts and stops the daemon service itself, and adds
+# and removes its own "wan"/"testif" UCI sections, not assuming any
+# other phase already defined a "wan" interface or left the service
+# running (none of the others do).
 set -euo pipefail
+
+HOTPLUG_LOG_LINE="wan up: restarting stunmesh-agent"
 
 # add_bridge_iface NAME DEVICE ADDR -- defines a UCI interface NAME on
 # a bridge device DEVICE with no member ports, at static address ADDR.
@@ -68,81 +73,76 @@ remove_bridge_iface() {
 		|| die "Could not remove the ${name} bridge interface."
 }
 
-# hotplug_fetch_count -- the number of hotplug-iface log lines that
-# report a real fetch outcome (applied / no change / failed).
-# hotplug-iface (contrib/openwrt/hotplug-iface) also logs two guard-
-# clause lines that contain the plain substring "hotplug fetch"
-# ("...; skipping hotplug fetch", when /etc/config/stunmesh-agent is missing or
-# incomplete) without ever having run fetch at all. A plain substring
-# grep for "hotplug fetch" would count those too, so this matches only
-# the three lines that follow a real invocation: "hotplug fetch
-# applied", "hotplug fetch: no change" and "hotplug fetch failed, exit
-# code N". The guard-clause lines end in "hotplug fetch" with nothing
-# after it, so none of the three patterns below can match them.
-#
-# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
-# guest_capture for why a failed read here must not abort the harness
-# under `set -e` -- every caller below takes a before/after delta of
-# this count, the same pattern the guard exists for. The remote `||
-# true` stays: it absorbs grep's own "no match" exit so its real count
-# reaches the caller unchanged. No FALLBACK: every caller subtracts
-# two of these, and "0" is itself a real, meaningful count -- if the
-# *before* call is the one that fails (guest wedged, connection
-# dropped), a "0" FALLBACK would read as "no fetches yet", inflate the
-# after-before delta by whatever really ran, and pass "ran exactly N
-# hotplug fetches" with no evidence behind the number. The sentinel
-# guest_capture falls back to instead can never be mistaken for a real
-# count, so assert_hotplug_delta below can tell "the read failed" from
-# "genuinely zero fetches" and record the former as its own named
-# failure instead of doing arithmetic on it.
-hotplug_fetch_count() {
-	guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -cE 'hotplug fetch(: | applied| failed)' || true"
+# hotplug_restart_count -- how many times hotplug-iface has logged its
+# restart line since boot. guest_capture, not a plain
+# `var=$(guest_exec ...)`: see lib.sh's guest_capture for why a failed
+# read here must not abort the harness under `set -e` -- every caller
+# below takes a before/after delta. No FALLBACK: "0" is itself a real,
+# meaningful count, so a failed read must not be mistaken for one (see
+# lib.sh's guest_capture comment on the same tradeoff).
+hotplug_restart_count() {
+	guest_capture "$SSH_PORT" "$SSH_KEY" "logread | grep -c '${HOTPLUG_LOG_LINE}' || true"
 }
 
-# assert_hotplug_delta DESC BEFORE AFTER EXPECTED -- asserts that
-# AFTER minus BEFORE equals EXPECTED, unless either capture is
-# hotplug_fetch_count's failure sentinel, in which case it records DESC
-# as a named failure ("could not read ... from the guest") instead of
-# feeding the sentinel to `$(( ))`, which would be a bash error rather
-# than a clean assertion failure. Shared by every before/after call
-# below instead of each one reimplementing the same guard.
+# assert_hotplug_delta DESC BEFORE AFTER EXPECTED -- asserts that AFTER
+# minus BEFORE equals EXPECTED, unless either capture is
+# hotplug_restart_count's failure sentinel, in which case it records
+# DESC as a named failure instead of feeding the sentinel to `$(( ))`.
 assert_hotplug_delta() {
 	local desc="$1" before="$2" after="$3" expected="$4"
 	if guest_capture_failed "$before" || guest_capture_failed "$after"; then
 		assert_ok "$desc" \
-			"echo 'could not read the hotplug fetch count from the guest (before=${before}, after=${after})' >&2; false"
+			"echo 'could not read the hotplug restart count from the guest (before=${before}, after=${after})' >&2; false"
 	else
 		assert_equal "$desc" "$((after - before))" "$expected"
 	fi
 }
 
 phase_hotplug_wan_ifup() {
-	local before after
+	local before after pid_before pid_after
 
 	add_bridge_iface wan br-wan 10.123.0.1
 	add_bridge_iface testif br-testif 10.124.0.1
 
-	before=$(hotplug_fetch_count)
+	assert_ssh_ok "start the daemon so a hotplug event has something to restart" \
+		"/etc/init.d/stunmesh-agent start"
+	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
+	assert_ssh_ok "the daemon is running before any hotplug event" \
+		"/etc/init.d/stunmesh-agent running"
+
+	pid_before=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	[[ -n "$pid_before" ]] || die "No stunmesh-agent pid before the hotplug event; cannot use it as restart evidence below."
+
+	before=$(hotplug_restart_count)
 	assert_ssh_ok "ifup wan exits 0" "ifup wan"
-	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
-	after=$(hotplug_fetch_count)
-	assert_hotplug_delta "a real 'ifup wan' event ran exactly one hotplug fetch" \
+	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 4" || true
+	after=$(hotplug_restart_count)
+	assert_hotplug_delta "a real 'ifup wan' event logged exactly one restart" \
 		"$before" "$after" "1"
+	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	assert_ssh_ok "'ifup wan' actually restarted the daemon (new pid)" \
+		"[ '${pid_after}' != '${pid_before}' ] && [ -n '${pid_after}' ]"
 
 	before="$after"
+	pid_before="$pid_after"
 	assert_ssh_ok "ifdown wan exits 0" "ifdown wan"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 2" || true
-	after=$(hotplug_fetch_count)
-	assert_hotplug_delta "'ifdown wan' (ACTION != ifup) ran no hotplug fetch" \
+	after=$(hotplug_restart_count)
+	assert_hotplug_delta "'ifdown wan' (ACTION != ifup) logged no restart" \
 		"$before" "$after" "0"
+	pid_after=$(guest_capture "$SSH_PORT" "$SSH_KEY" "pgrep -f /usr/sbin/stunmesh-agent" "")
+	assert_equal "'ifdown wan' did not actually restart the daemon (same pid)" \
+		"$pid_after" "$pid_before"
 
 	before="$after"
 	assert_ssh_ok "ifup testif exits 0" "ifup testif"
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 2" || true
-	after=$(hotplug_fetch_count)
-	assert_hotplug_delta "'ifup testif' (INTERFACE != wan) ran no hotplug fetch" \
+	after=$(hotplug_restart_count)
+	assert_hotplug_delta "'ifup testif' (INTERFACE != wan) logged no restart" \
 		"$before" "$after" "0"
 
 	remove_bridge_iface testif
 	remove_bridge_iface wan
+	assert_ssh_ok "stop the daemon, leaving a clean state for later phases" \
+		"/etc/init.d/stunmesh-agent stop"
 }

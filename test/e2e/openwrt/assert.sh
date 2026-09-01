@@ -46,9 +46,8 @@ assert_ssh_output_contains() {
 
 # assert_ssh_exit_code DESC CMD CODE -- passes when CMD's exit status
 # in the guest equals CODE exactly. assert_ssh_ok only tells zero from
-# nonzero apart, which is not enough for fetch's exit-code contract
-# (PLAN.md 5: 0 applied or nothing to do, 3 no change, 1 failure) --
-# a claim like "the second fetch exits 3" needs the exact code.
+# nonzero apart; a claim about a specific nonzero exit code needs this
+# instead.
 assert_ssh_exit_code() {
 	local desc="$1" cmd="$2" want="$3" got=0
 	ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))

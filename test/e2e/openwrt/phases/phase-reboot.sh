@@ -13,20 +13,18 @@
 # has rebooted the guest even once -- every other phase's "real
 # netifd/uci" claim is about a *running* box.
 #
-# To make "no proxy and no agent run" watertight rather than a timing
-# race against boot_delay (15s in this harness's /etc/config/stunmesh-agent),
-# this phase stops the fake dhtproxy entirely before rebooting: with
-# it gone, even a background boot_delay fetch (which only runs at all
-# if the service was left enabled, and this harness never calls
-# `enable`) or a stray cron/hotplug trigger a leftover from an earlier
-# phase (defensively cleared below) cannot possibly apply anything --
-# every attempt gets connection refused. Whatever wg0 state is up
-# right after boot is provably UCI's alone.
+# To make "no proxy and no agent run" watertight, this phase stops the
+# fake dhtproxy entirely before rebooting: with it gone, even the
+# daemon service (never enabled, so it would not start at boot anyway,
+# but defensively stopped below) or a stray hotplug trigger left over
+# from an earlier phase cannot possibly apply anything -- every attempt
+# gets connection refused. Whatever wg0 state is up right after boot is
+# provably UCI's alone.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
-# CONTROLLER_PUBKEY, FAKEPROXY_GUEST_URL, E2E_FAKEPROXY_PORT and
-# IMAGE_PATH, all set by run.sh or lib.sh before any phase runs.
+# E2E_FAKEPROXY_PORT and IMAGE_PATH, all set by run.sh or lib.sh before
+# any phase runs.
 # Self-contained like every other phase (see
 # run.sh's own doc comment): it establishes its own known-good wg0
 # bundle before rebooting, rather than trusting whatever an earlier
@@ -65,7 +63,7 @@ phase_reboot_uci_persistence() {
 
 	render_reboot_fixture
 	publish_fixture "$REBOOT_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent --oneshot"
 	assert_ssh_exit_code "a known-good bundle applies before the reboot (exit 0)" "$fetch_cmd" 0
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 	assert_ssh_output_contains "wg0 is up before the reboot" \
@@ -73,20 +71,22 @@ phase_reboot_uci_persistence() {
 
 	# Defensive cleanup: this phase does not know or care what an
 	# earlier phase left behind (see run.sh's doc comment on phase
-	# ordering), but a leftover cron line or "wan" interface would
-	# undermine "no agent run" the instant the guest comes back up.
-	# Every other phase already cleans up its own cron line and
-	# bridge interfaces, so this is a belt-and-braces check, not a
-	# dependency on it.
+	# ordering), but a still-running daemon service or a leftover "wan"
+	# interface would undermine "no agent run" the instant the guest
+	# comes back up. Every other phase already stops its own daemon
+	# service and removes its own bridge interfaces, so this is a
+	# belt-and-braces check, not a dependency on it. The service is
+	# never enabled (this harness never calls "enable"), so it will not
+	# come back on its own at boot either way.
 	guest_exec "$SSH_PORT" "$SSH_KEY" "\
-		service stunmesh-agent stop >/dev/null 2>&1; \
+		/etc/init.d/stunmesh-agent stop >/dev/null 2>&1; \
 		uci -q delete network.wan; uci -q delete network.br_wan; \
 		uci -q delete network.testif; uci -q delete network.br_testif; \
 		uci commit network; \
 		true" \
 		|| true
-	assert_ssh_ok "no managed cron line survives into the reboot" \
-		"! grep -q 'stunmesh-agent: managed by' /etc/crontabs/root 2>/dev/null"
+	assert_ssh_ok "no stunmesh-agent process survives into the reboot" \
+		"! pgrep -f /usr/sbin/stunmesh-agent"
 
 	# guest_capture, not a plain `var=$(guest_exec ...)`: see
 	# phase-fetch-basic.sh's identical comment on the same pattern, and
@@ -96,8 +96,8 @@ phase_reboot_uci_persistence() {
 	before_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
 
 	# No proxy reachable at all during the reboot window: see this
-	# file's own top comment for why this, not just boot_delay's
-	# window, is what makes "no agent run" watertight.
+	# file's own top comment for why this is what makes "no agent run"
+	# watertight.
 	stop_fake_proxy
 
 	reboot_guest "$IMAGE_PATH" "$SSH_PORT" "$SSH_KEY" "${WORK}/boot-after-reboot.log"
@@ -119,17 +119,15 @@ phase_reboot_uci_persistence() {
 	assert_equal "/etc/config/network is byte-identical across the reboot (no uci commit happened)" \
 		"$after_network_sha" "$before_network_sha"
 
-	# /tmp is tmpfs on OpenWrt: it does not survive a reboot, so the
-	# stub action log this harness's stand-in writes to
-	# (/tmp/stunmesh-stub-actions.log) is gone the instant the guest
-	# comes back up, regardless of what ran before the reboot. That
-	# makes a before/after delta meaningless here (unlike every other
-	# phase's use of the same file, which never reboots in between) --
-	# but it makes the post-reboot check simpler and just as strong:
-	# the file's absence is direct, positive evidence that nothing
-	# has called the stunmesh stand-in since boot.
-	assert_ssh_ok "the stunmesh stand-in was not invoked across the reboot (no agent run)" \
-		"! test -f /tmp/stunmesh-stub-actions.log"
+	# The guest's own syslog only holds lines logged since this boot;
+	# no "stunmesh-agent" line in it is direct, positive evidence that
+	# no stunmesh-agent process has run since boot -- the daemon
+	# service was never enabled, and nothing else on the box invokes
+	# the binary.
+	assert_ssh_ok "no stunmesh-agent process is running after the reboot (no agent run)" \
+		"! pgrep -f /usr/sbin/stunmesh-agent"
+	assert_ssh_ok "the syslog carries no stunmesh-agent line since boot (no agent run)" \
+		"! logread | grep -q stunmesh-agent"
 
 	# Restore the fake dhtproxy for any later phase (see run.sh's doc
 	# comment on phase ordering: a later phase may still need it).

@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
 # phase-payload.sh -- asserts the stunmesh-agent payload landed correctly.
 #
-# This does NOT test a fetch: no bundle exists yet (the controller side is
-# the next item), so nothing here asserts anything about fetching,
-# decrypting, or applying config. It only claims the guest looks like a
-# freshly flashed device an operator has just finished the manual key
-# exchange on: the right files, at the right paths, at the right modes, and
-# the stunmesh-go stand-in records what it is asked to do.
+# This does NOT test a fetch: nothing has run yet (the controller side
+# only publishes a bundle, it does not run the agent), so nothing here
+# asserts anything about fetching, decrypting, or applying config. It
+# only claims the guest looks like a freshly flashed device an operator
+# has just finished the manual key exchange on: the right files, at the
+# right paths, at the right modes.
 #
 # Sourced by run.sh, which then calls every function named phase_*. Uses
-# REPO_ROOT and CONTRIB_DIR (set by run.sh) to compare the guest's init and
-# hotplug scripts against the real files in contrib/openwrt/, so a phase
-# failure here means the injected copy actually drifted, not that this
-# phase's own expectation is stale.
+# REPO_ROOT and CONTRIB_DIR (set by run.sh) to compare the guest's init
+# and hotplug scripts against the real files in contrib/openwrt/, so a
+# phase failure here means the injected copy actually drifted, not that
+# this phase's own expectation is stale.
 #
 # This phase checks the VALUE of every option contrib/openwrt/README.md
 # section 2 marks "Required: yes" -- namespace, node_id,
-# controller_pubkey, private_key_file -- not just that uci can read it.
-# "proxy" is deliberately left out: README.md section 2 marks it
-# "Required: no", both scripts fall back to stunmesh-agent's own default
-# proxy list when the section has none, and no other phase reads it from
-# UCI either -- every fetch phase passes --proxy explicitly from the
-# host-side FAKEPROXY_GUEST_URL/DELAYED_FAKEPROXY_GUEST_URL, so a wrong
-# UCI proxy value would never be exercised by anything in this harness. A
-# value assertion on an option nothing reads would test the injection
-# code, not the payload's fitness for the scripts that consume it.
+# controller_pubkey -- not just that uci can read it. use_plugin is
+# checked too, since this harness always sets it (there is no default
+# proxy this VM could reach). No other phase reads any of this from
+# UCI: every fetch phase runs against /etc/stunmesh/agent/config.yaml,
+# which inject_guest_files writes directly. A value assertion on an
+# option nothing reads would test the injection code, not the payload's
+# fitness for the scripts that consume it.
 set -euo pipefail
 
 phase_payload() {
@@ -49,31 +47,31 @@ phase_payload() {
 	# read+write, nothing else.
 	assert_ssh_output_contains "identity key is mode 0600" \
 		"ls -l /etc/stunmesh/agent/identity.key" "-rw-------"
+	assert_ssh_output_contains "config.yaml is mode 0600" \
+		"ls -l /etc/stunmesh/agent/config.yaml" "-rw-------"
 
-	# The four options both shipped scripts refuse to run without
-	# (contrib/openwrt/README.md section 2). A readable-but-wrong value
-	# -- a swapped variable, a quoting bug in the heredoc that writes
-	# this file, a trailing newline or stray whitespace, an accidental
-	# prefix or suffix -- would still pass a substring check
-	# (assert_ssh_output_contains), because the expected value stays a
-	# substring of the corrupted one. Each option is instead captured
-	# exactly and compared with assert_equal, which only passes on a
-	# literal match. controller_pubkey is a public key and
-	# private_key_file is only a path, so neither is secret and both are
-	# safe to print in a FAIL line.
+	# A readable-but-wrong value -- a swapped variable, a quoting bug in
+	# the heredoc that writes this file, a trailing newline or stray
+	# whitespace, an accidental prefix or suffix -- would still pass a
+	# substring check (assert_ssh_output_contains), because the expected
+	# value stays a substring of the corrupted one. Each option is
+	# instead captured exactly and compared with assert_equal, which
+	# only passes on a literal match. controller_pubkey is a public key,
+	# so neither it nor namespace/node_id is secret and both are safe to
+	# print in a FAIL line.
 	#
 	# `uci -q get` on a missing option prints nothing and exits
 	# nonzero. guest_capture, with no FALLBACK argument, reports that
 	# case as "GUEST_CAPTURE_FAILED:<timestamp>-<random>" (see lib.sh's
 	# guest_capture) -- a value that can never equal an expected
-	# namespace/node_id/pubkey/path, so assert_equal fails and the FAIL
+	# namespace/node_id/pubkey, so assert_equal fails and the FAIL
 	# line's "got:" reads as a missing-option marker, not as a
 	# confusing empty string.
-	local got_namespace got_node_id got_controller_pubkey got_private_key_file
+	local got_namespace got_node_id got_controller_pubkey got_use_plugin
 	got_namespace=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.namespace")
 	got_node_id=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.node_id")
 	got_controller_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.controller_pubkey")
-	got_private_key_file=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.private_key_file")
+	got_use_plugin=$(guest_capture "$SSH_PORT" "$SSH_KEY" "uci -q get stunmesh-agent.main.use_plugin")
 
 	assert_equal "/etc/config/stunmesh-agent namespace matches what run.sh injected" \
 		"$got_namespace" "$E2E_NAMESPACE"
@@ -81,11 +79,16 @@ phase_payload() {
 		"$got_node_id" "$E2E_NODE_ID"
 	assert_equal "/etc/config/stunmesh-agent controller_pubkey matches what run.sh injected" \
 		"$got_controller_pubkey" "$CONTROLLER_PUBKEY"
-	assert_equal "/etc/config/stunmesh-agent private_key_file matches the identity key's guest path" \
-		"$got_private_key_file" "/etc/stunmesh/agent/identity.key"
+	assert_equal "/etc/config/stunmesh-agent use_plugin names the plugin section" \
+		"$got_use_plugin" "e2e"
 
-	assert_ssh_ok "stunmesh stand-in runs and exits 0" \
-		"/etc/init.d/stunmesh reload"
-	assert_ssh_output_contains "stunmesh stand-in recorded the reload action" \
-		"cat /tmp/stunmesh-stub-actions.log" "reload"
+	# The directly-injected config.yaml must carry the same values, by
+	# construction (see lib.sh's inject_guest_files): a plain substring
+	# check is enough here since it is only proving the file was written
+	# at all, not re-proving yaml_quote-style escaping (config.yaml's
+	# own unit tests already cover that, in cmd/stunmesh-agent).
+	assert_ssh_output_contains "config.yaml carries the namespace" \
+		"cat /etc/stunmesh/agent/config.yaml" "$E2E_NAMESPACE"
+	assert_ssh_output_contains "config.yaml carries the controller_pubkey" \
+		"cat /etc/stunmesh/agent/config.yaml" "$CONTROLLER_PUBKEY"
 }

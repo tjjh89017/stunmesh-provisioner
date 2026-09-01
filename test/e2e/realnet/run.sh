@@ -19,19 +19,19 @@
 #      internal/dhtproxy assumes: newline-delimited JSON, a "data"
 #      field, base64. That shape is recorded verbatim in the job
 #      summary and the job log.
-#   3. The real `stunmesh-agent fetch` binary -- not a re-implementation
-#      -- gets and decrypts that value with the real dhtkey/crypto/
-#      dhtproxy packages, using its own built-in default proxy list
-#      (cmd/stunmesh-agent/config.go's defaultProxies), never an
-#      overridden one. The published bundle is the smallest legitimate
-#      one ("wg": {}, empty "stunmesh"), which is exactly the content a
-#      fresh node's absent last.json already represents (internal/last's
-#      "Missing file" doc): a correct decrypt-and-compare exits
-#      ExitNoChange (3) without ever calling uci or ubus. That is what
-#      makes this leg practical without a VM: it proves the real
-#      decrypt-and-validate path end to end, on a plain Ubuntu runner,
-#      by construction rather than by mocking out the OpenWrt-only
-#      apply step.
+#   3. The real `stunmesh-agent --oneshot` binary -- not a
+#      re-implementation -- gets and decrypts that value with the real
+#      dhtkey/crypto/dhtproxy packages, using its own built-in default
+#      proxy list (cmd/stunmesh-agent/config.go's defaultProxies), never
+#      an overridden one. The published bundle is the smallest
+#      legitimate one ("wg": {}, empty "stunmesh"), which is exactly the
+#      content a fresh node's absent last.json already represents
+#      (internal/last's "Missing file" doc): a correct decrypt-and-
+#      compare applies nothing and exits ExitOK (0) without ever calling
+#      uci or ubus. That is what makes this leg practical without a VM:
+#      it proves the real decrypt-and-validate path end to end, on a
+#      plain Ubuntu runner, by construction rather than by mocking out
+#      the OpenWrt-only apply step.
 #   4. A few PUT probes of increasing size against dhtproxy3 alone
 #      record how large a value the proxy actually accepts, bracketing
 #      the maxDHTValueSize placeholder in
@@ -156,7 +156,7 @@ AGENT_BIN="${WORK}/dist/stunmesh-agent"
 
 log "Generating the node identity key (stunmesh-agent keygen)..."
 IDENTITY_KEY_PATH="${WORK}/identity.key"
-IDENTITY_PUBKEY=$("$AGENT_BIN" keygen --identity-key "$IDENTITY_KEY_PATH")
+IDENTITY_PUBKEY=$("$AGENT_BIN" keygen --config-dir "$WORK")
 [[ -n "$IDENTITY_PUBKEY" ]] || fail_contract "stunmesh-agent keygen produced no public key on stdout."
 
 PROVD_ROOT="${WORK}/provd-root"
@@ -369,37 +369,46 @@ fetch_and_measure "$PROXY3"
 
 # --- 3. the strongest proof: the real stunmesh-agent decrypts it -----
 
-log "Running the real stunmesh-agent fetch (its own built-in default proxies, no override)..."
+# stunmesh-agent has no per-run flags for namespace/node_id/proxies any
+# more -- every setting lives in config.yaml (this repository's
+# top-level CLAUDE.md). No "proxies" key here at all: config.go's
+# buildConfig only resolves a backend from config.yaml when
+# use_plugin or plugins is set, and leaving both out is exactly how an
+# operator gets the built-in default proxy list this leg means to
+# exercise.
+AGENT_CONFIG="${WORK}/agent-config.yaml"
+cat >"$AGENT_CONFIG" <<EOF
+namespace: "${NAMESPACE}"
+node_id: "${NODE_ID}"
+controller_pubkey: "${CONTROLLER_PUBKEY}"
+identity_key: "${IDENTITY_KEY_PATH}"
+last: "${WORK}/last.json"
+lock: "${WORK}/agent.lock"
+EOF
+
+log "Running the real stunmesh-agent --oneshot (its own built-in default proxies, no override)..."
 FETCH_STDERR="${WORK}/fetch-stderr"
 set +e
-"$AGENT_BIN" fetch \
-	--namespace "$NAMESPACE" \
-	--node-id "$NODE_ID" \
-	--controller-pubkey "$CONTROLLER_PUBKEY" \
-	--identity-key "$IDENTITY_KEY_PATH" \
-	--last "${WORK}/last.json" \
-	--lock "${WORK}/agent.lock" \
-	--stunmesh-config "${WORK}/stunmesh-config.yaml" \
-	2>"$FETCH_STDERR"
+"$AGENT_BIN" --oneshot --config "$AGENT_CONFIG" 2>"$FETCH_STDERR"
 FETCH_EXIT=$?
 set -e
 
-log "stunmesh-agent fetch exited ${FETCH_EXIT}. stderr:"
+log "stunmesh-agent --oneshot exited ${FETCH_EXIT}. stderr:"
 log "$(cat "$FETCH_STDERR")"
 
 summary_line ""
-summary_line "## e2e-realnet: real stunmesh-agent fetch"
+summary_line "## e2e-realnet: real stunmesh-agent --oneshot"
 summary_line ""
-summary_line "Exit code: ${FETCH_EXIT} (3 = ExitNoChange is the expected, successful outcome: the real fetch got the real value from the real proxies, decrypted it with the real identity key against the real controller key, validated namespace/node_id/version, and found it identical to the empty state a fresh node's absent last.json already represents -- so it changed nothing and never called uci or ubus)."
+summary_line "Exit code: ${FETCH_EXIT} (0 is the expected, successful outcome: --oneshot always exits 0 on a clean run, whether or not it applied anything -- cli.go's ExitOK doc comment. The real run got the real value from the real proxies, decrypted it with the real identity key against the real controller key, validated namespace/node_id/version, and found it identical to the empty state a fresh node's absent last.json already represents -- so it changed nothing and never called uci or ubus)."
 summary_line ""
 summary_line "\`\`\`"
 summary_line "$(cat "$FETCH_STDERR")"
 summary_line "\`\`\`"
 
-if [[ "$FETCH_EXIT" != 3 ]]; then
-	fail_contract "the real stunmesh-agent fetch exited ${FETCH_EXIT}, not the expected 3 (ExitNoChange). It did not cleanly get-and-decrypt the bundle this run just published. See the fetch stderr above."
+if [[ "$FETCH_EXIT" != 0 ]]; then
+	fail_contract "the real stunmesh-agent --oneshot exited ${FETCH_EXIT}, not the expected 0. It did not cleanly get-and-decrypt the bundle this run just published. See the fetch stderr above."
 fi
-log "Real stunmesh-agent fetch decrypted the real bundle from the real proxies. Round trip proven."
+log "Real stunmesh-agent --oneshot decrypted the real bundle from the real proxies. Round trip proven."
 
 # --- 4. how large a value does the proxy accept? ----------------------
 #

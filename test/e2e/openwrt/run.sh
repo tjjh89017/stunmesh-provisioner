@@ -22,15 +22,16 @@
 # phases/phase-smoke.sh proves the skeleton itself (boot -> inject -> SSH
 # -> assert); phases/phase-payload.sh proves the payload landed intact.
 # phases/phase-fetch-basic.sh publishes a second, realistic bundle (one
-# WireGuard interface, one peer) and runs the real stunmesh-agent fetch
-# in the guest, proving the agent's uci/ubus calls actually produce the
-# intended result on real netifd -- and that a second fetch of the same
-# bundle changes nothing. phases/phase-diff-removal.sh publishes further
-# revisions of a two-interface bundle to prove reload, removal and
-# teardown. phases/phase-cron.sh, phase-hotplug.sh and phase-lock.sh
-# prove the platform integration contrib/openwrt/README.md section 3
-# and 4 describe: the cron line, a real hotplug-triggered fetch, and
-# lock contention between two real fetches. phases/phase-routes.sh and
+# WireGuard interface, one peer) and runs the real stunmesh-agent
+# `--oneshot` in the guest, proving the agent's uci/ubus calls actually
+# produce the intended result on real netifd -- and that a second run
+# against the same bundle changes nothing. phases/phase-diff-removal.sh
+# publishes further revisions of a two-interface bundle to prove
+# reload, removal and teardown. phases/phase-daemon.sh, phase-hotplug.sh
+# and phase-lock.sh prove the platform integration
+# contrib/openwrt/README.md sections 1 and 4 describe: the procd daemon
+# service, a real hotplug-triggered restart, and lock contention
+# between two real `--oneshot` runs. phases/phase-routes.sh and
 # phase-firewall.sh prove route_allowed_ips: false and that an
 # operator-added firewall zone survives an apply. phases/phase-reboot.sh
 # proves PLAN.md 2.6's "no boot step" claim against a real guest reboot.
@@ -98,6 +99,9 @@ OPENWRT_PACKAGES="kmod-wireguard wireguard-tools"
 E2E_NAMESPACE=${E2E_NAMESPACE:-e2e-namespace}
 E2E_NODE_ID=${E2E_NODE_ID:-e2e-node}
 E2E_FAKEPROXY_PORT=${E2E_FAKEPROXY_PORT:-8787}
+# refresh_interval in the guest's UCI and config.yaml. Only
+# phase-daemon.sh's procd service ticks on it; --oneshot ignores it.
+E2E_REFRESH_INTERVAL=${E2E_REFRESH_INTERVAL:-10s}
 
 usage() {
 	sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -264,9 +268,9 @@ done
 # fetch), phase_payload second (checks the injected payload landed,
 # still no fetch). From there the order follows growing scenario
 # complexity -- a first fetch, then multi-revision diff/removal,
-# routes, an operator-added firewall zone, the cron line, a real
-# hotplug event, lock contention between two fetches -- and
-# phase_reboot_uci_persistence runs last: it costs about 24s (a real
+# routes, an operator-added firewall zone, the procd daemon service, a
+# real hotplug event, lock contention between two `--oneshot` runs --
+# and phase_reboot_uci_persistence runs last: it costs about 24s (a real
 # guest reboot), more than every other phase combined, and a real
 # reboot leaves the guest in a freshly booted state that is a poor
 # starting point for any phase after it.
@@ -284,7 +288,7 @@ PHASE_ORDER=(
 	phase_diff_removal
 	phase_routes
 	phase_firewall_survives
-	phase_cron_line
+	phase_daemon
 	phase_hotplug_wan_ifup
 	phase_lock_overlap
 	phase_reboot_uci_persistence
