@@ -14,8 +14,8 @@ import (
 // runnerFor returns env.Runner, or execx.Exec{} when env.Runner is
 // nil. A real run leaves env.Runner nil (see newEnv) and gets the
 // real command runner. A test sets env.Runner to an *execx.Fake, the
-// same pattern Env already uses for HTTPClient (see newDHTProxyClient
-// in fetch_cmd.go).
+// same pattern Env already uses for HTTPClient (see newBackend
+// in fetch.go).
 func runnerFor(env *Env) execx.Runner {
 	if env.Runner != nil {
 		return env.Runner
@@ -58,17 +58,18 @@ func runnerFor(env *Env) execx.Runner {
 //  6. "/etc/init.d/firewall reload", only when step 1a staged a
 //     change (see this function's doc comment "/etc/init.d/firewall
 //     reload" for why it runs here, after ifup).
-//  7. Write cfg.StunmeshConfigPath (mode 0600), or delete it when the
-//     new stunmesh text is empty.
-//  8. "/etc/init.d/stunmesh reload" when the stunmesh text or any
-//     interface changed; "/etc/init.d/stunmesh stop" instead, when the
-//     new stunmesh text is empty.
-//  9. Write cfg.LastPath (mode 0600, last.Write), only when every step
+//  7. Write cfg.Stunmesh.WritePath (mode 0600), or delete it when the
+//     new stunmesh text is empty. This binary no longer shells out to
+//     "/etc/init.d/stunmesh reload|stop": the caller (daemon.go's
+//     manageEmbeddedApp, and runOneshot) rebuilds or stops the
+//     embedded stunmesh-go app instead, after inspecting the Diff this
+//     function's caller (checkAndApply, fetch.go) returns.
+//  8. Write cfg.LastPath (mode 0600, last.Write), only when every step
 //     above succeeded. This is where the firewall zone's ZoneOwned
 //     and Members (last.FirewallState) actually get recorded.
 //
-// applyDiff stops at the first failing step and returns ExitError. It
-// never writes cfg.LastPath after a failure, so the next fetch sees
+// applyDiff stops at the first failing step and returns an error. It
+// never writes cfg.LastPath after a failure, so the next cycle sees
 // the same diff and retries the same steps (PLAN.md 6 "Rules": "the
 // apply is idempotent").
 //
@@ -95,9 +96,9 @@ func runnerFor(env *Env) execx.Runner {
 // Once "uci commit network" succeeds, UCI already reflects the new
 // state; there is nothing staged left to revert, and applyDiff does
 // not call revert again after that point. A failure in a later step
-// (network reload, ifup, the stunmesh config file, or
-// /etc/init.d/stunmesh) leaves UCI committed to the new state but
-// last.json still describing the old one. The next fetch recomputes
+// (network reload, ifup, or the stunmesh config file) leaves UCI
+// committed to the new state but last.json still describing the old
+// one. The next fetch recomputes
 // the same diff against that stale last.json and retries step 1's
 // deletes for the same section names.
 //
@@ -152,13 +153,12 @@ func runnerFor(env *Env) execx.Runner {
 // left alone -- there is nothing to clear -- and the create batch
 // then populates it from empty, exactly as it would have without a
 // prior failed attempt.
-func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
+func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) error {
 	runner := runnerFor(env)
 
 	if err := writeUCI(runner, diff); err != nil {
 		revertUCI(runner, "network")
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci: %v\n", err)
-		return ExitError
+		return fmt.Errorf("uci: %w", err)
 	}
 
 	// Firewall zone reconciliation (PLAN.md 6 "Firewall zone") only
@@ -175,8 +175,7 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 		if err != nil {
 			revertUCI(runner, "network")
 			revertUCI(runner, "firewall")
-			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: firewall: %v\n", err)
-			return ExitError
+			return fmt.Errorf("firewall: %w", err)
 		}
 		newFirewall = fw
 		firewallChanged = changed
@@ -185,8 +184,7 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	if _, err := runner.Run("uci", "commit", "network"); err != nil {
 		revertUCI(runner, "network")
 		revertUCI(runner, "firewall")
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci commit: %v\n", err)
-		return ExitError
+		return fmt.Errorf("uci commit: %w", err)
 	}
 
 	// The firewall config commits separately from network (PLAN.md 6
@@ -199,19 +197,16 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	if firewallChanged {
 		if _, err := runner.Run("uci", "commit", "firewall"); err != nil {
 			revertUCI(runner, "firewall")
-			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci commit firewall: %v\n", err)
-			return ExitError
+			return fmt.Errorf("uci commit firewall: %w", err)
 		}
 	}
 
 	if _, err := runner.Run("ubus", "call", "network", "reload"); err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: network reload: %v\n", err)
-		return ExitError
+		return fmt.Errorf("network reload: %w", err)
 	}
 
 	if err := ifupChangedInterfaces(runner, diff); err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: ifup: %v\n", err)
-		return ExitError
+		return fmt.Errorf("ifup: %w", err)
 	}
 
 	// "/etc/init.d/firewall reload" runs after "ubus call network
@@ -223,35 +218,31 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	// "ubus call network reload" already has to that step.
 	if firewallChanged {
 		if _, err := runner.Run("/etc/init.d/firewall", "reload"); err != nil {
-			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: firewall reload: %v\n", err)
-			return ExitError
+			return fmt.Errorf("firewall reload: %w", err)
 		}
 	}
 
-	if err := applyStunmeshConfig(cfg.StunmeshConfigPath, diff); err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: stunmesh config: %v\n", err)
-		return ExitError
-	}
-
-	if diff.Stunmesh != StunmeshUnchanged || anyInterfaceChanged(diff) {
-		action := "reload"
-		if diff.Stunmesh == StunmeshEmpty {
-			action = "stop"
-		}
-		if _, err := runner.Run("/etc/init.d/stunmesh", action); err != nil {
-			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: stunmesh %s: %v\n", action, err)
-			return ExitError
-		}
+	// Step 7 writes cfg.Stunmesh.WritePath (or deletes it, when the new
+	// stunmesh text is empty); it no longer calls
+	// "/etc/init.d/stunmesh reload|stop". Managing the embedded
+	// stunmesh-go app's own lifecycle (rebuilding it when the file this
+	// just wrote changed) is the caller's job (daemon.go's
+	// manageEmbeddedApp, runOneshot in daemon.go), not applyDiff's: the
+	// caller already has the diff this function returns via
+	// checkAndApply, and doing it here would mean either blocking this
+	// function on a network-facing daemon restart or duplicating the
+	// "what changed" decision in two places.
+	if err := applyStunmeshConfig(cfg.Stunmesh.WritePath, diff); err != nil {
+		return fmt.Errorf("stunmesh config: %w", err)
 	}
 
 	newState := buildState(diff, state)
 	newState.Firewall = newFirewall
 	if err := last.Write(cfg.LastPath, newState); err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: last.json: %v\n", err)
-		return ExitError
+		return fmt.Errorf("last.json: %w", err)
 	}
 
-	return ExitOK
+	return nil
 }
 
 // revertUCI discards every staged, uncommitted UCI change for config
@@ -627,8 +618,8 @@ func runUCIBatch(runner execx.Runner, batch uci.Batch) error {
 //
 // A failing "ifup" is fatal, the same as a failing reload immediately
 // before it: ifupChangedInterfaces returns the error, and applyDiff
-// stops and reports ExitError without writing last.json (see
-// applyDiff's doc comment "No revert after uci commit succeeds").
+// stops without writing last.json (see applyDiff's doc comment "No
+// revert after uci commit succeeds").
 // UCI is already committed to the new state by this point, so the
 // next fetch recomputes the same diff and retries the same "ifup"
 // call. Unlike step 1's "uci add_list", "ifup" on an interface that
@@ -647,10 +638,11 @@ func ifupChangedInterfaces(runner execx.Runner, diff *Diff) error {
 }
 
 // anyInterfaceChanged reports whether diff.Interfaces holds at least
-// one interface whose Change is not InterfaceUnchanged. PLAN.md 6
-// step 6 runs "/etc/init.d/stunmesh reload" (or "stop") "if the
-// stunmesh text or any interface changed"; this is the "any interface
-// changed" half of that condition.
+// one interface whose Change is not InterfaceUnchanged. The caller
+// (daemon.go's manageEmbeddedApp) rebuilds the embedded stunmesh-go
+// app "if the stunmesh text or any interface changed"; this is the
+// "any interface changed" half of that condition, the same role it
+// played for the old "/etc/init.d/stunmesh reload" call.
 func anyInterfaceChanged(diff *Diff) bool {
 	for _, id := range diff.Interfaces {
 		if id.Change != InterfaceUnchanged {

@@ -222,9 +222,9 @@ func TestCheckAndApply_EqualContentExitsNoChangeAndWritesNothing(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 
-	code := checkAndApply(env, cfg, b)
-	if code != ExitNoChange {
-		t.Errorf("code = %d, want %d; stderr=%q", code, ExitNoChange, stderr.String())
+	outcome, err := checkAndApply(env, cfg, b, false)
+	if err != nil || outcome.Applied {
+		t.Errorf("outcome = %+v, err = %v, want Applied=false, err=nil; stderr=%q", outcome, err, stderr.String())
 	}
 
 	after, err := os.ReadFile(lastPath)
@@ -257,9 +257,9 @@ func TestCheckAndApply_EqualContentNeverLogsSecrets(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 
-	code := checkAndApply(env, cfg, b)
-	if code != ExitNoChange {
-		t.Fatalf("code = %d, want %d", code, ExitNoChange)
+	outcome, err := checkAndApply(env, cfg, b, false)
+	if err != nil || outcome.Applied {
+		t.Fatalf("outcome = %+v, err = %v, want Applied=false, err=nil", outcome, err)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "top-secret-private-key") ||
 		strings.Contains(stdout.String()+stderr.String(), "secret stunmesh text") {
@@ -275,19 +275,19 @@ func TestCheckAndApply_DifferentContentHandsOffToNextSeam(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
 		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
 
-	cfg := &Config{LastPath: lastPath, StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml")}
+	cfg := &Config{LastPath: lastPath, Stunmesh: StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")}}
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	env.Runner = execx.NewFake()
 
-	code := checkAndApply(env, cfg, b)
-	// applyDiff (stage 3 item 8) applies for real against the fake
-	// runner; reaching ExitOK (rather than ExitNoChange) proves the
+	outcome, err := checkAndApply(env, cfg, b, false)
+	// applyDiff (fetch_apply.go) applies for real against the fake
+	// runner; reaching Applied=true (rather than false) proves the
 	// comparison correctly decided "different" and the apply ran end
 	// to end.
-	if code != ExitOK {
-		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	if err != nil || !outcome.Applied {
+		t.Errorf("outcome = %+v, err = %v; stderr=%q", outcome, err, stderr.String())
 	}
 	if _, err := os.Stat(lastPath); err != nil {
 		t.Errorf("last.json not written after a successful apply: %v", err)
@@ -309,19 +309,19 @@ func TestCheckAndApply_CorruptLastJSONIsExitError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 
-	code := checkAndApply(env, cfg, b)
-	if code != ExitError {
-		t.Errorf("code = %d, want %d", code, ExitError)
+	_, err := checkAndApply(env, cfg, b, false)
+	if err == nil {
+		t.Errorf("err = nil, want an error for a corrupt last.json")
 	}
 }
 
 // TestCheckAndApply_FullApplyBypassesEqualContentShortcut pins
-// --full-apply's effect at checkAndApply itself (Config.FullApply's
-// doc comment): identical content, the exact case
+// forceAll's effect at checkAndApply itself (runFetchApply's doc
+// comment): identical content, the exact case
 // TestCheckAndApply_EqualContentExitsNoChangeAndWritesNothing pins as
-// ExitNoChange, instead runs the full apply procedure end to end
-// (ExitOK, last.json rewritten, every uci/ubus/init.d call made)
-// when cfg.FullApply is true.
+// "no change", instead runs the full apply procedure end to end
+// (Applied=true, last.json rewritten, every uci/ubus call made) when
+// forceAll is true.
 func TestCheckAndApply_FullApplyBypassesEqualContentShortcut(t *testing.T) {
 	dir := t.TempDir()
 	lastPath := filepath.Join(dir, "last.json")
@@ -339,16 +339,16 @@ func TestCheckAndApply_FullApplyBypassesEqualContentShortcut(t *testing.T) {
 	if err := last.Write(lastPath, initial); err != nil {
 		t.Fatalf("last.Write: %v", err)
 	}
-	cfg := &Config{LastPath: lastPath, StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"), FullApply: true}
+	cfg := &Config{LastPath: lastPath, Stunmesh: StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")}}
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)
 	fake := execx.NewFake()
 	env.Runner = fake
 
-	code := checkAndApply(env, cfg, b)
-	if code != ExitOK {
-		t.Fatalf("code = %d, want %d (full apply must not exit ExitNoChange); stderr=%q", code, ExitOK, stderr.String())
+	outcome, err := checkAndApply(env, cfg, b, true)
+	if err != nil || !outcome.Applied {
+		t.Fatalf("outcome = %+v, err = %v (forceAll must not skip the apply); stderr=%q", outcome, err, stderr.String())
 	}
 
 	// wg0 is already a recorded firewall zone member, so manageFirewall

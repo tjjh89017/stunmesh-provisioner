@@ -134,7 +134,9 @@ type Diff struct {
 // (checkAndApply's sameContent check already ruled that out); it does
 // not special-case that possibility itself.
 //
-// forceAll is cfg.FullApply (PLAN.md section 3, "--full-apply"): when
+// forceAll comes from runFetchApply's own forceAll parameter
+// (fetch.go: always true for --oneshot, true on the daemon's periodic
+// full-apply tick, false otherwise): when
 // true, checkAndApply has deliberately skipped that sameContent check
 // (a periodic full re-apply must run even when nothing changed), so
 // computeDiff classifies every interface present in both b and state

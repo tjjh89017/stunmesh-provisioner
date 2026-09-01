@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,43 +10,31 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
-// runKeygen implements `stunmesh-agent keygen`'s flag parsing and
-// validation (stage 3 item 1). It accepts the same flags as fetch
-// (registerFlags), merges in --config (resolveConfig), but only
-// requires --identity-key (Config.ValidateKeygen): keygen writes one
-// file and needs nothing else.
+// runKeygen implements `stunmesh-agent keygen`'s flag parsing: only
+// --config-dir (default defaultConfigDir), from which it derives
+// identity.key's path. keygen never reads config.yaml: it writes
+// exactly one file and needs nothing else from it (PLAN.md section 5
+// runs keygen before a node is provisioned at all, so config.yaml may
+// not even exist yet).
 func runKeygen(env *Env, args []string) int {
-	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
-	fs.SetOutput(io.Discard) // Run's usage constant covers -h/--help output.
-	seam := registerFlags(fs)
+	fs := flag.NewFlagSet("stunmesh-agent keygen", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configDir := fs.String("config-dir", defaultConfigDir, "directory to write identity.key into")
 
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(env.Stdout, usage)
-			return ExitOK
-		}
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: %v\n\n", err)
-		fmt.Fprint(env.Stderr, usage)
-		return ExitError
+		return handleFlagError(env, fs, err)
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: unexpected argument %q\n\n", fs.Arg(0))
-		fmt.Fprint(env.Stderr, usage)
+		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: unexpected argument %q\n", fs.Arg(0))
 		return ExitError
 	}
 
-	cfg, err := resolveConfig(seam)
-	if err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: %v\n", err)
+	if *configDir == "" {
+		fmt.Fprintln(env.Stderr, "stunmesh-agent: keygen: --config-dir: must not be empty")
 		return ExitError
 	}
 
-	if err := cfg.ValidateKeygen(); err != nil {
-		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: %v\n", err)
-		return ExitError
-	}
-
-	return doKeygen(env, cfg)
+	return doKeygen(env, filepath.Join(*configDir, "identity.key"))
 }
 
 // identityKeyMode is the file mode for the identity private key
@@ -58,18 +45,16 @@ func runKeygen(env *Env, args []string) int {
 // looser mode, is tightened the next time keygen runs against it.
 const identityKeyMode = 0o600
 
-// doKeygen implements `stunmesh-agent keygen` (PLAN.md section 5,
-// stage 3 item 3): make an identity key pair, write the private key
-// to cfg.IdentityKeyPath (mode 0600), and print the public key to
-// env.Stdout.
+// doKeygen implements `stunmesh-agent keygen` (PLAN.md section 5): make
+// an identity key pair, write the private key to path (mode 0600),
+// and print the public key to env.Stdout.
 //
 // # An existing key file is reused, never overwritten
 //
-// keygen never generates a new key pair when cfg.IdentityKeyPath
-// already holds one: it reads the existing key back, prints its
-// public key, and returns success. The only change it ever makes to
-// an existing, valid key file is to tighten its mode to 0600 if it
-// was looser.
+// keygen never generates a new key pair when path already holds one:
+// it reads the existing key back, prints its public key, and returns
+// success. The only change it ever makes to an existing, valid key
+// file is to tighten its mode to 0600 if it was looser.
 //
 // This mirrors stunmesh-provd init's ensureControllerKeyPair
 // (cmd/stunmesh-provd/init_cmd.go): both commands treat "the key file
@@ -96,12 +81,11 @@ const identityKeyMode = 0o600
 //
 // # A new key file is written atomically
 //
-// When cfg.IdentityKeyPath does not exist, doKeygen generates a new
-// key pair with crypto.Keygen and writes it with
-// writeIdentityKeyAtomic, which guarantees the file is either absent
-// or fully and correctly written at mode 0600 -- never truncated,
-// empty, or briefly at a wider mode -- even if the process is killed
-// mid-write.
+// When path does not exist, doKeygen generates a new key pair with
+// crypto.Keygen and writes it with writeIdentityKeyAtomic, which
+// guarantees the file is either absent or fully and correctly written
+// at mode 0600 -- never truncated, empty, or briefly at a wider mode --
+// even if the process is killed mid-write.
 //
 // # Output
 //
@@ -113,8 +97,8 @@ const identityKeyMode = 0o600
 // into `stunmesh-provd node add <namespace> <node_id>`. The private
 // key never appears on env.Stdout, env.Stderr, or in any error
 // message.
-func doKeygen(env *Env, cfg *Config) int {
-	priv, err := loadOrCreateIdentityKey(cfg.IdentityKeyPath)
+func doKeygen(env *Env, path string) int {
+	priv, err := loadOrCreateIdentityKey(path)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: keygen: %v\n", err)
 		return ExitError

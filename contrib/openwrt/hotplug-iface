@@ -1,85 +1,52 @@
 #!/bin/sh
-# hotplug-iface -- runs stunmesh-agent fetch when the WAN interface comes up.
+# hotplug-iface -- restarts stunmesh-agent when the WAN interface comes up.
 #
 # OpenWrt runs every /etc/hotplug.d/iface/* script for every interface
 # hotplug event on the box: every ifup, ifdown, and ifupdate, for every
-# configured interface, not only WAN. Reacting to all of them would run
-# fetch far more often than needed and would spend flash writes and CPU
-# on a router for events that cannot change whether a bundle is
-# reachable. This script reacts to exactly one case:
+# configured interface, not only WAN. Reacting to all of them would
+# restart the daemon far more often than needed. This script reacts to
+# exactly one case:
 #
 #   ACTION=ifup on the logical interface named "wan"
 #
 # Every other ACTION (ifdown, ifupdate) is ignored. Every other
 # interface is ignored, including "wan6": stunmesh-agent talks to the
-# dhtproxy over whichever address family is available once "wan" itself
-# is up, so a separate "wan6" trigger is not needed. See
-# contrib/openwrt/README.md if a deployment's WAN interface has a
-# different logical name; it must be added here.
+# dhtproxy over whichever address family is available once "wan"
+# itself is up, so a separate "wan6" trigger is not needed. See
+# README.md if a deployment's WAN interface has a different logical
+# name; it must be added here.
 #
-# stunmesh-agent's own --lock file is the only thing that prevents this
-# fetch from overlapping the cron-driven one from stunmesh-agent.init;
-# this script adds no locking of its own, and does not need to, because
-# a second, locked-out instance already exits 0 with one log line
-# (PLAN.md section 5).
+# # Why a restart, not a signal
+#
+# stunmesh-agent has no SIGHUP handler (README.md, daemon.go's doc
+# comment on runDaemon): the daemon already runs one fetch/apply cycle
+# immediately at startup, so restarting it is exactly "trigger an
+# immediate cycle now that WAN is up" -- the same effect a signal would
+# have had, through the one reload mechanism the daemon actually
+# has. `/etc/init.d/stunmesh-agent restart` is also what
+# stunmesh-agent.init's own reload_service does, so this script does
+# not duplicate that logic; it just calls it.
+#
+# # Only when the service is actually running
+#
+# A node with no /etc/config/stunmesh-agent yet (not provisioned), or
+# with the service deliberately disabled or stopped, must not be
+# restarted by a hotplug event: "running" (an rc.common command
+# USE_PROCD=1 provides) reports 0 only when procd already has a
+# supervised instance for this service, so a stopped or never-started
+# service is left alone here, exactly like the old lock-based
+# not-provisioned-yet check used to leave it alone.
 
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan" ] || exit 0
 
-UCI_PACKAGE="stunmesh-agent"
-UCI_SECTION="main"
-BIN="/usr/sbin/stunmesh-agent"
-# Matches stunmesh-agent's own --identity-key default and
-# stunmesh-agent.init's DEFAULT_PRIVATE_KEY_FILE
-# (cmd/stunmesh-agent/config.go defaultIdentityKeyPath).
-DEFAULT_PRIVATE_KEY_FILE="/etc/stunmesh/agent/identity.key"
+INIT="/etc/init.d/stunmesh-agent"
 
-. /lib/functions.sh
+[ -x "$INIT" ] || exit 0
 
-log() {
-	logger -t stunmesh-agent "$1"
-}
-
-config_load "$UCI_PACKAGE" || {
-	log "no /etc/config/$UCI_PACKAGE; skipping hotplug fetch"
-	exit 0
-}
-
-config_get namespace "$UCI_SECTION" namespace
-config_get node_id "$UCI_SECTION" node_id
-config_get controller_pubkey "$UCI_SECTION" controller_pubkey
-config_get private_key_file "$UCI_SECTION" private_key_file "$DEFAULT_PRIVATE_KEY_FILE"
-config_get proxies "$UCI_SECTION" proxy
-config_get lock_file "$UCI_SECTION" lock_file "/var/lock/stunmesh-agent.lock"
-config_get backend "$UCI_SECTION" backend
-
-if [ -z "$namespace" ] || [ -z "$node_id" ] || \
-   [ -z "$controller_pubkey" ]; then
-	log "incomplete /etc/config/$UCI_PACKAGE (need namespace, node_id, controller_pubkey); skipping hotplug fetch"
-	exit 0
+if "$INIT" running >/dev/null 2>&1; then
+	logger -t stunmesh-agent "wan up: restarting stunmesh-agent for an immediate fetch/apply cycle"
+	"$INIT" restart >/dev/null 2>&1
 fi
-
-set -- fetch \
-	--namespace "$namespace" \
-	--node-id "$node_id" \
-	--controller-pubkey "$controller_pubkey" \
-	--identity-key "$private_key_file" \
-	--lock "$lock_file"
-
-if [ -n "$backend" ]; then
-	set -- "$@" --backend "$backend"
-fi
-
-for p in $proxies; do
-	set -- "$@" --proxy "$p"
-done
-
-"$BIN" "$@" >/dev/null 2>&1
-rc=$?
-case "$rc" in
-	0) log "hotplug fetch applied" ;;
-	3) log "hotplug fetch: no change" ;;
-	*) log "hotplug fetch failed, exit code $rc" ;;
-esac
 
 exit 0

@@ -2,82 +2,85 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestRun_NoArgsPrintsUsageAndErrors(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := Run(nil, strings.NewReader(""), &stdout, &stderr, "dev")
-	if code != ExitError {
-		t.Errorf("code = %d, want %d", code, ExitError)
-	}
-	if !strings.Contains(stderr.String(), "Usage: stunmesh-agent") {
-		t.Errorf("stderr = %q, want it to contain usage", stderr.String())
-	}
-}
-
-func TestRun_Help(t *testing.T) {
-	for _, flag := range []string{"-h", "--help"} {
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{flag}, strings.NewReader(""), &stdout, &stderr, "dev")
-		if code != ExitOK {
-			t.Errorf("%s: code = %d, want %d", flag, code, ExitOK)
-		}
-		if !strings.Contains(stdout.String(), "Usage: stunmesh-agent") {
-			t.Errorf("%s: stdout = %q, want it to contain usage", flag, stdout.String())
-		}
-	}
-}
-
-func TestRun_HelpDocumentsBackendFlag(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := Run([]string{"-h"}, strings.NewReader(""), &stdout, &stderr, "dev")
-	if code != ExitOK {
-		t.Errorf("code = %d, want %d", code, ExitOK)
-	}
-	if !strings.Contains(stdout.String(), "--backend") {
-		t.Errorf("stdout = %q, want it to document --backend", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), defaultBackend) {
-		t.Errorf("stdout = %q, want it to state --backend's default", stdout.String())
-	}
-}
-
-func TestRun_Version(t *testing.T) {
+func TestRun_VersionFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr, "1.2.3")
 	if code != ExitOK {
-		t.Errorf("code = %d, want %d", code, ExitOK)
+		t.Errorf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "1.2.3") {
 		t.Errorf("stdout = %q, want it to contain the version", stdout.String())
 	}
 }
 
-func TestRun_UnknownCommand(t *testing.T) {
+func TestRun_HelpFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr, "dev")
-	if code != ExitError {
-		t.Errorf("code = %d, want %d", code, ExitError)
+	code := Run([]string{"-h"}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitOK {
+		t.Errorf("code = %d, want %d", code, ExitOK)
 	}
-	if !strings.Contains(stderr.String(), `unknown command "bogus"`) {
-		t.Errorf("stderr = %q, want it to name the unknown command", stderr.String())
+	if stdout.Len() == 0 {
+		t.Error("stdout is empty, want usage text")
 	}
 }
 
-func TestRun_DispatchesToFetchAndKeygen(t *testing.T) {
-	for _, name := range []string{"fetch", "keygen"} {
-		var stdout, stderr bytes.Buffer
-		// No flags at all: each subcommand must fail its own
-		// validation, proving Run actually dispatched into it rather
-		// than silently doing nothing.
-		code := Run([]string{name}, strings.NewReader(""), &stdout, &stderr, "dev")
-		if code != ExitError {
-			t.Errorf("%s: code = %d, want %d", name, code, ExitError)
-		}
-		if !strings.Contains(stderr.String(), name+":") {
-			t.Errorf("%s: stderr = %q, want it to be labeled by the subcommand", name, stderr.String())
-		}
+func TestRun_UnknownFlagIsExitError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--this-flag-does-not-exist"}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitError {
+		t.Errorf("code = %d, want %d", code, ExitError)
+	}
+}
+
+func TestRun_NoConfigYamlIsExitError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config-dir", t.TempDir()}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitError {
+		t.Errorf("code = %d, want %d (not provisioned yet)", code, ExitError)
+	}
+	if !strings.Contains(stderr.String(), "not provisioned") {
+		t.Errorf("stderr = %q, want it to say not provisioned yet", stderr.String())
+	}
+}
+
+func TestRun_MalformedConfigIsExitError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("namespace: ns\n"), 0o600); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config-dir", dir, "--oneshot"}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitError {
+		t.Errorf("code = %d, want %d", code, ExitError)
+	}
+}
+
+func TestRun_KeygenDispatch(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"keygen", "--config-dir", dir}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d; stderr=%q", code, ExitOK, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "identity.key")); err != nil {
+		t.Errorf("identity.key not written: %v", err)
+	}
+	if stdout.Len() == 0 {
+		t.Error("stdout is empty, want the public key")
+	}
+}
+
+func TestRun_UnexpectedPositionalArgument(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config-dir", t.TempDir(), "bogus"}, strings.NewReader(""), &stdout, &stderr, "dev")
+	if code != ExitError {
+		t.Errorf("code = %d, want %d", code, ExitError)
 	}
 }

@@ -193,10 +193,6 @@ var (
 	firewallProbeCall = execx.Call{Name: "uci", Args: []string{"get", "firewall.stunmesh"}}
 )
 
-func stunmeshCall(action string) execx.Call {
-	return execx.Call{Name: "/etc/init.d/stunmesh", Args: []string{action}}
-}
-
 // ifupCall builds the "ifup <iface>" call ifupChangedInterfaces
 // (fetch_apply.go) issues for a new or changed interface, after
 // reloadCall and before the stunmesh call. A removed interface gets
@@ -260,15 +256,15 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 
 	const namespace, nodeID = "chain-ns", "chain-node"
 	cfg := &Config{
-		Namespace:          namespace,
-		NodeID:             nodeID,
-		ControllerPubkey:   controllerPub.String(),
-		Backend:            "dhtproxy",
-		Proxies:            []string{proxy.srv.URL},
-		IdentityKeyPath:    keyPath,
-		LastPath:           filepath.Join(dir, "last.json"),
-		LockPath:           filepath.Join(dir, "agent.lock"),
-		StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"),
+		Namespace:        namespace,
+		NodeID:           nodeID,
+		ControllerPubkey: controllerPub.String(),
+		Backend:          "dhtproxy",
+		Proxies:          []string{proxy.srv.URL},
+		IdentityKeyPath:  keyPath,
+		LastPath:         filepath.Join(dir, "last.json"),
+		LockPath:         filepath.Join(dir, "agent.lock"),
+		Stunmesh:         StunmeshConfig{WritePath: filepath.Join(dir, "stunmesh.yaml")},
 	}
 
 	// run publishes plain as the next value the proxy serves (sealed
@@ -291,7 +287,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		fake := execx.NewFake()
 		env.Runner = fake
 
-		code = doFetch(env, cfg)
+		code = runFetchApplyForTest(env, cfg, false)
 		return code, fake.Calls(), stderrBuf.String()
 	}
 
@@ -319,7 +315,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		// Both wg0 and wg1 are InterfaceNew: ifupChangedInterfaces gives
 		// each an explicit "ifup", in diff.Interfaces order, after the
 		// reload.
-		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), ifupCall("wg1"), stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), ifupCall("wg1"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -354,7 +350,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			t.Errorf("last.json mode = %o, want 0600", info.Mode().Perm())
 		}
 
-		info, err = os.Stat(cfg.StunmeshConfigPath)
+		info, err = os.Stat(cfg.Stunmesh.WritePath)
 		if err != nil {
 			t.Fatalf("stat stunmesh config: %v", err)
 		}
@@ -384,8 +380,8 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 			`"wg0":`+wg0JSON("alpha-pub")+`,"wg1":`+wg1JSON, stunmeshV1)
 
 		code, calls, stderr := run(t, plain)
-		if code != ExitNoChange {
-			t.Fatalf("code = %d, want %d (ExitNoChange); stderr=%q", code, ExitNoChange, stderr)
+		if code != ExitOK {
+			t.Fatalf("code = %d, want %d (ExitOK; \"no change\" is not a separate exit code any more, see cli.go)", code, ExitOK)
 		}
 		if len(calls) != 0 {
 			t.Errorf("Calls() = %+v, want no commands run", calls)
@@ -412,7 +408,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		plain := integrationBundleJSON(namespace, nodeID, 200,
 			`"wg0":`+wg0JSON("alpha-pub-v2")+`,"wg1":`+wg1JSON, stunmeshV1)
 
-		before, err := os.Stat(cfg.StunmeshConfigPath)
+		before, err := os.Stat(cfg.Stunmesh.WritePath)
 		if err != nil {
 			t.Fatalf("stat stunmesh config before: %v", err)
 		}
@@ -430,7 +426,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
 		// stunmesh changed OR any interface changed). wg0 is
 		// InterfaceChanged, so it also gets an explicit "ifup".
-		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -444,7 +440,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 
 		// The stunmesh config file was not touched: prove it by mtime,
 		// not just by content, the same reasoning as scenario 2.
-		after, err := os.Stat(cfg.StunmeshConfigPath)
+		after, err := os.Stat(cfg.Stunmesh.WritePath)
 		if err != nil {
 			t.Fatalf("stat stunmesh config after: %v", err)
 		}
@@ -490,7 +486,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		}
 
 		want := uciDeleteCalls(wg1Sections)
-		want = append(want, firewallProbeCall, commitCall, reloadCall, stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall)
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -533,12 +529,12 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		}
 
 		want := uciDeleteCalls(wg0Sections)
-		want = append(want, commitCall, reloadCall, stunmeshCall("stop"))
+		want = append(want, commitCall, reloadCall)
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
 
-		if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
+		if _, err := os.Stat(cfg.Stunmesh.WritePath); !os.IsNotExist(err) {
 			t.Errorf("stunmesh config file still exists after teardown: err=%v", err)
 		}
 

@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two Go binaries in one module. `stunmesh-provd` (controller, operator's
 machine) builds a config bundle per node, seals it with `nacl/box`, and PUTs
 it to OpenDHT through the Jami dhtproxy REST API. `stunmesh-agent` (OpenWrt
-router, cron-driven, not a daemon) GETs the values, decrypts, validates,
-diffs against `last.json`, and applies the result through `uci` / `ubus` /
-`/etc/init.d/stunmesh`.
+router, a long-running daemon) GETs the values, decrypts, validates,
+diffs against `last.json`, and applies the result through `uci` / `ubus`,
+managing an embedded copy of `stunmesh-go` in-process instead of shelling
+out to `/etc/init.d/stunmesh`.
 
 `.plan/PLAN.md` is the normative design: bundle format, DHT key derivation,
 validation phases, apply procedure, storage tree, milestones. `docs/format.md`
@@ -97,15 +98,35 @@ logic inside `Run`, not `main`.
 
 Agent apply order (PLAN.md 6, and `cmd/stunmesh-agent/fetch_apply.go`):
 write UCI → `uci commit network` → `ubus call network reload` → `ifup <iface>`
-for each new/changed interface → `/etc/init.d/stunmesh reload|stop` → only then
-write `last.json`. The `ifup` step exists because the OpenWrt e2e harness proved
-a plain `network reload` does not push a peer-only change into the kernel.
-Exit codes: `0` applied, `3` no change, anything else failure.
+for each new/changed interface → write `last.json`. The `ifup` step exists
+because the OpenWrt e2e harness proved a plain `network reload` does not push
+a peer-only change into the kernel. `applyDiff` no longer shells out to
+`/etc/init.d/stunmesh reload|stop`: the agent embeds stunmesh-go itself
+(`github.com/tjjh89017/stunmesh-go/app`), and the caller (the daemon loop or
+`--oneshot`, `cmd/stunmesh-agent/daemon.go`) rebuilds or stops the embedded
+app in-process after inspecting the `Diff` `applyDiff`'s caller returned.
+There is no more `ExitNoChange`/exit code 3: `--oneshot` always runs a full
+apply, so "nothing changed" and "applied" both exit 0; see `cli.go`'s exit
+code table.
 
-`contrib/openwrt/` holds the agent's init script and hotplug script, plus an
-optional procd init script for the controller (`stunmesh-provd.init`), all
-packaged by the separate `stunmesh-openwrt` feed. The agent reads no UCI
-itself: the init script reads `/etc/config/stunmesh-agent` and passes flags.
+`stunmesh-agent` is a long-running daemon, not a cron-driven one-shot command:
+its default mode fetches/applies once at start, then ticks on its own
+`refresh_interval` and `full_apply_interval` (both read from `config.yaml`,
+`cmd/stunmesh-agent/config.go`). `--oneshot` runs one full-apply cycle and
+exits; `--stunmesh-only` skips the fetch/apply loop entirely and runs only
+the embedded stunmesh-go app. `keygen` is the only subcommand. SIGINT/SIGTERM
+are a graceful shutdown; there is no SIGHUP reload -- restarting the process
+already rereads `config.yaml` and runs a cycle immediately, so that is the
+reload path.
+
+`contrib/openwrt/` holds the agent's two procd init scripts
+(`stunmesh-agent.init` for the daemon, `stunmesh-only.init` for
+`--stunmesh-only`, disabled by default) and hotplug script, plus an optional
+procd init script for the controller (`stunmesh-provd.init`), all packaged by
+the separate `stunmesh-openwrt` feed. The agent reads no UCI itself:
+`stunmesh-agent.init` reads `/etc/config/stunmesh-agent` and renders
+`config.yaml` from it before starting the daemon; `hotplug-iface` restarts
+the running daemon (no signal, no flags) when the WAN interface comes up.
 `contrib/openwrt/tests/` tests the agent's shell scripts directly, with no VM.
 
 ## Conventions

@@ -1,0 +1,52 @@
+#!/bin/sh /etc/rc.common
+# stunmesh-only.init -- procd service for `stunmesh-agent --stunmesh-only`.
+#
+# This runs the embedded stunmesh-go app alone: no fetch, no DHT, no
+# UCI, no last.json (README.md "Two services, pick one"). It reads
+# config.yaml's own "stunmesh" section, or the built-in defaults when
+# config.yaml does not exist at all (--stunmesh-only tolerates that;
+# see cmd/stunmesh-agent/daemon.go's runStunmeshOnly).
+#
+# # Disabled by default
+#
+# This service is NOT enabled by this script, and the package that
+# installs it must not call "enable" on it either: a deployment runs
+# either stunmesh-agent (the full daemon, which manages its own
+# embedded stunmesh-go app already) or stunmesh-only, never both --
+# running both would start two stunmesh-go instances against the same
+# config file. An operator who wants stunmesh-go without this
+# repository's fetch/apply pipeline (a node that gets its WireGuard
+# and UCI state some other way) enables this service by hand:
+#
+#   /etc/init.d/stunmesh-only enable
+#   /etc/init.d/stunmesh-only start
+#
+# and leaves /etc/init.d/stunmesh-agent disabled. This script does not
+# check for that mistake itself (no mutual-exclusion guard): see
+# README.md's "Two services, pick one" for the operator-facing
+# explanation of why not.
+#
+# # No reload_signal
+#
+# Same reasoning as stunmesh-agent.init: stunmesh-agent has no SIGHUP
+# handler in any mode, so a reload here is the default rc.common
+# restart (stop then start), not a signal.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+BIN="/usr/sbin/stunmesh-agent"
+
+start_service() {
+	procd_open_instance
+	procd_set_param command "$BIN" --stunmesh-only
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	:
+}

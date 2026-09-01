@@ -237,7 +237,7 @@ func TestApplyDiff_FullApplyMultipleInterfacesOneZoneNoDuplicates(t *testing.T) 
 		// reconciliation" for the self-healing this exercises).
 	}
 
-	code := applyDiff(env, cfg, diff, state)
+	code := applyDiffForTest(env, cfg, diff, state)
 	if code != ExitOK {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
