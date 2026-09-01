@@ -64,7 +64,17 @@ ifneq ($(EMBED_CA),0)
 endif
 TAGS_FLAGS = $(if $(CA_TAG),-tags '$(CA_TAG)',)
 
+# AGENT_TAGS adds builtin_all to whatever CA_TAG carries. stunmesh-agent
+# embeds stunmesh-go's app package (see CLAUDE.md), which links its builtin
+# plugins (opendht, cloudflare) only under a builtin_<name> or builtin_all
+# build tag; without one, every stub registers nothing and the agent fails
+# at runtime with "builtin plugin not found: opendht". stunmesh-provd does
+# not embed stunmesh-go, so it keeps TAGS_FLAGS/CA_TAG only.
+AGENT_TAGS = builtin_all$(if $(CA_TAG), $(CA_TAG),)
+AGENT_TAGS_FLAGS = -tags '$(AGENT_TAGS)'
+
 GO_FLAGS = -ldflags '$(LDFLAGS)' $(TRIMPATH_FLAGS) $(TAGS_FLAGS)
+AGENT_GO_FLAGS = -ldflags '$(LDFLAGS)' $(TRIMPATH_FLAGS) $(AGENT_TAGS_FLAGS)
 
 # CGO_ENABLED is always 0. Both binaries are static, with no cgo dependency.
 CGO_ENABLED = 0
@@ -93,7 +103,7 @@ endif
 
 .PHONY: agent
 agent:
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT) ./cmd/stunmesh-agent
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) go build $(AGENT_GO_FLAGS) -v -o $(DIST)/$(APP_AGENT) ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
 	$(call maybe-upx,$(DIST)/$(APP_AGENT))
 endif
@@ -102,21 +112,21 @@ endif
 # FPU. agent-arm64 builds the agent for 64-bit ARM routers.
 .PHONY: agent-mips
 agent-mips:
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mips GOMIPS=softfloat go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mips ./cmd/stunmesh-agent
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mips GOMIPS=softfloat go build $(AGENT_GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mips ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
 	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-mips)
 endif
 
 .PHONY: agent-mipsle
 agent-mipsle:
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mipsle ./cmd/stunmesh-agent
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build $(AGENT_GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-mipsle ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
 	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-mipsle)
 endif
 
 .PHONY: agent-arm64
 agent-arm64:
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build $(GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-arm64 ./cmd/stunmesh-agent
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build $(AGENT_GO_FLAGS) -v -o $(DIST)/$(APP_AGENT)-linux-arm64 ./cmd/stunmesh-agent
 ifneq ($(UPX),0)
 	$(call maybe-upx,$(DIST)/$(APP_AGENT)-linux-arm64)
 endif
@@ -138,10 +148,16 @@ test-openwrt:
 # including test-free ones that `go build` alone would not reach, so
 # this catches 32-bit build breaks (e.g. an untyped 64-bit constant
 # overflowing `int`) that only show up under a 32-bit GOARCH.
+# Each pass runs twice more: once with TAGS_FLAGS (what stunmesh-provd
+# builds with) and once with AGENT_TAGS_FLAGS (what stunmesh-agent builds
+# with, adding builtin_all), so every builtin plugin code path is vetted
+# too.
 .PHONY: vet
 vet:
 	go vet $(TAGS_FLAGS) ./...
+	go vet $(AGENT_TAGS_FLAGS) ./...
 	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go vet $(TAGS_FLAGS) ./...
+	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go vet $(AGENT_TAGS_FLAGS) ./...
 
 # lint runs the golangci-lint already on $PATH, for a developer to check
 # locally before pushing. It does not pin a version, so it can drift from
