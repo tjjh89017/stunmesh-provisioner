@@ -1,0 +1,29 @@
+name: 'Lint'
+description: 'Check format, module tidiness, vet, and golangci-lint. The Makefile is the source of truth, except for golangci-lint (see below).'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check formatting
+      shell: bash
+      run: make fmt-check
+
+    - name: Check module tidiness
+      shell: bash
+      run: make tidy-check
+
+    - name: Run go vet
+      shell: bash
+      run: make vet
+
+    # Deliberate exception to "CI calls make targets": golangci-lint runs
+    # through the official action instead of a `make lint` target, so its
+    # own install/cache/annotation behaviour stays owned by golangci-lint
+    # upstream rather than reimplemented in the Makefile. @v9 is the
+    # major-version tag golangci-lint-action itself moves forward, the
+    # same ref style stunmesh-go's own lint action uses; the linter
+    # version it installs is pinned exactly, so a run is reproducible.
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.13.2

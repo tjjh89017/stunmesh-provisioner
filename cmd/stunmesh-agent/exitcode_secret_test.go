@@ -54,7 +54,7 @@ func TestDoFetch_RejectedBundleWithSecretsNeverLeaksSecrets(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(dhtLine(t, sealed))
+		_, _ = w.Write(dhtLine(t, sealed))
 	}))
 	defer srv.Close()
 	cfg.Proxies = []string{srv.URL}
@@ -520,7 +520,7 @@ func TestDoFetch_FullPipelineSuccessNeverLeaksSecrets(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(dhtLine(t, sealed))
+		_, _ = w.Write(dhtLine(t, sealed))
 	}))
 	defer srv.Close()
 
@@ -587,7 +587,7 @@ func TestDoFetch_FullPipelineApplyFailureNeverLeaksSecrets(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(dhtLine(t, sealed))
+		_, _ = w.Write(dhtLine(t, sealed))
 	}))
 	defer srv.Close()
 

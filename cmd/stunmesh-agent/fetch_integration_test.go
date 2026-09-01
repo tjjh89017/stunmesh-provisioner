@@ -219,7 +219,7 @@ func newSwitchableProxy() *switchableProxy {
 		p.mu.Lock()
 		line := p.line
 		p.mu.Unlock()
-		w.Write(line)
+		_, _ = w.Write(line)
 	}))
 	return p
 }

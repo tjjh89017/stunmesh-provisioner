@@ -13,7 +13,7 @@ func TestAcquireLock_SecondHolderIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquireLock (first): %v", err)
 	}
-	defer first.Release()
+	defer func() { _ = first.Release() }()
 
 	_, err = acquireLock(path)
 	if !errors.Is(err, errLockHeld) {
@@ -36,7 +36,7 @@ func TestAcquireLock_ReleaseAllowsReacquire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquireLock (second, after release): %v", err)
 	}
-	defer second.Release()
+	defer func() { _ = second.Release() }()
 }
 
 func TestAcquireLock_CreatesMissingFile(t *testing.T) {
@@ -46,7 +46,7 @@ func TestAcquireLock_CreatesMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 }
 
 func TestAcquireLock_BadPathIsNotReportedAsHeld(t *testing.T) {
@@ -87,5 +87,5 @@ func TestAcquireLock_DoesNotDeleteTheLockFileOnRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquireLock (after release): %v", err)
 	}
-	defer second.Release()
+	defer func() { _ = second.Release() }()
 }

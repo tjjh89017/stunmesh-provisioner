@@ -46,7 +46,7 @@ func WriteFile(path string, data []byte, mode fs.FileMode) error {
 	_, writeErr := f.Write(data)
 	closeErr := f.Close()
 	if writeErr != nil || closeErr != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		if writeErr != nil {
 			return fmt.Errorf("store: write %s: %w", path, writeErr)
 		}
@@ -59,7 +59,7 @@ func WriteFile(path string, data []byte, mode fs.FileMode) error {
 	// caller needs). Chmod after creation forces the exact requested
 	// mode, independent of umask.
 	if err := os.Chmod(path, mode); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return fmt.Errorf("store: chmod %s: %w", path, err)
 	}
 

@@ -189,19 +189,19 @@ func writeIdentityKeyAtomic(path string, priv crypto.Key) (err error) {
 	// directory entry for the same content already safely linked at
 	// path, so removing it (or failing to) does not affect
 	// correctness -- it is just tidiness.
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if cerr := tmp.Chmod(identityKeyMode); cerr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod %s: %w", tmpPath, cerr)
 	}
 
 	if _, werr := tmp.WriteString(priv.String() + "\n"); werr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", tmpPath, werr)
 	}
 	if serr := tmp.Sync(); serr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("sync %s: %w", tmpPath, serr)
 	}
 	if cerr := tmp.Close(); cerr != nil {

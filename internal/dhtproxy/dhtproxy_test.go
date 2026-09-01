@@ -24,7 +24,7 @@ func b64(s string) string {
 
 func TestGet_SingleValue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("hello") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("hello") + `"}` + "\n"))
 	}))
 	defer srv.Close()
 
@@ -53,7 +53,7 @@ func TestGet_MultipleValuesWithExtraFields(t *testing.T) {
 	}, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestGet_BlankLinesIgnored(t *testing.T) {
 	body := "\n" + `{"data":"` + b64("v1") + `"}` + "\n\n" + `{"data":"` + b64("v2") + `"}` + "\n\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
@@ -107,7 +107,7 @@ func TestGet_BadLinesSkipped(t *testing.T) {
 	}, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -136,7 +136,7 @@ func TestGet_MaxValuesCap(t *testing.T) {
 	body := strings.Join(lines, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -168,7 +168,7 @@ func TestGet_OversizedLineAfterGoodLineSkipped(t *testing.T) {
 	}, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -202,7 +202,7 @@ func TestGet_OversizedLineBetweenGoodLinesSkippedRestKept(t *testing.T) {
 	}, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -236,7 +236,7 @@ func TestGet_OversizedFirstLineSkippedGoodLineKept(t *testing.T) {
 	}, "\n")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body + "\n"))
+		_, _ = w.Write([]byte(body + "\n"))
 	}))
 	defer srv.Close()
 
@@ -265,7 +265,7 @@ func TestGet_OversizedLineAtEOFWithoutTrailingNewlineSkipped(t *testing.T) {
 	body := `{"data":"` + oversized + `"}`  // no trailing newline
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
@@ -331,7 +331,7 @@ func TestGet_Path(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotMethod = r.Method
-		w.Write([]byte(`{"data":"` + b64("v") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("v") + `"}` + "\n"))
 	}))
 	defer srv.Close()
 
@@ -358,7 +358,7 @@ func TestGet_FallbackOnNotFound(t *testing.T) {
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
 	}))
 	defer srv2.Close()
 
@@ -417,7 +417,7 @@ func TestGet_ConnectionRefusedThenNotFoundReturnsPartialError(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	deadURL := "http://" + ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -486,7 +486,7 @@ func TestGet_ServerErrorThenValueSucceedsUnchanged(t *testing.T) {
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
 	}))
 	defer srv2.Close()
 
@@ -511,7 +511,7 @@ func TestGet_FallbackOnServerError(t *testing.T) {
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
 	}))
 	defer srv2.Close()
 
@@ -540,10 +540,10 @@ func TestGet_FallbackOnConnectionRefused(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	deadURL := "http://" + ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("v2") + `"}` + "\n"))
 	}))
 	defer srv2.Close()
 
@@ -900,7 +900,7 @@ func TestPut_BadKeyRejectedWithoutRequest(t *testing.T) {
 // reject the 40-char lowercase hex keys dhtkey.Key produces.
 func TestGet_ValidKeyStillWorks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"` + b64("hello") + `"}` + "\n"))
+		_, _ = w.Write([]byte(`{"data":"` + b64("hello") + `"}` + "\n"))
 	}))
 	defer srv.Close()
 

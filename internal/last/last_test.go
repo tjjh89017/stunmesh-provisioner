@@ -179,7 +179,7 @@ func TestRead_PermissionDeniedFailsHard(t *testing.T) {
 	if err := os.Chmod(path, 0o000); err != nil {
 		t.Fatalf("chmod 0000: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
 	_, err := last.Read(path)
 	if err == nil {

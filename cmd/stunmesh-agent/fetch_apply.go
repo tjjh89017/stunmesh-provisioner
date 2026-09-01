@@ -696,18 +696,18 @@ func writeStunmeshConfigAtomic(path, content string) error {
 	// the temporary file so it does not linger. After a successful
 	// rename, tmpPath no longer exists, so this is a silent no-op on
 	// the success path.
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if cerr := tmp.Chmod(0o600); cerr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod %s: %w", tmpPath, cerr)
 	}
 	if _, werr := tmp.WriteString(content); werr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", tmpPath, werr)
 	}
 	if serr := tmp.Sync(); serr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("sync %s: %w", tmpPath, serr)
 	}
 	if cerr := tmp.Close(); cerr != nil {
