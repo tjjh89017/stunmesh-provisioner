@@ -108,6 +108,20 @@ managed zone at all (a hand-added zone under a different name, the way
 `test/e2e/openwrt/phases/phase-firewall.sh` covers, is unaffected either
 way).
 
+## Periodic full apply (`--full-apply`)
+
+`stunmesh-agent fetch --full-apply` skips the "no change since last
+apply" shortcut and reruns the entire apply procedure -- UCI, both
+`uci commit`s, both reloads, `ifup`, the stunmesh config file, and
+`last.json` -- even when the newest bundle is identical to what
+`last.json` already recorded. `contrib/openwrt/stunmesh-agent.init`
+installs a second, independently tagged cron line that runs it once a
+day by default (`option full_apply_interval_hours` in
+`/etc/config/stunmesh-agent`, alongside the existing frequent,
+diff-based line); see `contrib/openwrt/README.md` section 3. This is
+also what re-adds a pre-existing interface to the firewall zone above
+if it was applied by an older agent build, before this feature shipped.
+
 ## OpenWrt end-to-end tests
 
 `test/e2e/openwrt/` boots a real OpenWrt x86-64 VM under KVM and runs

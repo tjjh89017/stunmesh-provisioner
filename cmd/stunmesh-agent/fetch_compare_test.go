@@ -315,6 +315,77 @@ func TestCheckAndApply_CorruptLastJSONIsExitError(t *testing.T) {
 	}
 }
 
+// TestCheckAndApply_FullApplyBypassesEqualContentShortcut pins
+// --full-apply's effect at checkAndApply itself (Config.FullApply's
+// doc comment): identical content, the exact case
+// TestCheckAndApply_EqualContentExitsNoChangeAndWritesNothing pins as
+// ExitNoChange, instead runs the full apply procedure end to end
+// (ExitOK, last.json rewritten, every uci/ubus/init.d call made)
+// when cfg.FullApply is true.
+func TestCheckAndApply_FullApplyBypassesEqualContentShortcut(t *testing.T) {
+	dir := t.TempDir()
+	lastPath := filepath.Join(dir, "last.json")
+
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,`+
+		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	sections := last.Sections{Interface: "wg0"}
+	initial := &last.State{
+		Version:  last.CurrentVersion,
+		WG:       map[string]last.Interface{"wg0": {Content: b.WG["wg0"], Sections: sections}},
+		Stunmesh: "text",
+		Firewall: last.FirewallState{ZoneOwned: true, Members: []string{"wg0"}},
+	}
+	if err := last.Write(lastPath, initial); err != nil {
+		t.Fatalf("last.Write: %v", err)
+	}
+	cfg := &Config{LastPath: lastPath, StunmeshConfigPath: filepath.Join(dir, "stunmesh.yaml"), FullApply: true}
+
+	var stdout, stderr bytes.Buffer
+	env := newEnv(strings.NewReader(""), &stdout, &stderr)
+	fake := execx.NewFake()
+	env.Runner = fake
+
+	code := checkAndApply(env, cfg, b)
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d (full apply must not exit ExitNoChange); stderr=%q", code, ExitOK, stderr.String())
+	}
+
+	// wg0 is already a recorded firewall zone member, so manageFirewall
+	// (PLAN.md 6 "Firewall zone") has nothing to add there; the point of
+	// this assertion is that writeUCI actually ran the interface's own
+	// create batch again, not that the firewall zone changed.
+	var sawCreate bool
+	for _, call := range fake.Calls() {
+		if call.Name == "uci" && len(call.Args) == 2 && call.Args[0] == "set" && call.Args[1] == "network.wg0=interface" {
+			sawCreate = true
+		}
+	}
+	if !sawCreate {
+		t.Errorf("Calls() = %+v, want a full re-creation of network.wg0 even though its content did not change", fake.Calls())
+	}
+
+	// "uci commit network" and "ubus call network reload" must have run
+	// too: a full apply is the whole procedure (PLAN.md 6), not just
+	// the per-interface create batch.
+	var sawCommit, sawReload bool
+	for _, call := range fake.Calls() {
+		if call.Name == "uci" && len(call.Args) == 2 && call.Args[0] == "commit" && call.Args[1] == "network" {
+			sawCommit = true
+		}
+		if call.Name == "ubus" {
+			sawReload = true
+		}
+	}
+	if !sawCommit || !sawReload {
+		t.Errorf("Calls() = %+v, want both \"uci commit network\" and \"ubus call network reload\"", fake.Calls())
+	}
+
+	if _, err := last.Read(lastPath); err != nil {
+		t.Errorf("last.Read after full apply: %v", err)
+	}
+}
+
 // sanity check that our hand-rolled JSON in the tests above actually
 // parses the way each test assumes (catches a malformed literal early
 // with a clear message rather than a confusing sameContent failure).

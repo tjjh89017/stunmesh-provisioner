@@ -62,6 +62,9 @@ of them -- see below):
   --last <file>                 last-applied bundle file (default ` + defaultLastPath + `)
   --lock <file>                 lock file (default ` + defaultLockPath + `)
   --stunmesh-config <file>      stunmesh-go config file (default ` + defaultStunmeshConfigPath + `)
+  --full-apply                  fetch only: skip the "no change" shortcut and
+                                 rewrite every apply step even when nothing
+                                 changed since last.json (PLAN.md 6)
   --config <file>               flat key=value file supplying any of the
                                  settings above (see docs for the file's
                                  grammar)

@@ -43,16 +43,17 @@ Both scripts read the `main` section of `/etc/config/stunmesh-agent`
 
 ```
 config stunmesh-agent 'main'
-    option namespace          'mymesh-7f3a'
-    option node_id            'alpha'
-    option controller_pubkey  '...'
-    list   proxy              'https://dhtproxy2.jami.net'
-    list   proxy              'https://dhtproxy3.jami.net'
-    option private_key_file   '/etc/stunmesh/provd/identity.key'
-    option boot_delay         '15'
-    option fetch_interval     '5'
-    option lock_file          '/var/lock/stunmesh-agent.lock'
-    option backend            'dhtproxy'
+    option namespace                  'mymesh-7f3a'
+    option node_id                    'alpha'
+    option controller_pubkey          '...'
+    list   proxy                      'https://dhtproxy2.jami.net'
+    list   proxy                      'https://dhtproxy3.jami.net'
+    option private_key_file           '/etc/stunmesh/provd/identity.key'
+    option boot_delay                 '15'
+    option fetch_interval             '5'
+    option full_apply_interval_hours  '24'
+    option lock_file                  '/var/lock/stunmesh-agent.lock'
+    option backend                    'dhtproxy'
 ```
 
 | UCI option | stunmesh-agent flag | Required |
@@ -63,7 +64,8 @@ config stunmesh-agent 'main'
 | `proxy` (list) | `--proxy` (repeated, once per entry) | no -- falls back to the binary's built-in default list when the section has none |
 | `private_key_file` | `--identity-key` | yes |
 | `boot_delay` | sleep before the first fetch (init only) | no -- defaults to 15 |
-| `fetch_interval` | minutes between cron runs (init only) | no -- defaults to 5 |
+| `fetch_interval` | minutes between the frequent, diff-based cron runs (init only) | no -- defaults to 5 |
+| `full_apply_interval_hours` | hours between the periodic `--full-apply` cron runs (init only) | no -- defaults to 24 |
 | `lock_file` | `--lock` | no -- defaults to `/var/lock/stunmesh-agent.lock` |
 | `backend` | `--backend` | no -- omitted when unset, so the binary's own default (`dhtproxy`) applies |
 
@@ -87,17 +89,34 @@ a loop, or writes a cron line in this case. This is the state of a
 freshly flashed node before an operator has run the manual key
 exchange (`PLAN.md` 2.3, 2.7): boring and quiet, not an error.
 
-## 3. The cron line
+## 3. The cron lines
 
-`start()` builds `*/<fetch_interval> * * * * <bin> fetch <flags>` and
-appends it to `/etc/crontabs/root`, tagged with a fixed comment so it
-can find and remove exactly that line later, never any other line a
-person or another package put in that file. It nudges `crond` with
-`/etc/init.d/cron reload` so the new schedule takes effect at once
-instead of waiting for crond's own poll interval. `stop()` removes the
-tagged line the same way.
+`start()` installs two independently tagged cron lines, each through
+the shared `install_cron_line` helper (tag, schedule, argument list):
 
-None of the values written into the cron line are secret:
+- The frequent, diff-based line: `*/<fetch_interval> * * * * <bin>
+  fetch <flags>`, tagged with a fixed comment (`CRON_TAG`). `fetch`
+  does nothing (exit 3) when the newest bundle has not changed since
+  `last.json` (PLAN.md 4.5), so this line is cheap to run often.
+- The periodic full-apply line: `0 */<full_apply_interval_hours> * *
+  * <bin> fetch <flags> --full-apply`, tagged with a second, distinct
+  comment (`CRON_TAG_FULL`). `--full-apply` skips the "no change"
+  shortcut and rewrites every apply step (PLAN.md 6) -- UCI, both
+  commits, both reloads, `ifup`, the stunmesh config file, and
+  `last.json` -- even when nothing changed, so the node's actual state
+  converges back to what the bundle says on a fixed schedule
+  regardless of whether any diff-based fetch in between happened to
+  see a real change. It exists at the Go binary level as
+  `stunmesh-agent fetch --full-apply`; only the 24-hour default
+  schedule and its UCI knob live here.
+
+Each line's tag is a literal, fixed comment appended to it, so
+removing or replacing one line by its tag never touches the other.
+Both installs nudge `crond` with `/etc/init.d/cron reload` so the new
+schedule takes effect at once instead of waiting for crond's own poll
+interval. `stop()` removes both tagged lines the same way.
+
+None of the values written into either cron line are secret:
 `controller_pubkey` is a public key, and `private_key_file` is only a
 path. The key material itself never appears in the crontab, in a log
 line, or on a command line that another process on the box could read

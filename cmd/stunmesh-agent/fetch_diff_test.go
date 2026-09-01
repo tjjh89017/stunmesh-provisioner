@@ -11,7 +11,7 @@ func TestComputeDiff_NewInterface(t *testing.T) {
 		`"wg":{"wg0":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "text"}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestComputeDiff_ChangedInterface(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestComputeDiff_UnchangedInterface(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestComputeDiff_RemovedInterface(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestComputeDiff_AbsentVsExplicitEmptyIsChanged(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestComputeDiff_OrderIsSortedByInterfaceName(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestComputeDiff_StunmeshChanged(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":"new text"}`)
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "old text"}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestComputeDiff_StunmeshUnchanged(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":"same text"}`)
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "same text"}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestComputeDiff_StunmeshEmptyBeatsUnchanged(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: ""}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestComputeDiff_StunmeshEmptyFromNonEmpty(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "old text"}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestComputeDiff_AllClassesTogether(t *testing.T) {
 		Stunmesh: "text",
 	}
 
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, false)
 	if err != nil {
 		t.Fatalf("computeDiff: %v", err)
 	}
@@ -292,5 +292,91 @@ func TestComputeDiff_AllClassesTogether(t *testing.T) {
 	}
 	if diff.Stunmesh != StunmeshUnchanged {
 		t.Errorf("Stunmesh = %v, want StunmeshUnchanged", diff.Stunmesh)
+	}
+}
+
+// TestComputeDiff_ForceAllPromotesUnchangedToChanged pins --full-apply's
+// effect on computeDiff (its forceAll parameter's doc comment): an
+// interface whose content is byte-for-byte identical to last.json is
+// InterfaceChanged, not InterfaceUnchanged, when forceAll is true --
+// content, Sections, and Content are all populated the same way a
+// genuinely different InterfaceChanged entry would be, so the apply
+// step actually rewrites it. InterfaceNew and InterfaceRemoved are
+// unaffected.
+func TestComputeDiff_ForceAllPromotesUnchangedToChanged(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{`+
+		`"same_if":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}},`+
+		`"new_if":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}`+
+		`},"stunmesh":"text"}`)
+	sameOld := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":1,`+
+		`"wg":{"same_if":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+	removedOld := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":1,`+
+		`"wg":{"removed_if":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}}},"stunmesh":"text"}`)
+
+	sections := last.Sections{Interface: "same_if"}
+	state := &last.State{
+		Version: last.CurrentVersion,
+		WG: map[string]last.Interface{
+			"same_if":    {Content: sameOld.WG["same_if"], Sections: sections},
+			"removed_if": {Content: removedOld.WG["removed_if"]},
+		},
+		Stunmesh: "text",
+	}
+
+	diff, err := computeDiff(b, state, true)
+	if err != nil {
+		t.Fatalf("computeDiff: %v", err)
+	}
+
+	want := map[string]InterfaceChange{
+		"new_if":     InterfaceNew,
+		"removed_if": InterfaceRemoved,
+		"same_if":    InterfaceChanged,
+	}
+	if len(diff.Interfaces) != len(want) {
+		t.Fatalf("len(Interfaces) = %d, want %d: %+v", len(diff.Interfaces), len(want), diff.Interfaces)
+	}
+	for _, d := range diff.Interfaces {
+		if wc := want[d.Name]; d.Change != wc {
+			t.Errorf("Interfaces %q.Change = %v, want %v", d.Name, d.Change, wc)
+		}
+		if d.Name == "same_if" {
+			if d.Content == nil || d.Content.PrivateKey != "pk" {
+				t.Errorf("same_if.Content = %+v, want the (identical) new content, not nil", d.Content)
+			}
+			if d.Sections.Interface != "same_if" {
+				t.Errorf("same_if.Sections = %+v, want the recorded sections carried forward", d.Sections)
+			}
+		}
+	}
+}
+
+// TestComputeDiff_ForceAllPromotesStunmeshUnchangedToChanged pins the
+// same forceAll effect on the stunmesh classification: identical text
+// on both sides is StunmeshChanged, not StunmeshUnchanged, so the
+// apply step rewrites the config file and reloads stunmesh-go.
+func TestComputeDiff_ForceAllPromotesStunmeshUnchangedToChanged(t *testing.T) {
+	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":"same text"}`)
+	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "same text"}
+
+	diff, err := computeDiff(b, state, true)
+	if err != nil {
+		t.Fatalf("computeDiff: %v", err)
+	}
+	if diff.Stunmesh != StunmeshChanged {
+		t.Errorf("Stunmesh = %v, want StunmeshChanged", diff.Stunmesh)
+	}
+
+	// An empty stunmesh text stays StunmeshEmpty under forceAll too:
+	// forceAll only promotes StunmeshUnchanged, it never overrides the
+	// "empty is always a real instruction" rule.
+	bEmpty := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{},"stunmesh":""}`)
+	stateEmpty := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: ""}
+	diffEmpty, err := computeDiff(bEmpty, stateEmpty, true)
+	if err != nil {
+		t.Fatalf("computeDiff: %v", err)
+	}
+	if diffEmpty.Stunmesh != StunmeshEmpty {
+		t.Errorf("Stunmesh = %v, want StunmeshEmpty even under forceAll", diffEmpty.Stunmesh)
 	}
 }

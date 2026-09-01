@@ -74,8 +74,12 @@ func stateToBundle(state *last.State, ref *bundle.Bundle) *bundle.Bundle {
 // applyDiff needs to read it again; applyDiff also needs state to
 // carry forward the recorded UCI sections of every unchanged
 // interface into the new last.json (see applyDiff's doc comment).
+//
+// cfg.FullApply is threaded into computeDiff unchanged: see its
+// forceAll parameter's doc comment for what it does to the
+// classification.
 func applyChanges(env *Env, cfg *Config, b *bundle.Bundle, state *last.State) int {
-	diff, err := computeDiff(b, state)
+	diff, err := computeDiff(b, state, cfg.FullApply)
 	if err != nil {
 		// computeDiff's only error source is bundle.Bundle.Canonical
 		// (via interfaceEqual), which never includes field values in
