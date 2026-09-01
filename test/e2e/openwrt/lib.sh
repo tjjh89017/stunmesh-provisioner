@@ -773,32 +773,27 @@ guest_capture() {
 }
 
 # wait_for_pgrep PORT KEY NAME [ATTEMPTS] [INTERVAL_SECONDS] [EXCLUDE_PID]
-# -- polls `pgrep -x NAME` in the guest every INTERVAL_SECONDS (default
-# 1s), up to ATTEMPTS times (default 10, so 10s total), and prints the
-# first pid it finds. Dies if NAME never shows up within that budget.
+# -- polls `pgrep -x NAME` every INTERVAL_SECONDS (default 1s), up to
+# ATTEMPTS times (default 10s total), and prints the first pid found.
+# Dumps guest diagnostics and dies if NAME never shows up.
 #
-# EXCLUDE_PID, when given, is a pid to treat as "not found yet" -- a
-# restart/reload caller's own pre-restart pid, so a lingering old
-# instance that has not exited yet cannot be mistaken for restart
-# evidence (see daemon.go's rc.common `restart` = stop then start: the
-# old instance is not guaranteed to be gone the instant the reload
-# command returns).
+# NAME must be the process's full path (e.g.
+# "/usr/sbin/stunmesh-agent"), not its short name: this guest's
+# BusyBox pgrep -x matches argv[0] exactly as the launcher invoked it,
+# not the kernel's short `comm` field the way GNU pgrep -x does --
+# confirmed directly against this project's own openwrt/rootfs image
+# under real procd. A short name here can never match, on any binary.
+# The full path still cannot self-match the ssh command polling for
+# it, since argv[0] of that command is "sh", never the agent's path.
 #
-# Replaces a fixed `sleep N` followed by a single pgrep read: a fixed sleep
-# only proves "the process existed at some earlier instant, if it ever
-# does" when it happens to land after the process is up, and procd gives no
-# fixed deadline for that -- start_service returns as soon as procd has
-# forked the instance, not once its first cycle (fetch, decrypt, apply) has
-# actually reached the kernel, and a respawn (a crash, a reload) reforks on
-# its own schedule too. A single point-in-time pgrep can land in the gap
-# between an old instance exiting and procd forking the next one even while
-# the service is healthy, exactly like this same problem in wait_for_ssh
-# above -- poll instead of guessing one delay that covers every case.
+# EXCLUDE_PID, when given, is treated as "not found yet": a
+# restart/reload caller's own pre-restart pid, so a not-yet-exited old
+# instance is not mistaken for restart evidence.
 #
-# guest_capture's own "" fallback (not its no-FALLBACK sentinel) is what
-# makes a plain `[[ -n "$pid" ]]` the right emptiness check below: a failed
-# read and "pgrep found nothing" both come back as "", exactly what this
-# loop should retry either way.
+# Polls instead of a fixed sleep: procd forks the instance
+# asynchronously and gives no fixed deadline for "past its first
+# cycle", so a single point-in-time read can land in the gap between
+# an old instance exiting and the next one starting.
 wait_for_pgrep() {
 	local port="$1" key="$2" name="$3"
 	local attempts="${4:-10}" interval="${5:-1}" exclude_pid="${6:-}"
@@ -812,7 +807,31 @@ wait_for_pgrep() {
 		sleep "$interval"
 		attempt=$((attempt + 1))
 	done
+	dump_guest_diagnostics "$port" "$key"
 	die "No $name pid (other than excluded pid '${exclude_pid}') in the guest after polling for $(( attempts * interval ))s."
+}
+
+# dump_guest_diagnostics PORT KEY -- logs a guest state snapshot:
+# recent logread, process list, agent state dir, config.yaml's size
+# and mtime only (never its content -- may hold a plugin secret in the
+# future), stunmesh-agent's UCI, and procd's view of the service. Call
+# before a phase gives up waiting on the guest, so a CI failure
+# carries the evidence for it.
+#
+# Each read has its own `|| true`: under `set -euo pipefail` one
+# failed diagnostic must not abort the rest or mask the real failure.
+dump_guest_diagnostics() {
+	local port="$1" key="$2"
+	log "-- guest diagnostics --"
+	guest_exec "$port" "$key" "logread | tail -40" || true
+	guest_exec "$port" "$key" "ps w" || true
+	guest_exec "$port" "$key" "ls -l /etc/stunmesh/agent/" || true
+	guest_exec "$port" "$key" \
+		"stat -c 'config.yaml: %s bytes, mtime %Y' /etc/stunmesh/agent/config.yaml 2>/dev/null || echo 'config.yaml: absent'" \
+		|| true
+	guest_exec "$port" "$key" "uci show stunmesh-agent 2>&1" || true
+	guest_exec "$port" "$key" "/etc/init.d/stunmesh-agent status 2>&1" || true
+	log "-- end guest diagnostics --"
 }
 
 # guest_capture_failed VALUE -- true when VALUE is one of
