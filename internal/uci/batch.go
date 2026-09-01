@@ -37,25 +37,36 @@ func (b Batch) Text() string {
 }
 
 // setCmd returns the Command that sets one option, or one list
-// element, to value: "uci set network.<section>.<option>=<value>".
-func setCmd(section, option, value string) Command {
-	return Command{Args: []string{"set", "network." + section + "." + option + "=" + value}}
+// element, to value: "uci set <config>.<section>.<option>=<value>".
+// config is the UCI config file the section lives in ("network" for
+// every function in this file's original callers, "firewall" for the
+// stunmesh zone; see firewall.go).
+func setCmd(config, section, option, value string) Command {
+	return Command{Args: []string{"set", config + "." + section + "." + option + "=" + value}}
 }
 
 // createCmd returns the Command that creates section with the given
-// UCI type: "uci set network.<section>=<typ>".
-func createCmd(section, typ string) Command {
-	return Command{Args: []string{"set", "network." + section + "=" + typ}}
+// UCI type: "uci set <config>.<section>=<typ>".
+func createCmd(config, section, typ string) Command {
+	return Command{Args: []string{"set", config + "." + section + "=" + typ}}
 }
 
 // addListCmd returns the Command that appends one value to a UCI
-// list option: "uci add_list network.<section>.<option>=<value>".
-func addListCmd(section, option, value string) Command {
-	return Command{Args: []string{"add_list", "network." + section + "." + option + "=" + value}}
+// list option: "uci add_list <config>.<section>.<option>=<value>".
+func addListCmd(config, section, option, value string) Command {
+	return Command{Args: []string{"add_list", config + "." + section + "." + option + "=" + value}}
+}
+
+// delListCmd returns the Command that removes one value from a UCI
+// list option: "uci del_list <config>.<section>.<option>=<value>".
+// Unlike deleteCmd, it removes only the named value; every other
+// value in the list, and the section itself, is left untouched.
+func delListCmd(config, section, option, value string) Command {
+	return Command{Args: []string{"del_list", config + "." + section + "." + option + "=" + value}}
 }
 
 // deleteCmd returns the Command that deletes section entirely:
-// "uci delete network.<section>".
-func deleteCmd(section string) Command {
-	return Command{Args: []string{"delete", "network." + section}}
+// "uci delete <config>.<section>".
+func deleteCmd(config, section string) Command {
+	return Command{Args: []string{"delete", config + "." + section}}
 }

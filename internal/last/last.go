@@ -106,6 +106,46 @@ type State struct {
 	// State (missing last.json) is the only absent case, and Read
 	// reports that with an empty WG, not with this field.
 	Stunmesh string `json:"stunmesh"`
+	// Firewall records what the agent last did to the shared
+	// "stunmesh" firewall zone (PLAN.md 6 "Firewall zone"). The zero
+	// value (ZoneOwned false, Members nil) means the agent has never
+	// created or owned that zone -- either nothing has been applied
+	// yet, or a conflicting operator-owned firewall.stunmesh exists
+	// and the agent leaves it alone (see FirewallState.ZoneOwned).
+	Firewall FirewallState `json:"firewall,omitempty"`
+}
+
+// FirewallState records the agent's ownership of, and membership in,
+// the shared "stunmesh" firewall zone and its three default
+// forwarding sections (PLAN.md 6 "Firewall zone"). Unlike Sections,
+// which is per-interface, FirewallState is recorded once at the top
+// level of State: every managed interface shares one zone (and the
+// zone's forwardings), not one zone each.
+type FirewallState struct {
+	// ZoneOwned is true once the agent has created firewall.stunmesh,
+	// firewall.stunmesh_fwd_lan_stunmesh, firewall.stunmesh_fwd_stunmesh_lan,
+	// and firewall.stunmesh_fwd_stunmesh_wan itself -- the zone and its
+	// three forwardings are created and deleted together, as one unit
+	// (see uci.BuildFirewallZoneCreate, uci.BuildFirewallForwardingsCreate),
+	// so one flag covers all four sections; there is no case where the
+	// agent owns the zone but not its forwardings, or the reverse. A
+	// later apply only ever creates, modifies, or deletes any of these
+	// four sections while ZoneOwned is true, or while the zone section
+	// does not exist yet at all (PLAN.md 6 "Rules": never touch a
+	// section the agent did not create). ZoneOwned false with an
+	// existing firewall.stunmesh means a conflicting, operator-owned
+	// zone was found; the agent leaves it, and any forwarding section
+	// under these same fixed names, untouched, and does not track
+	// membership in it.
+	ZoneOwned bool `json:"zone_owned,omitempty"`
+	// Members names every interface currently added to the zone's
+	// "network" list option, in the order the agent added them. It is
+	// meaningful only while ZoneOwned is true; a later apply removes
+	// an interface from this list by its exact recorded name, never
+	// by pattern (PLAN.md 6 "Rules"), and deletes the whole zone
+	// section (and its forwardings), rather than emptying this list
+	// one entry at a time, once the last member is removed.
+	Members []string `json:"members,omitempty"`
 }
 
 // Interface is one WireGuard interface's recorded state: the content

@@ -379,6 +379,57 @@ func createdSectionNames(batch uci.Batch, wantRouteCount int) (routes, peers []s
 	return routes, peers
 }
 
+// TestBuildFirewallZoneCreate pins the exact batch that creates the
+// shared "stunmesh" firewall zone (PLAN.md 6 "Firewall zone"): the
+// zone section itself, plus its name/input/output/forward options.
+func TestBuildFirewallZoneCreate(t *testing.T) {
+	got := uci.BuildFirewallZoneCreate().Text()
+	checkGolden(t, "firewall_zone_create.golden", got)
+}
+
+// TestAddRemoveFirewallZoneNetwork pins the exact Command each of
+// AddFirewallZoneNetwork and RemoveFirewallZoneNetwork builds for one
+// interface name, and TestDeleteFirewallZone pins the Command that
+// deletes the whole zone section.
+func TestAddRemoveFirewallZoneNetwork(t *testing.T) {
+	add := uci.AddFirewallZoneNetwork("wg0")
+	wantAdd := []string{"add_list", "firewall.stunmesh.network=wg0"}
+	if !equalStrings(add.Args, wantAdd) {
+		t.Errorf("AddFirewallZoneNetwork(\"wg0\").Args = %v, want %v", add.Args, wantAdd)
+	}
+
+	remove := uci.RemoveFirewallZoneNetwork("wg0")
+	wantRemove := []string{"del_list", "firewall.stunmesh.network=wg0"}
+	if !equalStrings(remove.Args, wantRemove) {
+		t.Errorf("RemoveFirewallZoneNetwork(\"wg0\").Args = %v, want %v", remove.Args, wantRemove)
+	}
+}
+
+func TestDeleteFirewallZone(t *testing.T) {
+	del := uci.DeleteFirewallZone()
+	want := []string{"delete", "firewall.stunmesh"}
+	if !equalStrings(del.Args, want) {
+		t.Errorf("DeleteFirewallZone().Args = %v, want %v", del.Args, want)
+	}
+}
+
+// TestBuildFirewallForwardingsCreate pins the exact batch that creates
+// the three default forwarding sections (PLAN.md 6 "Firewall zone"):
+// lan->stunmesh, stunmesh->lan, and stunmesh->wan. It also pins, by
+// omission, that BuildFirewallZoneCreate's own golden file
+// (TestBuildFirewallZoneCreate) never sets `option masq`: the zone
+// batch and this batch are disjoint, and neither one names "masq"
+// anywhere in either golden file.
+func TestBuildFirewallForwardingsCreate(t *testing.T) {
+	got := uci.BuildFirewallForwardingsCreate().Text()
+	checkGolden(t, "firewall_forwardings_create.golden", got)
+}
+
+func TestDeleteFirewallForwardings(t *testing.T) {
+	got := uci.DeleteFirewallForwardings().Text()
+	checkGolden(t, "firewall_forwardings_delete.golden", got)
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

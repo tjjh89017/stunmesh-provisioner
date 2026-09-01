@@ -43,7 +43,14 @@ func testInterface(t *testing.T, raw string) bundle.Interface {
 func TestApplyDiff_NewInterface(t *testing.T) {
 	cfg := applyTestConfig(t)
 	env := newEnv(strings.NewReader(""), new(strings.Builder), new(strings.Builder))
-	fake := execx.NewFake()
+	// index 13 is manageFirewall's "uci get firewall.stunmesh" probe
+	// (writeUCI's own 13 calls, index 0-12, come first -- see the "want"
+	// comments below). Scripting it to fail means "not there yet": a
+	// fresh zone, so manageFirewall creates it (PLAN.md 6 "Firewall
+	// zone"). Every other call defaults to success.
+	results := make([]execx.Result, 14)
+	results[13] = execx.Result{Err: errors.New("no such section")}
+	fake := execx.NewFake(results...)
 	env.Runner = fake
 
 	newIface := testInterface(t, `{"private_key":"wg0-key","addresses":["10.0.0.1/24"],`+
@@ -81,13 +88,51 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.public_key=bravo-key"}},
 		{Name: "uci", Args: []string{"add_list", "network.wg0_p_bravo.allowed_ips=10.0.0.2/32"}},
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.route_allowed_ips=1"}},
+		// manageFirewall (PLAN.md 6 "Firewall zone"): wg0 is New and not
+		// yet a recorded zone member, so it probes ("uci get", scripted
+		// to fail above), creates the zone, then clears and (re)adds
+		// wg0's network entry (see manageFirewall's doc comment "Retry
+		// safety" for why del_list runs before add_list).
+		{Name: "uci", Args: []string{"get", "firewall.stunmesh"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh=zone"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh.name=stunmesh"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh.input=ACCEPT"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh.output=ACCEPT"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh.forward=ACCEPT"}},
+		// The three default forwardings (PLAN.md 6 "Firewall zone")
+		// are created right after the zone, only on this first
+		// creation: lan->stunmesh, stunmesh->lan, and stunmesh->wan.
+		// Neither the zone nor any forwarding ever sets "masq": no NAT
+		// happens between "lan" and "stunmesh" in either direction
+		// (see uci.BuildFirewallZoneCreate's doc comment); egress to
+		// "wan" still gets NAT, but from "wan"'s own masq setting, not
+		// from anything staged here.
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh=forwarding"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh.src=lan"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh.dest=stunmesh"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_lan=forwarding"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_lan.src=stunmesh"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_lan.dest=lan"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_wan=forwarding"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_wan.src=stunmesh"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_stunmesh_wan.dest=wan"}},
+		{Name: "uci", Args: []string{"del_list", "firewall.stunmesh.network=wg0"}},
+		{Name: "uci", Args: []string{"add_list", "firewall.stunmesh.network=wg0"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
+		// firewallChanged is true (the zone was just created), so
+		// "firewall" commits separately (applyDiff's doc comment
+		// "Firewall config commits separately").
+		{Name: "uci", Args: []string{"commit", "firewall"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
 		// ifupChangedInterfaces (fetch_apply.go): wg0 is InterfaceNew, so
 		// it gets an explicit "ifup" after the reload. See
 		// ifupChangedInterfaces's doc comment for why a reload alone is
 		// not measured to be enough.
 		{Name: "ifup", Args: []string{"wg0"}},
+		// "/etc/init.d/firewall reload" runs after ifup, once per apply
+		// that changed the firewall zone (applyDiff's doc comment
+		// "/etc/init.d/firewall reload").
+		{Name: "/etc/init.d/firewall", Args: []string{"reload"}},
 		// diff.Stunmesh is StunmeshEmpty and last.json had no old state:
 		// anyInterfaceChanged is true (a new interface), so step 6 runs
 		// "stop".
@@ -111,6 +156,12 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 	if want := []string{"wg0_p_bravo"}; !reflect.DeepEqual(iface.Sections.Peers, want) {
 		t.Errorf("Sections.Peers = %v, want %v", iface.Sections.Peers, want)
 	}
+	if !st.Firewall.ZoneOwned {
+		t.Errorf("Firewall.ZoneOwned = false, want true after creating the zone")
+	}
+	if want := []string{"wg0"}; !reflect.DeepEqual(st.Firewall.Members, want) {
+		t.Errorf("Firewall.Members = %v, want %v", st.Firewall.Members, want)
+	}
 }
 
 func TestApplyDiff_ChangedInterface(t *testing.T) {
@@ -130,7 +181,14 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		Stunmesh:        StunmeshUnchanged,
 		StunmeshContent: "unchanged text",
 	}
-	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "unchanged text"}
+	// wg0 is already a recorded firewall zone member (a previous apply
+	// added it): InterfaceChanged does not affect zone membership, so
+	// manageFirewall (PLAN.md 6 "Firewall zone") has nothing to add or
+	// remove here and stages no firewall uci call at all -- see this
+	// test's "want" below, and TestApplyDiff_NewInterface for the case
+	// where it does.
+	firewall := last.FirewallState{ZoneOwned: true, Members: []string{"wg0"}}
+	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "unchanged text", Firewall: firewall}
 
 	code := applyDiff(env, cfg, diff, state)
 	if code != ExitOK {
@@ -180,6 +238,14 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 	// The stunmesh config file was not touched: stunmesh is unchanged.
 	if _, err := os.Stat(cfg.StunmeshConfigPath); !os.IsNotExist(err) {
 		t.Errorf("stunmesh config file exists or errored unexpectedly: %v", err)
+	}
+
+	st, err := last.Read(cfg.LastPath)
+	if err != nil {
+		t.Fatalf("last.Read: %v", err)
+	}
+	if !reflect.DeepEqual(st.Firewall, firewall) {
+		t.Errorf("Firewall = %+v, want it carried forward unchanged: %+v", st.Firewall, firewall)
 	}
 }
 
@@ -523,16 +589,19 @@ func TestApplyDiff_IfupFailureIsFatal(t *testing.T) {
 
 	// Calls, in order: clearListOptions (get/delete wg0.addresses),
 	// the create batch (set wg0=interface, set wg0.proto=wireguard,
-	// set wg0.private_key=..., add_list wg0.addresses=...), "uci
-	// commit network", "ubus call network reload", then "ifup wg0",
-	// which is the 8th call (index 7) and the one scripted to fail.
-	fake := execx.NewFake(
-		execx.Result{}, execx.Result{}, // clearListOptions
-		execx.Result{}, execx.Result{}, execx.Result{}, execx.Result{}, // create batch
-		execx.Result{},                        // uci commit network
-		execx.Result{},                        // ubus call network reload
-		execx.Result{Err: errors.New("boom")}, // ifup wg0
-	)
+	// set wg0.private_key=..., add_list wg0.addresses=...) -- 6 calls,
+	// index 0-5. manageFirewall then runs (wg0 is InterfaceNew): its
+	// "uci get firewall.stunmesh" probe (index 6) is left unscripted,
+	// so it defaults to success -- "the zone already exists" -- and
+	// since state.Firewall is not recorded as owned, manageFirewall
+	// treats that as a conflicting, operator-owned zone and stages
+	// nothing further (see manageFirewall's doc comment "Ownership"):
+	// no "uci commit firewall" follows. Then "uci commit network"
+	// (index 7), "ubus call network reload" (index 8), and "ifup wg0"
+	// (index 9), the one scripted to fail.
+	results := make([]execx.Result, 10)
+	results[9] = execx.Result{Err: errors.New("boom")} // ifup wg0
+	fake := execx.NewFake(results...)
 	env.Runner = fake
 
 	code := applyDiff(env, cfg, diff, state)

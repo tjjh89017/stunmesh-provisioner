@@ -1,0 +1,9 @@
+uci set firewall.stunmesh_fwd_lan_stunmesh=forwarding
+uci set firewall.stunmesh_fwd_lan_stunmesh.src=lan
+uci set firewall.stunmesh_fwd_lan_stunmesh.dest=stunmesh
+uci set firewall.stunmesh_fwd_stunmesh_lan=forwarding
+uci set firewall.stunmesh_fwd_stunmesh_lan.src=stunmesh
+uci set firewall.stunmesh_fwd_stunmesh_lan.dest=lan
+uci set firewall.stunmesh_fwd_stunmesh_wan=forwarding
+uci set firewall.stunmesh_fwd_stunmesh_wan.src=stunmesh
+uci set firewall.stunmesh_fwd_stunmesh_wan.dest=wan

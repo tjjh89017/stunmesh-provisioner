@@ -177,6 +177,20 @@ func uciClearListCalls(options []string) []execx.Call {
 var (
 	commitCall = execx.Call{Name: "uci", Args: []string{"commit", "network"}}
 	reloadCall = execx.Call{Name: "ubus", Args: []string{"call", "network", "reload"}}
+	// firewallProbeCall is manageFirewall's "uci get firewall.stunmesh"
+	// (PLAN.md 6 "Firewall zone"), staged whenever anyInterfaceChanged
+	// is true and at least one remaining interface is not yet a
+	// recorded zone member. It is left unscripted in every fake here,
+	// so it defaults to success ("the zone already exists"); since
+	// none of these scenarios ever record the zone as agent-owned,
+	// manageFirewall reads that as a conflicting, operator-owned zone
+	// and stages nothing else (see manageFirewall's doc comment
+	// "Ownership") -- one extra call, no "uci commit firewall", no
+	// firewall reload. The firewall zone's own create/add/remove/
+	// delete behavior is covered directly by
+	// TestApplyDiff_NewInterface and the other tests in
+	// fetch_apply_test.go, not by this chain.
+	firewallProbeCall = execx.Call{Name: "uci", Args: []string{"get", "firewall.stunmesh"}}
 )
 
 func stunmeshCall(action string) execx.Call {
@@ -305,7 +319,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		// Both wg0 and wg1 are InterfaceNew: ifupChangedInterfaces gives
 		// each an explicit "ifup", in diff.Interfaces order, after the
 		// reload.
-		want = append(want, commitCall, reloadCall, ifupCall("wg0"), ifupCall("wg1"), stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), ifupCall("wg1"), stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -416,7 +430,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
 		// stunmesh changed OR any interface changed). wg0 is
 		// InterfaceChanged, so it also gets an explicit "ifup".
-		want = append(want, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"), stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
@@ -476,7 +490,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		}
 
 		want := uciDeleteCalls(wg1Sections)
-		want = append(want, commitCall, reloadCall, stunmeshCall("reload"))
+		want = append(want, firewallProbeCall, commitCall, reloadCall, stunmeshCall("reload"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)
 		}
