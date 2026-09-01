@@ -461,11 +461,12 @@ publish_fixture() {
 # delayed proxy, since the primary config.yaml stays pointed at the
 # main fake dhtproxy every other phase uses.
 #
-# Base64-encoded across the ssh command line, not a remote heredoc:
+# Piped through ssh stdin, not expanded into the remote command line:
 # PROXY_URL and the controller pubkey can both contain characters a
-# double-quoted remote heredoc would need escaping for.
+# double-quoted remote command would need escaping for, and the guest's
+# busybox has no base64 applet.
 write_guest_config() {
-	local path="$1" proxy_url="$2" content b64
+	local path="$1" proxy_url="$2" content
 	content=$(cat <<YAML
 namespace: "${E2E_NAMESPACE}"
 node_id: "${E2E_NODE_ID}"
@@ -481,9 +482,8 @@ plugins:
       - "${proxy_url}"
 YAML
 	)
-	b64=$(printf '%s' "$content" | base64 -w0)
-	guest_exec "$SSH_PORT" "$SSH_KEY" \
-		"echo '${b64}' | base64 -d > '${path}' && chmod 0600 '${path}'" \
+	printf '%s\n' "$content" | guest_exec "$SSH_PORT" "$SSH_KEY" \
+		"cat > '${path}' && chmod 0600 '${path}'" \
 		|| die "Could not write ${path} in the guest."
 }
 
