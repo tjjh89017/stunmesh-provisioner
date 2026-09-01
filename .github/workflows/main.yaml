@@ -7,7 +7,7 @@
 #
 # Steps live in `.github/actions/*`; the Makefile is the source of truth.
 #
-# Chain: check -> build (matrix) -> build-required -> e2e -> e2e-realnet ->
+# Chain: lint & test -> build (matrix) -> build-required -> e2e -> e2e-realnet ->
 # E2E (e2e-required below, the single check branch protection names).
 # e2e runs on every push and pull_request, not workflow_dispatch-only: a
 # required check that only runs on manual dispatch never blocks a merge.
@@ -31,8 +31,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: Check
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -41,12 +41,25 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Check
-        uses: ./.github/actions/check
+      - name: Lint
+        uses: ./.github/actions/lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      - name: Test
+        uses: ./.github/actions/test
 
   build:
     name: Build (${{ matrix.target }})
-    needs: check
+    needs: [lint, test]
     runs-on: ubuntu-latest
     # fail-fast: false means one target failing does not cancel the
     # others, so build-required below sees a real "failure" from a

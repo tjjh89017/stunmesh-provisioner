@@ -11,9 +11,9 @@ import (
 func TestFake_RecordsCalls_ExactSequence(t *testing.T) {
 	f := execx.NewFake()
 
-	f.Run("uci", "set", "network.wan.proto=wireguard")
-	f.Run("uci", "commit", "network")
-	f.Run("ubus", "call", "network", "reload")
+	_, _ = f.Run("uci", "set", "network.wan.proto=wireguard")
+	_, _ = f.Run("uci", "commit", "network")
+	_, _ = f.Run("ubus", "call", "network", "reload")
 
 	want := []execx.Call{
 		{Name: "uci", Args: []string{"set", "network.wan.proto=wireguard"}},
@@ -53,7 +53,7 @@ func TestFake_Run_CopiesArgs(t *testing.T) {
 	f := execx.NewFake()
 
 	args := []string{"a", "b"}
-	f.Run("cmd", args...)
+	_, _ = f.Run("cmd", args...)
 	args[0] = "mutated"
 
 	want := []execx.Call{{Name: "cmd", Args: []string{"a", "b"}}}
@@ -64,7 +64,7 @@ func TestFake_Run_CopiesArgs(t *testing.T) {
 
 func TestFake_Calls_ReturnsCopy(t *testing.T) {
 	f := execx.NewFake()
-	f.Run("cmd", "x")
+	_, _ = f.Run("cmd", "x")
 
 	got := f.Calls()
 	got[0].Name = "mutated"

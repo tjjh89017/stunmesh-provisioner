@@ -50,7 +50,7 @@ func acquireLock(path string) (*lockFile, error) {
 	}
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%s: %w", path, errLockHeld)
 		}

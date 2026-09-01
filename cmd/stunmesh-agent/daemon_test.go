@@ -18,12 +18,10 @@ import (
 // so a test can assert the daemon actually waits for Run to return
 // before calling Close (embeddedRunner.stop's contract).
 type fakeEmbeddedApp struct {
-	mu          sync.Mutex
 	runCalls    int32
 	oneshotErr  error
 	oneshotCall int32
 	closeCalls  int32
-	runBlocks   bool
 }
 
 func (f *fakeEmbeddedApp) Run(ctx context.Context) error {

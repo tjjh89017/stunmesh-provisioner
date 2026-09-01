@@ -143,6 +143,16 @@ vet:
 	go vet $(TAGS_FLAGS) ./...
 	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go vet $(TAGS_FLAGS) ./...
 
+# lint runs the golangci-lint already on $PATH, for a developer to check
+# locally before pushing. It does not pin a version, so it can drift from
+# the version CI's golangci-lint-action installs (see
+# .github/actions/lint); install golangci-lint yourself to use this
+# target. CI does not call it -- it uses the official action directly,
+# which owns golangci-lint's own install/cache/annotation behaviour.
+.PHONY: lint
+lint:
+	golangci-lint run
+
 # fmt-check fails if any file is not gofmt-formatted. It changes no file.
 .PHONY: fmt-check
 fmt-check:
@@ -203,6 +213,7 @@ help:
 	@echo "  test          run the contrib/openwrt shell tests, then go test ./..."
 	@echo "  test-openwrt  run only the contrib/openwrt shell tests"
 	@echo "  vet           run go vet ./..., plus linux/mips (softfloat)"
+	@echo "  lint          run golangci-lint (must be installed locally)"
 	@echo "  fmt-check     fail if gofmt would change any file"
 	@echo "  tidy-check    fail if go mod tidy would change go.mod/go.sum"
 	@echo "  upx           compress dist binaries, set UPX=1"

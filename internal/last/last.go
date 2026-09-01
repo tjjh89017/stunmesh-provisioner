@@ -277,18 +277,18 @@ func Write(path string, state *State) error {
 	// the temporary file so it does not linger. After a successful
 	// rename, tmpPath no longer exists (rename consumed it), so this
 	// is a silent no-op on the success path.
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if cerr := tmp.Chmod(0o600); cerr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("last: chmod %s: %w", tmpPath, cerr)
 	}
 	if _, werr := tmp.Write(data); werr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("last: write %s: %w", tmpPath, werr)
 	}
 	if serr := tmp.Sync(); serr != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("last: sync %s: %w", tmpPath, serr)
 	}
 	if cerr := tmp.Close(); cerr != nil {

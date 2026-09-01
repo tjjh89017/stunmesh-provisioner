@@ -554,7 +554,7 @@ func TestApplyDiff_IfupRunsOnlyForNewAndChangedInterfaces(t *testing.T) {
 			ifupWG0Idx = i
 		}
 	}
-	if !(reloadIdx >= 0 && reloadIdx < ifupWG0Idx) {
+	if reloadIdx < 0 || reloadIdx >= ifupWG0Idx {
 		t.Errorf("call order = %+v: want reload (%d) < ifup wg0 (%d)", calls, reloadIdx, ifupWG0Idx)
 	}
 }

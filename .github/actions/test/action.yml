@@ -1,0 +1,9 @@
+name: 'Test'
+description: 'Run the contrib/openwrt shell tests and the Go unit tests. The Makefile is the source of truth.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run tests
+      shell: bash
+      run: make test

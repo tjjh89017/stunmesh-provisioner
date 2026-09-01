@@ -102,7 +102,7 @@ func runOneshot(env *Env, cfg *Config) int {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: %v\n", err)
 		return ExitError
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	outcome, err := runFetchApply(env, cfg, true)
 	if err != nil {
@@ -168,7 +168,7 @@ func runDaemon(env *Env, cfg *Config) int {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: %v\n", err)
 		return ExitError
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

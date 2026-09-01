@@ -123,7 +123,7 @@ func TestRunOneshot_SecondConcurrentHolderExitsOKWithOneLogLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquireLock (first holder): %v", err)
 	}
-	defer held.Release()
+	defer func() { _ = held.Release() }()
 
 	var stdout, stderr bytes.Buffer
 	env := newEnv(strings.NewReader(""), &stdout, &stderr)

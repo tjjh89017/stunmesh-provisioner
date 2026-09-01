@@ -1,0 +1,23 @@
+version: "2"
+run:
+  # embedca matches CA_TAG in the Makefile, so lint sees the same files a
+  # build does (PLAN.md-adjacent: the embedca fallback path).
+  build-tags:
+    - embedca
+linters:
+  settings:
+    errcheck:
+      # Both binaries write CLI usage/status/error text straight to their
+      # own stdout/stderr throughout cmd/*. A failed write there (a
+      # closed pipe, a full terminal buffer) is not something either
+      # program can act on differently -- there is no more-basic stream
+      # left to report it through -- so these three are excluded here
+      # rather than annotated "_ = " at every one of the dozens of call
+      # sites. Every other errcheck finding in the tree is a real check.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+formatters:
+  enable:
+    - gofmt

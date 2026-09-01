@@ -368,7 +368,7 @@ func hangingProxyListener(t *testing.T) (url string, accepted <-chan struct{}) {
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	ch := make(chan struct{})
 	go func() {
