@@ -19,13 +19,13 @@ import "github.com/tjjh89017/stunmesh-provisioner/internal/last"
 func BuildDelete(sections last.Sections) Batch {
 	var b Batch
 	for _, peer := range sections.Peers {
-		b = append(b, deleteCmd(peer))
+		b = append(b, deleteCmd("network", peer))
 	}
 	for _, route := range sections.Routes {
-		b = append(b, deleteCmd(route))
+		b = append(b, deleteCmd("network", route))
 	}
 	if sections.Interface != "" {
-		b = append(b, deleteCmd(sections.Interface))
+		b = append(b, deleteCmd("network", sections.Interface))
 	}
 	return b
 }

@@ -373,13 +373,24 @@ func sentinels() []string {
 // the peer is exercised as part of the same batch below. bravo peer:
 // create, description, public_key, preshared_key, allowed_ips,
 // route_allowed_ips -- 6 more uci calls. Total 14 uci calls in
-// writeUCI, then "uci commit network" (index 14), "ubus call network
-// reload" (index 15), and "ifup wg0" (index 16, ifupChangedInterfaces:
-// wg0 is InterfaceNew).
+// writeUCI. Next, manageFirewall (PLAN.md 6 "Firewall zone") runs
+// because wg0 is InterfaceNew: its only call here is "uci get
+// firewall.stunmesh" (index 14), which -- left unscripted, so it
+// defaults to success -- reads as "the zone already exists". Since
+// state.Firewall is not recorded as owned, manageFirewall then treats
+// that as a conflicting, operator-owned zone and stages nothing
+// further (see manageFirewall's doc comment "Ownership"); none of the
+// tests below care about the firewall zone itself, only about
+// pinning the exit code and secret-leak behavior of the surrounding
+// steps, so this "leave it alone" outcome -- one extra uci call, no
+// "uci commit firewall", no firewall reload -- is exactly what keeps
+// their indices simple. Then "uci commit network" (index 15), "ubus
+// call network reload" (index 16), and "ifup wg0" (index 17,
+// ifupChangedInterfaces: wg0 is InterfaceNew).
 const (
-	sentinelCommitIndex = 14
-	sentinelReloadIndex = 15
-	sentinelIfupIndex   = 16
+	sentinelCommitIndex = 15
+	sentinelReloadIndex = 16
+	sentinelIfupIndex   = 17
 )
 
 func TestApplyDiff_CommitFailureIsExitErrorNoLeak(t *testing.T) {

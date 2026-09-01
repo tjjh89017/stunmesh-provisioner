@@ -1,0 +1,3 @@
+uci delete firewall.stunmesh_fwd_lan_stunmesh
+uci delete firewall.stunmesh_fwd_stunmesh_lan
+uci delete firewall.stunmesh_fwd_stunmesh_wan

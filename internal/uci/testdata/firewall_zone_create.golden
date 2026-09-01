@@ -1,0 +1,5 @@
+uci set firewall.stunmesh=zone
+uci set firewall.stunmesh.name=stunmesh
+uci set firewall.stunmesh.input=ACCEPT
+uci set firewall.stunmesh.output=ACCEPT
+uci set firewall.stunmesh.forward=ACCEPT

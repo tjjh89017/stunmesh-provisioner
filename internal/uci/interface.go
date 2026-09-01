@@ -22,17 +22,17 @@ import (
 func BuildInterface(name string, iface bundle.Interface) Batch {
 	var b Batch
 
-	b = append(b, createCmd(name, "interface"))
-	b = append(b, setCmd(name, "proto", "wireguard"))
-	b = append(b, setCmd(name, "private_key", iface.PrivateKey))
+	b = append(b, createCmd("network", name, "interface"))
+	b = append(b, setCmd("network", name, "proto", "wireguard"))
+	b = append(b, setCmd("network", name, "private_key", iface.PrivateKey))
 	if iface.ListenPort != nil {
-		b = append(b, setCmd(name, "listen_port", strconv.Itoa(*iface.ListenPort)))
+		b = append(b, setCmd("network", name, "listen_port", strconv.Itoa(*iface.ListenPort)))
 	}
 	for _, addr := range iface.Addresses {
-		b = append(b, addListCmd(name, "addresses", addr))
+		b = append(b, addListCmd("network", name, "addresses", addr))
 	}
 	if iface.MTU != nil {
-		b = append(b, setCmd(name, "mtu", strconv.Itoa(*iface.MTU)))
+		b = append(b, setCmd("network", name, "mtu", strconv.Itoa(*iface.MTU)))
 	}
 	b = append(b, optionCommands(name, iface.Options)...)
 
@@ -80,14 +80,14 @@ func ListOptions(name string, iface bundle.Interface) []string {
 func buildRoute(iface string, n int, route bundle.Route) Batch {
 	section := routeSectionName(iface, n)
 	var b Batch
-	b = append(b, createCmd(section, routeFamily(route.CIDR)))
-	b = append(b, setCmd(section, "interface", iface))
-	b = append(b, setCmd(section, "target", route.CIDR))
+	b = append(b, createCmd("network", section, routeFamily(route.CIDR)))
+	b = append(b, setCmd("network", section, "interface", iface))
+	b = append(b, setCmd("network", section, "target", route.CIDR))
 	if route.Gateway != nil {
-		b = append(b, setCmd(section, "gateway", *route.Gateway))
+		b = append(b, setCmd("network", section, "gateway", *route.Gateway))
 	}
 	if route.Metric != nil {
-		b = append(b, setCmd(section, "metric", strconv.FormatInt(*route.Metric, 10)))
+		b = append(b, setCmd("network", section, "metric", strconv.FormatInt(*route.Metric, 10)))
 	}
 	return b
 }
@@ -101,26 +101,26 @@ func buildRoute(iface string, n int, route bundle.Route) Batch {
 func buildPeer(iface, peer string, p bundle.Peer, routeAllowedIPs string) Batch {
 	section := peerSectionName(iface, peer)
 	var b Batch
-	b = append(b, createCmd(section, "wireguard_"+iface))
-	b = append(b, setCmd(section, "description", peer))
-	b = append(b, setCmd(section, "public_key", p.PublicKey))
+	b = append(b, createCmd("network", section, "wireguard_"+iface))
+	b = append(b, setCmd("network", section, "description", peer))
+	b = append(b, setCmd("network", section, "public_key", p.PublicKey))
 	if p.PresharedKey != nil {
-		b = append(b, setCmd(section, "preshared_key", *p.PresharedKey))
+		b = append(b, setCmd("network", section, "preshared_key", *p.PresharedKey))
 	}
 	for _, ip := range p.AllowedIPs {
-		b = append(b, addListCmd(section, "allowed_ips", ip))
+		b = append(b, addListCmd("network", section, "allowed_ips", ip))
 	}
 	if p.Endpoint != nil {
 		host, port, hasPort := parseEndpoint(*p.Endpoint)
-		b = append(b, setCmd(section, "endpoint_host", host))
+		b = append(b, setCmd("network", section, "endpoint_host", host))
 		if hasPort {
-			b = append(b, setCmd(section, "endpoint_port", port))
+			b = append(b, setCmd("network", section, "endpoint_port", port))
 		}
 	}
 	if p.PersistentKeepalive != nil {
-		b = append(b, setCmd(section, "persistent_keepalive", strconv.Itoa(*p.PersistentKeepalive)))
+		b = append(b, setCmd("network", section, "persistent_keepalive", strconv.Itoa(*p.PersistentKeepalive)))
 	}
-	b = append(b, setCmd(section, "route_allowed_ips", routeAllowedIPs))
+	b = append(b, setCmd("network", section, "route_allowed_ips", routeAllowedIPs))
 	b = append(b, optionCommands(section, p.Options)...)
 	return b
 }
@@ -135,7 +135,7 @@ func buildPeer(iface, peer string, p bundle.Peer, routeAllowedIPs string) Batch 
 func optionCommands(section string, options map[string]string) Batch {
 	var b Batch
 	for _, key := range sortedKeys(options) {
-		b = append(b, setCmd(section, key, options[key]))
+		b = append(b, setCmd("network", section, key, options[key]))
 	}
 	return b
 }

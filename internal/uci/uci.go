@@ -1,6 +1,8 @@
-// Package uci builds the UCI batch for one WireGuard interface, and the
+// Package uci builds the UCI batch for one WireGuard interface, the
 // delete list for an interface's recorded sections (PLAN.md 6 "UCI
-// layout for one interface").
+// layout for one interface"), and the batch that manages the shared
+// "stunmesh" firewall zone every managed interface joins (PLAN.md 6
+// "Firewall zone"; see firewall.go).
 //
 // # Input and output
 //
@@ -9,6 +11,13 @@
 // list of Command values. BuildDelete takes the section names
 // last.Sections recorded for one interface and returns a Batch that
 // deletes exactly those names, never a pattern (PLAN.md 6 "Rules").
+// BuildFirewallZoneCreate, AddFirewallZoneNetwork,
+// RemoveFirewallZoneNetwork, and DeleteFirewallZone (firewall.go) are
+// the equivalent building blocks for the "stunmesh" firewall zone,
+// which -- unlike an interface's own sections -- is one section shared
+// by every managed interface, so the caller (cmd/stunmesh-agent's
+// manageFirewall) composes these smaller pieces itself rather than
+// getting one Batch per apply the way BuildInterface/BuildDelete work.
 //
 // # Command representation and the golden-file tension
 //

@@ -38,19 +38,34 @@ func runnerFor(env *Env) execx.Runner {
 //     interface, then create the sections of every new or changed
 //     interface (uciBatch, one interface at a time, in diff.Interfaces
 //     order).
+//     1a. Firewall zone reconciliation (manageFirewall, PLAN.md 6
+//     "Firewall zone"): only when step 1 touched at least one
+//     interface (anyInterfaceChanged). Stages the "stunmesh" zone's
+//     creation or deletion, its three default forwarding sections'
+//     creation or deletion (tied to the zone's own lifecycle), and
+//     "network" list membership for every interface that is now new
+//     or was just removed. This is staged, like step 1; nothing here
+//     takes effect until the commits below.
 //  2. "uci commit network", once.
-//  3. "ubus call network reload".
-//  4. "ifup <iface>" for every new or changed interface, in
+//  3. "uci commit firewall", once, but only when step 1a staged a
+//     change (see this function's doc comment "Firewall config
+//     commits separately").
+//  4. "ubus call network reload".
+//  5. "ifup <iface>" for every new or changed interface, in
 //     diff.Interfaces order. No removed interface gets one; see
-//     ifupChangedInterfaces's doc comment for why step 3 alone is not
+//     ifupChangedInterfaces's doc comment for why step 4 alone is not
 //     enough here, and why a removed interface needs nothing more.
-//  5. Write cfg.StunmeshConfigPath (mode 0600), or delete it when the
+//  6. "/etc/init.d/firewall reload", only when step 1a staged a
+//     change (see this function's doc comment "/etc/init.d/firewall
+//     reload" for why it runs here, after ifup).
+//  7. Write cfg.StunmeshConfigPath (mode 0600), or delete it when the
 //     new stunmesh text is empty.
-//  6. "/etc/init.d/stunmesh reload" when the stunmesh text or any
+//  8. "/etc/init.d/stunmesh reload" when the stunmesh text or any
 //     interface changed; "/etc/init.d/stunmesh stop" instead, when the
 //     new stunmesh text is empty.
-//  7. Write cfg.LastPath (mode 0600, last.Write), only when every step
-//     above succeeded.
+//  9. Write cfg.LastPath (mode 0600, last.Write), only when every step
+//     above succeeded. This is where the firewall zone's ZoneOwned
+//     and Members (last.FirewallState) actually get recorded.
 //
 // applyDiff stops at the first failing step and returns ExitError. It
 // never writes cfg.LastPath after a failure, so the next fetch sees
@@ -141,15 +156,52 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	runner := runnerFor(env)
 
 	if err := writeUCI(runner, diff); err != nil {
-		revertUCI(runner)
+		revertUCI(runner, "network")
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci: %v\n", err)
 		return ExitError
 	}
 
+	// Firewall zone reconciliation (PLAN.md 6 "Firewall zone") only
+	// has anything to do when writeUCI just touched at least one
+	// interface: an interface's membership in the "stunmesh" zone
+	// depends only on whether it now exists (new/changed/unchanged)
+	// or was just removed, never on the stunmesh section alone. See
+	// manageFirewall's doc comment for the ownership and
+	// self-healing rules.
+	newFirewall := state.Firewall
+	firewallChanged := false
+	if anyInterfaceChanged(diff) {
+		fw, changed, err := manageFirewall(runner, diff, state.Firewall)
+		if err != nil {
+			revertUCI(runner, "network")
+			revertUCI(runner, "firewall")
+			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: firewall: %v\n", err)
+			return ExitError
+		}
+		newFirewall = fw
+		firewallChanged = changed
+	}
+
 	if _, err := runner.Run("uci", "commit", "network"); err != nil {
-		revertUCI(runner)
+		revertUCI(runner, "network")
+		revertUCI(runner, "firewall")
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci commit: %v\n", err)
 		return ExitError
+	}
+
+	// The firewall config commits separately from network (PLAN.md 6
+	// "Firewall zone"): the two configs are staged and committed
+	// independently by uci itself, and only firewallChanged interfaces
+	// stage anything under "firewall" at all. Once "uci commit
+	// network" above has succeeded, network is no longer revertible
+	// (see the package doc "No revert after uci commit succeeds"), so
+	// a failure here only reverts the still-staged firewall side.
+	if firewallChanged {
+		if _, err := runner.Run("uci", "commit", "firewall"); err != nil {
+			revertUCI(runner, "firewall")
+			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: uci commit firewall: %v\n", err)
+			return ExitError
+		}
 	}
 
 	if _, err := runner.Run("ubus", "call", "network", "reload"); err != nil {
@@ -160,6 +212,20 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	if err := ifupChangedInterfaces(runner, diff); err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: ifup: %v\n", err)
 		return ExitError
+	}
+
+	// "/etc/init.d/firewall reload" runs after "ubus call network
+	// reload" and every "ifup" (PLAN.md 6 "Firewall zone"): the
+	// firewall reload should see every interface's final state --
+	// created, torn down, or re-pushed by ifup -- rather than reload
+	// against network state that is still mid-transition. It runs
+	// before the stunmesh init.d step, the same relative position
+	// "ubus call network reload" already has to that step.
+	if firewallChanged {
+		if _, err := runner.Run("/etc/init.d/firewall", "reload"); err != nil {
+			fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: firewall reload: %v\n", err)
+			return ExitError
+		}
 	}
 
 	if err := applyStunmeshConfig(cfg.StunmeshConfigPath, diff); err != nil {
@@ -179,6 +245,7 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	}
 
 	newState := buildState(diff, state)
+	newState.Firewall = newFirewall
 	if err := last.Write(cfg.LastPath, newState); err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: fetch: apply: last.json: %v\n", err)
 		return ExitError
@@ -187,14 +254,201 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	return ExitOK
 }
 
-// revertUCI discards every staged, uncommitted UCI change for the
-// "network" config, so the next fetch starts clean (see applyDiff's
-// doc comment "Recovery from a failure during step 1"). It is
-// best-effort: its own result is not checked, since a failure here
-// gives applyDiff nothing safer to do than report the original
-// failure and return, which it already does.
-func revertUCI(runner execx.Runner) {
-	_, _ = runner.Run("uci", "revert", "network")
+// revertUCI discards every staged, uncommitted UCI change for config
+// ("network" or "firewall"), so the next fetch starts clean (see
+// applyDiff's doc comment "Recovery from a failure during step 1").
+// It is best-effort: its own result is not checked, since a failure
+// here gives applyDiff nothing safer to do than report the original
+// failure and return, which it already does. Reverting a config with
+// nothing staged (for example "firewall" when writeUCI itself failed
+// before manageFirewall ever ran) is a harmless no-op.
+func revertUCI(runner execx.Runner, config string) {
+	_, _ = runner.Run("uci", "revert", config)
+}
+
+// manageFirewall runs the firewall half of step 1 (PLAN.md 6
+// "Firewall zone"): stage the "stunmesh" zone's creation, deletion,
+// and "network" list membership so every stunmesh-managed WireGuard
+// interface -- new, changed, or unchanged -- ends up a member, and
+// every removed interface does not. It stages only; the caller
+// commits "firewall" separately from "network" (applyDiff's doc
+// comment "Firewall config commits separately").
+//
+// have is state.Firewall, last.json's record of what a previous apply
+// did. manageFirewall returns the FirewallState to record next, and
+// whether it staged any change at all (so the caller knows whether
+// "uci commit firewall" and "/etc/init.d/firewall reload" have
+// anything to do).
+//
+// # Membership reconciliation
+//
+// manageFirewall computes membership from diff.Interfaces, not from a
+// plain "this interface's Change is New/Removed" rule: any interface
+// present in the new bundle (Change other than InterfaceRemoved) that
+// is not yet in have.Members is added, even when its own Change is
+// InterfaceChanged or InterfaceUnchanged. This is deliberate
+// self-healing: an interface applied by a version of this agent
+// before the firewall zone existed has no Members entry yet, and the
+// first apply that touches any interface at all (this function only
+// runs when anyInterfaceChanged is true) brings it into the zone
+// without requiring a content change of its own. Every interface
+// whose Change is InterfaceRemoved, and that have.Members still
+// names, is removed.
+//
+// # Ownership
+//
+// manageFirewall never creates, modifies, or deletes firewall.stunmesh
+// unless have.ZoneOwned is true (the agent created it) or the section
+// does not exist yet (checked with "uci get", the same tolerant probe
+// deleteIfPresent already uses). A firewall.stunmesh that already
+// exists and is not recorded as agent-owned is a conflicting,
+// operator-owned zone: manageFirewall stages nothing at all for it --
+// no membership, no zone edit -- and returns the zero FirewallState,
+// so last.json still records "not owned" and every later apply
+// probes again (self-healing if the operator's section is later
+// removed).
+//
+// # Retry safety
+//
+// Adding an interface re-stages "del_list" immediately before
+// "add_list" for that same interface (RemoveFirewallZoneNetwork then
+// AddFirewallZoneNetwork). uci's del_list on a value that is not
+// present in the list is a normal, successful no-op -- it is not the
+// same operation as "uci delete" or "uci get" on a whole section or
+// option, which do fail on an absent path (see deleteIfPresent's doc
+// comment for why that different operation needs a presence check
+// first). This del_list-then-add_list pair makes adding a member
+// idempotent the same way clearListOptions makes an interface's own
+// list options idempotent (fetch_apply.go's doc comment "Retrying a
+// create after a successful commit"): a retry after "uci commit
+// firewall" already succeeded once, but a later step failed before
+// last.json was rewritten, re-stages the same add for a member that
+// may already be there, and must not end up listed twice.
+//
+// Removing the last member does not use RemoveFirewallZoneNetwork at
+// all: manageFirewall deletes the whole zone section instead (PLAN.md
+// 6 "Rules" -- delete by the exact recorded name, the same as
+// BuildDelete does for an interface's own sections), since there is
+// no reason to leave an empty, agent-owned zone behind.
+func manageFirewall(runner execx.Runner, diff *Diff, have last.FirewallState) (last.FirewallState, bool, error) {
+	haveMembers := make(map[string]bool, len(have.Members))
+	for _, name := range have.Members {
+		haveMembers[name] = true
+	}
+
+	var toAdd, toRemove []string
+	remaining := 0
+	for _, id := range diff.Interfaces {
+		if id.Change == InterfaceRemoved {
+			if haveMembers[id.Name] {
+				toRemove = append(toRemove, id.Name)
+			}
+			continue
+		}
+		remaining++
+		if !haveMembers[id.Name] {
+			toAdd = append(toAdd, id.Name)
+		}
+	}
+
+	if remaining == 0 {
+		if !have.ZoneOwned {
+			return last.FirewallState{}, false, nil
+		}
+		// The three forwardings share the zone's lifecycle exactly
+		// (uci.DeleteFirewallForwardings' doc comment): deleted here,
+		// alongside the zone itself, never independently of it.
+		if err := runUCIBatch(runner, uci.DeleteFirewallForwardings()); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("delete firewall forwardings: %w", err)
+		}
+		if _, err := runner.Run("uci", deleteFirewallZoneArgs()...); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("delete firewall zone: %w", err)
+		}
+		return last.FirewallState{}, true, nil
+	}
+
+	if len(toAdd) == 0 && len(toRemove) == 0 {
+		return have, false, nil
+	}
+
+	owned := have.ZoneOwned
+	if !owned {
+		present, err := firewallZonePresent(runner)
+		if err != nil {
+			return last.FirewallState{}, false, err
+		}
+		if present {
+			// Operator-owned: leave it alone, PLAN.md 6 "Rules".
+			return last.FirewallState{}, false, nil
+		}
+		if err := runFirewallZoneCreate(runner); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("create firewall zone: %w", err)
+		}
+		owned = true
+	}
+
+	// toAdd or toRemove (or both) is non-empty here (the "nothing to
+	// do" case already returned above), so this function always
+	// stages at least one uci call from this point on: the return
+	// below always reports changed as true.
+	for _, name := range toRemove {
+		if _, err := runner.Run("uci", removeFirewallNetworkArgs(name)...); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("remove firewall network %s: %w", name, err)
+		}
+		delete(haveMembers, name)
+	}
+	for _, name := range toAdd {
+		if _, err := runner.Run("uci", removeFirewallNetworkArgs(name)...); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("clear firewall network %s: %w", name, err)
+		}
+		if _, err := runner.Run("uci", addFirewallNetworkArgs(name)...); err != nil {
+			return last.FirewallState{}, false, fmt.Errorf("add firewall network %s: %w", name, err)
+		}
+		haveMembers[name] = true
+	}
+
+	members := make([]string, 0, len(haveMembers))
+	for _, id := range diff.Interfaces {
+		if id.Change != InterfaceRemoved && haveMembers[id.Name] {
+			members = append(members, id.Name)
+		}
+	}
+
+	return last.FirewallState{ZoneOwned: owned, Members: members}, true, nil
+}
+
+// firewallZonePresent reports whether firewall.stunmesh exists, using
+// the same tolerant "uci get" probe deleteIfPresent already uses for
+// a UCI section: a failed "uci get" means the section is not there.
+func firewallZonePresent(runner execx.Runner) (bool, error) {
+	_, err := runner.Run("uci", "get", "firewall."+uci.FirewallZoneName)
+	return err == nil, nil
+}
+
+// runFirewallZoneCreate runs uci.BuildFirewallZoneCreate's batch, then
+// uci.BuildFirewallForwardingsCreate's (PLAN.md 6 "Firewall zone"):
+// the zone always exists before the forwardings that name it as their
+// src or dest are created. The three forwardings share the zone's
+// lifecycle exactly (see DeleteFirewallForwardings' doc comment), so
+// they are always created here, together with the zone, never on
+// their own.
+func runFirewallZoneCreate(runner execx.Runner) error {
+	if err := runUCIBatch(runner, uci.BuildFirewallZoneCreate()); err != nil {
+		return err
+	}
+	return runUCIBatch(runner, uci.BuildFirewallForwardingsCreate())
+}
+
+func deleteFirewallZoneArgs() []string {
+	return uci.DeleteFirewallZone().Args
+}
+
+func addFirewallNetworkArgs(iface string) []string {
+	return uci.AddFirewallZoneNetwork(iface).Args
+}
+
+func removeFirewallNetworkArgs(iface string) []string {
+	return uci.RemoveFirewallZoneNetwork(iface).Args
 }
 
 // writeUCI runs step 1 of the apply procedure (PLAN.md 6): for every

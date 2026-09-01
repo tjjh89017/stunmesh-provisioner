@@ -71,6 +71,43 @@ system provides no certificate store, so they are inert on an image
 that has `ca-bundle`. Build with `EMBED_CA=0` when the image is known
 to have one and the flash space matters more.
 
+## Firewall zone
+
+Every stunmesh-managed WireGuard interface is placed, by default, in a
+shared OpenWrt firewall zone named `stunmesh` (`option input/output/forward
+'ACCEPT'`, no `masq`). The agent creates it the first time it applies any
+interface, adds each managed interface's `list network` entry as that
+interface comes and goes, and deletes the zone (and its forwardings) once
+the last managed interface is removed. It never touches a `firewall.stunmesh`
+section it did not create itself (an operator-owned zone under that same
+name is left alone).
+
+The agent also creates three default `config forwarding` sections tied to
+the zone's own lifecycle (created and deleted together with it):
+
+- `lan` -> `stunmesh`: the router's LAN can reach every mesh peer.
+- `stunmesh` -> `lan`: every mesh peer can reach the router's LAN.
+- `stunmesh` -> `wan`: a mesh peer's traffic can egress through this
+  node's own internet connection, NATed by `wan`'s own `masq` (the normal
+  OpenWrt default), not by anything the agent sets.
+
+**No NAT between `lan` and `stunmesh` in either direction**: the zone
+itself never sets `masq`, so traffic crossing it keeps its real source
+address both ways; end-to-end reachability relies on the WireGuard
+allowed-ips/routes the bundle already provisions. This assumes the
+standard OpenWrt `lan`/`wan` zones exist (the default on every stock
+image); if either is missing, the corresponding forwarding is simply
+inert, not an error.
+
+Because the agent owns these sections, a later apply that touches the
+zone reconciles them back to this default shape. An operator who edits
+or removes them by hand should expect that edit to be undone on such an
+apply; there is currently no way to opt an interface out of the zone or
+turn a forwarding off permanently short of not using this feature's
+managed zone at all (a hand-added zone under a different name, the way
+`test/e2e/openwrt/phases/phase-firewall.sh` covers, is unaffected either
+way).
+
 ## OpenWrt end-to-end tests
 
 `test/e2e/openwrt/` boots a real OpenWrt x86-64 VM under KVM and runs
