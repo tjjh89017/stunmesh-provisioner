@@ -46,7 +46,7 @@ phase_routes() {
 	render_routes_fixture
 	publish_fixture "$ROUTES_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 	assert_ssh_exit_code "fetch applies the route_allowed_ips: false bundle (exit 0)" "$fetch_cmd" 0
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 

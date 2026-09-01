@@ -42,7 +42,16 @@ type Config struct {
 // Default paths, backend, and proxies (PLAN.md section 3). A flag or
 // --config setting overrides its default; see resolveConfig.
 const (
-	defaultLastPath           = "/etc/stunmesh/provd/last.json"
+	// defaultIdentityKeyPath and defaultLastPath share one directory,
+	// /etc/stunmesh/agent/, distinct from the controller's own
+	// /etc/stunmesh/provd/ tree (they run on different machines in
+	// the normal deployment, but giving the agent its own directory
+	// keeps the two from ever colliding if they don't). keygen creates
+	// this directory (see loadOrCreateIdentityKey) before fetch ever
+	// needs it for last.json, since keygen always runs first (PLAN.md
+	// section 5).
+	defaultIdentityKeyPath    = "/etc/stunmesh/agent/identity.key"
+	defaultLastPath           = "/etc/stunmesh/agent/last.json"
 	defaultLockPath           = "/var/lock/stunmesh-agent.lock"
 	defaultStunmeshConfigPath = "/etc/stunmesh/config.yaml"
 
@@ -88,7 +97,7 @@ func registerFlags(fs *flag.FlagSet) *flagSeam {
 	fs.StringVar(&cfg.ControllerPubkey, "controller-pubkey", "", "controller public key, base64")
 	fs.StringVar(&cfg.Backend, "backend", defaultBackend, "storage backend (dhtproxy)")
 	fs.Var(&proxyFlag{&cfg.Proxies}, "proxy", "dhtproxy base URL (repeatable)")
-	fs.StringVar(&cfg.IdentityKeyPath, "identity-key", "", "node identity private key file")
+	fs.StringVar(&cfg.IdentityKeyPath, "identity-key", defaultIdentityKeyPath, "node identity private key file")
 	fs.StringVar(&cfg.LastPath, "last", defaultLastPath, "last-applied bundle file")
 	fs.StringVar(&cfg.LockPath, "lock", defaultLockPath, "lock file")
 	fs.StringVar(&cfg.StunmeshConfigPath, "stunmesh-config", defaultStunmeshConfigPath, "stunmesh-go config file")
@@ -353,7 +362,11 @@ func parseConfigFile(r io.Reader) (*fileConfig, error) {
 
 // ValidateFetch reports whether cfg has everything `fetch` needs
 // (PLAN.md section 5's fetch row). It does not touch the network or
-// the filesystem; it only checks the settings themselves.
+// the filesystem; it only checks the settings themselves. --identity-key,
+// like --last, --lock, and --stunmesh-config, always carries at least
+// its default (registerFlags), so it is checked alongside them below,
+// not in the "missing" list: only an explicit --identity-key "" can
+// still trip it.
 func (cfg *Config) ValidateFetch() error {
 	var missing []string
 	if cfg.Namespace == "" {
@@ -364,9 +377,6 @@ func (cfg *Config) ValidateFetch() error {
 	}
 	if cfg.ControllerPubkey == "" {
 		missing = append(missing, "--controller-pubkey")
-	}
-	if cfg.IdentityKeyPath == "" {
-		missing = append(missing, "--identity-key")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required setting(s): %s", strings.Join(missing, ", "))
@@ -396,6 +406,9 @@ func (cfg *Config) ValidateFetch() error {
 		}
 	}
 
+	if cfg.IdentityKeyPath == "" {
+		return errors.New("--identity-key: must not be empty")
+	}
 	if cfg.LastPath == "" {
 		return errors.New("--last: must not be empty")
 	}
@@ -413,10 +426,12 @@ func (cfg *Config) ValidateFetch() error {
 // (PLAN.md section 5's keygen row). keygen only ever writes one file,
 // the identity key, so it needs nothing else: not --namespace,
 // --node-id, --controller-pubkey, --proxy, --last, --lock, or
-// --stunmesh-config.
+// --stunmesh-config. --identity-key always carries at least its
+// default (registerFlags), so this only ever fires against an
+// explicit --identity-key "".
 func (cfg *Config) ValidateKeygen() error {
 	if cfg.IdentityKeyPath == "" {
-		return errors.New("missing required setting: --identity-key")
+		return errors.New("--identity-key: must not be empty")
 	}
 	return nil
 }

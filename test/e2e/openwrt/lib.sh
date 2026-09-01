@@ -539,8 +539,8 @@ NETCONF
 	# only holds its path, at 0644, set explicitly below since a real
 	# device ships it that way and nothing in it is secret.
 	log "Installing the node identity key..."
-	sudo mkdir -p "${MOUNT_DIR}/etc/stunmesh/provd"
-	sudo install -m 0600 "$identity_key" "${MOUNT_DIR}/etc/stunmesh/provd/identity.key"
+	sudo mkdir -p "${MOUNT_DIR}/etc/stunmesh/agent"
+	sudo install -m 0600 "$identity_key" "${MOUNT_DIR}/etc/stunmesh/agent/identity.key"
 
 	log "Writing /etc/config/stunmesh-agent..."
 	sudo tee "${MOUNT_DIR}/etc/config/stunmesh-agent" >/dev/null <<STUNMESH_AGENT_UCI
@@ -549,7 +549,7 @@ config stunmesh-agent 'main'
 	option node_id            '${node_id}'
 	option controller_pubkey  '${controller_pubkey}'
 	list   proxy              '${proxy_url}'
-	option private_key_file   '/etc/stunmesh/provd/identity.key'
+	option private_key_file   '/etc/stunmesh/agent/identity.key'
 	option boot_delay         '15'
 	option fetch_interval     '5'
 	option lock_file          '/var/lock/stunmesh-agent.lock'

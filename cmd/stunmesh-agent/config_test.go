@@ -338,6 +338,9 @@ func TestResolveConfig_DefaultPathsWhenNeitherFlagNorFileGiven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
+	if cfg.IdentityKeyPath != defaultIdentityKeyPath {
+		t.Errorf("IdentityKeyPath = %q, want %q", cfg.IdentityKeyPath, defaultIdentityKeyPath)
+	}
 	if cfg.LastPath != defaultLastPath {
 		t.Errorf("LastPath = %q, want %q", cfg.LastPath, defaultLastPath)
 	}
@@ -399,10 +402,42 @@ func TestValidateFetch_ReportsAllMissingSettings(t *testing.T) {
 	if err == nil {
 		t.Fatal("ValidateFetch: want error, got nil")
 	}
-	for _, want := range []string{"--namespace", "--node-id", "--controller-pubkey", "--identity-key"} {
+	// --identity-key is not in this list: unlike namespace, node-id,
+	// and controller-pubkey, it always carries a default
+	// (defaultIdentityKeyPath, registerFlags) once resolveConfig has
+	// run, so a bare zero-value Config{} (as here, built without
+	// resolveConfig) is the only way to see it empty at all, and even
+	// then it fails ValidateFetch on its own dedicated check below,
+	// not through this "missing" list.
+	for _, want := range []string{"--namespace", "--node-id", "--controller-pubkey"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to mention %q", err, want)
 		}
+	}
+}
+
+// TestValidateFetch_EmptyIdentityKeyPath pins --identity-key's own
+// check, separate from the "missing" list above: an explicit empty
+// value (only reachable via --identity-key "", since the flag
+// otherwise always carries defaultIdentityKeyPath) must still fail.
+func TestValidateFetch_EmptyIdentityKeyPath(t *testing.T) {
+	cfg := &Config{
+		Namespace:          "ns",
+		NodeID:             "n1",
+		ControllerPubkey:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		Backend:            "dhtproxy",
+		IdentityKeyPath:    "",
+		Proxies:            []string{"https://p.example"},
+		LastPath:           defaultLastPath,
+		LockPath:           defaultLockPath,
+		StunmeshConfigPath: defaultStunmeshConfigPath,
+	}
+	err := cfg.ValidateFetch()
+	if err == nil {
+		t.Fatal("ValidateFetch: want error for an empty --identity-key, got nil")
+	}
+	if !strings.Contains(err.Error(), "--identity-key") {
+		t.Errorf("error = %v, want it to name --identity-key", err)
 	}
 }
 

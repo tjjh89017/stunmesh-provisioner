@@ -53,6 +53,11 @@ DEFAULT_BOOT_DELAY=15
 DEFAULT_FETCH_INTERVAL=5
 DEFAULT_FULL_APPLY_INTERVAL_HOURS=24
 DEFAULT_LOCK_FILE="/var/lock/stunmesh-agent.lock"
+# Matches stunmesh-agent's own --identity-key default
+# (cmd/stunmesh-agent/config.go defaultIdentityKeyPath): keygen already
+# writes the identity key here when no --identity-key is given, so
+# leaving private_key_file unset in UCI still finds it.
+DEFAULT_PRIVATE_KEY_FILE="/etc/stunmesh/agent/identity.key"
 
 . /lib/functions.sh
 
@@ -76,7 +81,7 @@ read_config() {
 	config_get namespace "$UCI_SECTION" namespace
 	config_get node_id "$UCI_SECTION" node_id
 	config_get controller_pubkey "$UCI_SECTION" controller_pubkey
-	config_get private_key_file "$UCI_SECTION" private_key_file
+	config_get private_key_file "$UCI_SECTION" private_key_file "$DEFAULT_PRIVATE_KEY_FILE"
 	config_get proxies "$UCI_SECTION" proxy
 	config_get boot_delay "$UCI_SECTION" boot_delay "$DEFAULT_BOOT_DELAY"
 	config_get fetch_interval "$UCI_SECTION" fetch_interval "$DEFAULT_FETCH_INTERVAL"
@@ -85,8 +90,8 @@ read_config() {
 	config_get backend "$UCI_SECTION" backend
 
 	if [ -z "$namespace" ] || [ -z "$node_id" ] || \
-	   [ -z "$controller_pubkey" ] || [ -z "$private_key_file" ]; then
-		log "incomplete /etc/config/$UCI_PACKAGE (need namespace, node_id, controller_pubkey, private_key_file); skipping"
+	   [ -z "$controller_pubkey" ]; then
+		log "incomplete /etc/config/$UCI_PACKAGE (need namespace, node_id, controller_pubkey); skipping"
 		return 1
 	fi
 

@@ -370,7 +370,7 @@ test_build_fetch_args_full_option_set() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies="https://dhtproxy2.jami.net https://dhtproxy3.jami.net"
 	# backend is not part of "every option set" here on purpose: its own
@@ -381,7 +381,7 @@ test_build_fetch_args_full_option_set() {
 
 	args="$(build_fetch_args)"
 
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$args" "$expected" "build_fetch_args output with every option set and two proxies"
 }
 
@@ -389,14 +389,14 @@ test_build_fetch_args_no_proxies() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies=""
 	backend=""
 
 	args="$(build_fetch_args)"
 
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock"
 	assert_eq "$args" "$expected" "build_fetch_args emits no --proxy flags when the section has none"
 }
 
@@ -404,14 +404,14 @@ test_build_fetch_args_backend_set() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies=""
 	backend="sentinel-backend"
 
 	args="$(build_fetch_args)"
 
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend"
 	assert_eq "$args" "$expected" "build_fetch_args appends --backend with its value when the option is set"
 }
 
@@ -419,14 +419,14 @@ test_build_fetch_args_backend_unset() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies=""
 	backend=""
 
 	args="$(build_fetch_args)"
 
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock"
 	assert_eq "$args" "$expected" "build_fetch_args emits no --backend flag when the option is unset, so the binary's own default applies"
 }
 
@@ -441,14 +441,14 @@ test_build_full_apply_args_appends_full_apply_flag() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies="https://dhtproxy2.jami.net"
 	backend=""
 
 	full_apply_args="$(build_full_apply_args)"
 
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --full-apply"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --full-apply"
 	assert_eq "$full_apply_args" "$expected" "build_full_apply_args appends --full-apply to build_fetch_args's own list"
 }
 
@@ -456,7 +456,7 @@ test_build_full_apply_args_does_not_clobber_callers_args() {
 	namespace="mymesh-7f3a"
 	node_id="alpha"
 	controller_pubkey="pk123"
-	private_key_file="/etc/stunmesh/provd/identity.key"
+	private_key_file="/etc/stunmesh/agent/identity.key"
 	lock_file="/var/lock/stunmesh-agent.lock"
 	proxies=""
 	backend=""
@@ -539,7 +539,7 @@ test_read_config_missing_required_field() {
 	cat > "$UCI_CONFIG_FILE" <<'EOF'
 option namespace mymesh
 option node_id alpha
-option private_key_file /etc/stunmesh/provd/identity.key
+option private_key_file /etc/stunmesh/agent/identity.key
 EOF
 	install_fake_uci
 
@@ -556,7 +556,6 @@ test_read_config_applies_defaults() {
 option namespace mymesh
 option node_id alpha
 option controller_pubkey pk123
-option private_key_file /etc/stunmesh/provd/identity.key
 EOF
 	install_fake_uci
 
@@ -564,6 +563,7 @@ EOF
 	rc=$?
 
 	assert_eq "$rc" "0" "read_config rc on a complete minimal config" || return 1
+	assert_eq "$private_key_file" "$DEFAULT_PRIVATE_KEY_FILE" "private_key_file falls back to its default when the section has none" || return 1
 	assert_eq "$boot_delay" "$DEFAULT_BOOT_DELAY" "boot_delay falls back to its default" || return 1
 	assert_eq "$fetch_interval" "$DEFAULT_FETCH_INTERVAL" "fetch_interval falls back to its default" || return 1
 	assert_eq "$full_apply_interval_hours" "$DEFAULT_FULL_APPLY_INTERVAL_HOURS" "full_apply_interval_hours falls back to its default" || return 1
@@ -581,7 +581,7 @@ option node_id alpha
 option controller_pubkey pk123
 list proxy https://dhtproxy2.jami.net
 list proxy https://dhtproxy3.jami.net
-option private_key_file /etc/stunmesh/provd/identity.key
+option private_key_file /etc/stunmesh/agent/identity.key
 option boot_delay 30
 option fetch_interval 10
 option full_apply_interval_hours 6
@@ -597,7 +597,7 @@ EOF
 	assert_eq "$namespace" "mymesh-7f3a" "namespace" || return 1
 	assert_eq "$node_id" "alpha" "node_id" || return 1
 	assert_eq "$controller_pubkey" "pk123" "controller_pubkey" || return 1
-	assert_eq "$private_key_file" "/etc/stunmesh/provd/identity.key" "private_key_file" || return 1
+	assert_eq "$private_key_file" "/etc/stunmesh/agent/identity.key" "private_key_file" || return 1
 	assert_eq "$proxies" "https://dhtproxy2.jami.net https://dhtproxy3.jami.net" "proxies" || return 1
 	assert_eq "$boot_delay" "30" "boot_delay" || return 1
 	assert_eq "$fetch_interval" "10" "fetch_interval" || return 1
@@ -687,7 +687,7 @@ option node_id alpha
 option controller_pubkey pk123
 list proxy https://dhtproxy2.jami.net
 list proxy https://dhtproxy3.jami.net
-option private_key_file /etc/stunmesh/provd/identity.key
+option private_key_file /etc/stunmesh/agent/identity.key
 option lock_file /var/lock/stunmesh-agent.lock
 option backend sentinel-backend
 EOF
@@ -740,7 +740,7 @@ EOF
 	[ -f "$record" ] || { echo "  \$BIN was never invoked by the boot-time fetch" >&2; return 1; }
 	assert_eq "$(cat "$order")" "$(printf 'sleep\nfetch')" "boot-time fetch waits for the sleep to finish before invoking \$BIN, not the other way around" || return 1
 	invoked=$(cat "$record")
-	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
+	expected="fetch --namespace mymesh-7f3a --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN by the boot-time fetch" || return 1
 	expected_cron="*/$DEFAULT_FETCH_INTERVAL * * * * $BIN $expected >/dev/null 2>&1 $CRON_TAG"
 	expected_full_cron="0 */$DEFAULT_FULL_APPLY_INTERVAL_HOURS * * * $BIN $expected --full-apply >/dev/null 2>&1 $CRON_TAG_FULL"

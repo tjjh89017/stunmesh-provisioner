@@ -252,7 +252,12 @@ func emptyState() *State {
 //
 // Write does not create path's parent directory; the caller is
 // responsible for that directory already existing (on OpenWrt,
-// /etc/stunmesh/provd/, the same directory the identity key lives in).
+// /etc/stunmesh/agent/, the same directory the identity key lives
+// in). In practice this is never a problem: keygen always runs
+// before fetch (PLAN.md section 5) and creates that directory when it
+// writes the identity key (see writeIdentityKeyAtomic in
+// cmd/stunmesh-agent/keygen_cmd.go), so it already exists by the time
+// fetch's first Write call needs it.
 //
 // Write never logs or echoes state's content; on failure, its error
 // names only path.

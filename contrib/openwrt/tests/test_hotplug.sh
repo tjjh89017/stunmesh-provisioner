@@ -142,7 +142,7 @@ EOF
 option namespace mymesh
 option node_id alpha
 option controller_pubkey pk123
-option private_key_file /etc/stunmesh/provd/identity.key
+option private_key_file /etc/stunmesh/agent/identity.key
 list proxy https://dhtproxy2.jami.net
 list proxy https://dhtproxy3.jami.net
 EOF
@@ -153,7 +153,7 @@ EOF
 	assert_eq "$rc" "0" "hotplug-iface exit code on full dispatch" || return 1
 	[ -f "$record" ] || { echo "  \$BIN was never invoked" >&2; return 1; }
 	invoked=$(cat "$record")
-	expected="fetch --namespace mymesh --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
+	expected="fetch --namespace mymesh --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --proxy https://dhtproxy2.jami.net --proxy https://dhtproxy3.jami.net"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN"
 }
 
@@ -174,7 +174,7 @@ EOF
 option namespace mymesh
 option node_id alpha
 option controller_pubkey pk123
-option private_key_file /etc/stunmesh/provd/identity.key
+option private_key_file /etc/stunmesh/agent/identity.key
 option backend sentinel-backend
 EOF
 
@@ -184,8 +184,40 @@ EOF
 	assert_eq "$rc" "0" "hotplug-iface exit code with backend set" || return 1
 	[ -f "$record" ] || { echo "  \$BIN was never invoked" >&2; return 1; }
 	invoked=$(cat "$record")
-	expected="fetch --namespace mymesh --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/provd/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend"
+	expected="fetch --namespace mymesh --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock --backend sentinel-backend"
 	assert_eq "$invoked" "$expected" "arguments passed to \$BIN include --backend when configured"
+}
+
+test_hotplug_dispatch_defaults_private_key_file() {
+	d=$(dispatch_scratch)
+	write_fake_uci_lib "$d"
+	fake_bin="$d/bin/stunmesh-agent"
+	record="$d/bin/invoked-with"
+	cat > "$fake_bin" <<EOF
+#!/bin/sh
+echo "\$@" > "$record"
+exit 0
+EOF
+	chmod +x "$fake_bin"
+
+	# No private_key_file option at all: hotplug-iface must fall back to
+	# DEFAULT_PRIVATE_KEY_FILE (the same default stunmesh-agent's own
+	# --identity-key carries) instead of skipping the fetch.
+	UCI_CONFIG_FILE="$d/stunmesh-agent.conf"
+	cat > "$UCI_CONFIG_FILE" <<'EOF'
+option namespace mymesh
+option node_id alpha
+option controller_pubkey pk123
+EOF
+
+	UCI_CONFIG_FILE="$UCI_CONFIG_FILE" run_hotplug_dispatch "$d"
+	rc=$?
+
+	assert_eq "$rc" "0" "hotplug-iface exit code with private_key_file unset" || return 1
+	[ -f "$record" ] || { echo "  \$BIN was never invoked" >&2; return 1; }
+	invoked=$(cat "$record")
+	expected="fetch --namespace mymesh --node-id alpha --controller-pubkey pk123 --identity-key /etc/stunmesh/agent/identity.key --lock /var/lock/stunmesh-agent.lock"
+	assert_eq "$invoked" "$expected" "arguments passed to \$BIN use the default identity key path"
 }
 
 test_hotplug_dispatch_skips_incomplete_config() {
@@ -221,6 +253,7 @@ run_test "hotplug-iface: ignores INTERFACE=wan6" test_ignores_wan6
 run_test "hotplug-iface: ignores empty ACTION" test_ignores_missing_action
 run_test "hotplug-iface: builds expected fetch args and invokes \$BIN" test_hotplug_dispatch_builds_expected_args
 run_test "hotplug-iface: includes --backend in fetch args when configured" test_hotplug_dispatch_includes_backend_when_set
+run_test "hotplug-iface: defaults private_key_file when unset" test_hotplug_dispatch_defaults_private_key_file
 run_test "hotplug-iface: skips \$BIN when config is incomplete" test_hotplug_dispatch_skips_incomplete_config
 
 report_and_exit

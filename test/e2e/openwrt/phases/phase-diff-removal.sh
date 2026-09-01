@@ -116,7 +116,7 @@ ifindex_of() {
 
 phase_diff_removal() {
 	local fetch_cmd
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 
 	read -r DIFF_REMOVAL_WG0_PRIV _ < <(generate_wg_keypair)
 	read -r _ DIFF_REMOVAL_WG0_PEER_PUBKEY < <(generate_wg_keypair)

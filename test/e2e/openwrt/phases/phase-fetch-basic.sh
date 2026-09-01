@@ -72,7 +72,7 @@ phase_fetch_basic() {
 	render_fetch_basic_fixture
 	publish_fixture "$FETCH_BASIC_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 
 	assert_ssh_exit_code "first fetch applies the bundle (exit 0)" "$fetch_cmd" 0
 
@@ -115,9 +115,9 @@ phase_fetch_basic() {
 		"wg show wg0 preshared-keys | awk -v peer='${FETCH_BASIC_PEER_PUBKEY}' '\$1 == peer && \$2 != \"(none)\" { f=1 } END { exit !f }'"
 
 	assert_ssh_ok "last.json exists at the documented path" \
-		"test -f /etc/stunmesh/provd/last.json"
+		"test -f /etc/stunmesh/agent/last.json"
 	assert_ssh_output_contains "last.json is mode 0600" \
-		"ls -l /etc/stunmesh/provd/last.json" "-rw-------"
+		"ls -l /etc/stunmesh/agent/last.json" "-rw-------"
 
 	# guest_capture, not a plain `var=$(guest_exec ...)`: if an earlier
 	# assertion in this phase already failed and left one of these files
@@ -126,14 +126,14 @@ phase_fetch_basic() {
 	# run continue (see lib.sh's guest_capture for why).
 	local before_network_sha before_last_sha before_actions
 	before_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
-	before_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
+	before_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/agent/last.json")
 	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
 	assert_ssh_exit_code "second fetch with the same bundle exits 3 (no change)" "$fetch_cmd" 3
 
 	local after_network_sha after_last_sha after_actions
 	after_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
-	after_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/provd/last.json")
+	after_last_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/stunmesh/agent/last.json")
 	after_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log")
 
 	assert_equal "second fetch left /etc/config/network byte-identical" \

@@ -10,14 +10,21 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
 )
 
-func TestRunKeygen_MissingIdentityKey(t *testing.T) {
+// TestRunKeygen_ExplicitEmptyIdentityKey pins the one way keygen can
+// still fail Config.ValidateKeygen's --identity-key check: an explicit
+// --identity-key "" overrides the flag's default (registerFlags) with
+// an empty value. keygen given no --identity-key at all instead falls
+// back to defaultIdentityKeyPath; see
+// TestRunKeygen_DoesNotRequireFetchOnlySettings for that path with the
+// default overridden to a writable temp file.
+func TestRunKeygen_ExplicitEmptyIdentityKey(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := runKeygen(newEnv(strings.NewReader(""), &stdout, &stderr), nil)
+	code := runKeygen(newEnv(strings.NewReader(""), &stdout, &stderr), []string{"--identity-key", ""})
 	if code != ExitError {
 		t.Errorf("code = %d, want %d", code, ExitError)
 	}
 	if !strings.Contains(stderr.String(), "--identity-key") {
-		t.Errorf("stderr = %q, want it to name the missing setting", stderr.String())
+		t.Errorf("stderr = %q, want it to name the setting", stderr.String())
 	}
 }
 
@@ -214,8 +221,45 @@ func TestDoKeygen_RejectsUnparsableExistingFile(t *testing.T) {
 	}
 }
 
-func TestDoKeygen_FailsCleanlyWhenDirectoryMissing(t *testing.T) {
-	keyPath := filepath.Join(t.TempDir(), "no-such-dir", "identity.key")
+// TestDoKeygen_CreatesMissingDirectory pins the MkdirAll step
+// (writeIdentityKeyAtomic): /etc/stunmesh/agent/, the identity key's
+// default directory, does not exist on a fresh OpenWrt install, and
+// nothing else creates it, so keygen must make it itself.
+func TestDoKeygen_CreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "no-such-dir")
+	keyPath := filepath.Join(dir, "identity.key")
+	cfg := &Config{IdentityKeyPath: keyPath}
+
+	var stdout, stderr bytes.Buffer
+	code := doKeygen(newEnv(strings.NewReader(""), &stdout, &stderr), cfg)
+	if code != ExitOK {
+		t.Fatalf("code = %d, want %d; stderr = %q", code, ExitOK, stderr.String())
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", dir, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s exists but is not a directory", dir)
+	}
+
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Errorf("identity key file not written: %v", err)
+	}
+}
+
+// TestDoKeygen_FailsCleanlyWhenDirectoryCannotBeCreated pins the
+// MkdirAll failure branch: a path element that already exists as a
+// file, not a directory, cannot be turned into one, so keygen must
+// fail instead of silently writing somewhere unexpected.
+func TestDoKeygen_FailsCleanlyWhenDirectoryCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed blocking file: %v", err)
+	}
+	keyPath := filepath.Join(blocker, "identity.key")
 	cfg := &Config{IdentityKeyPath: keyPath}
 
 	var stdout, stderr bytes.Buffer

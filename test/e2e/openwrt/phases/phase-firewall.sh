@@ -51,7 +51,7 @@ phase_firewall_survives() {
 	read -r _ peer1_pub < <(generate_wg_keypair)
 	read -r _ peer2_pub < <(generate_wg_keypair)
 
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 
 	v1_dir=$(render_firewall_fixture v1 "$peer1_pub")
 	publish_fixture "$v1_dir" "$E2E_NAMESPACE" "$E2E_NODE_ID"

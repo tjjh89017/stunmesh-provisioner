@@ -163,8 +163,9 @@ func loadOrCreateIdentityKey(path string) (crypto.Key, error) {
 // never truncated or empty -- and never briefly at a mode wider than
 // identityKeyMode.
 //
-// It first writes the key to a temporary file in the same directory
-// as path. os.CreateTemp itself creates that file at mode 0600 (equal
+// It first makes path's parent directory (mode 0755) if it does not
+// already exist, then writes the key to a temporary file in that
+// directory. os.CreateTemp itself creates that file at mode 0600 (equal
 // to identityKeyMode) from the instant it exists, before any data is
 // written to it; writeIdentityKeyAtomic also chmods it explicitly
 // right after creation, the same defensive step store.WriteFile takes
@@ -181,6 +182,18 @@ func loadOrCreateIdentityKey(path string) (crypto.Key, error) {
 // path.
 func writeIdentityKeyAtomic(path string, priv crypto.Key) (err error) {
 	dir := filepath.Dir(path)
+
+	// The identity key's default directory, /etc/stunmesh/agent/, does
+	// not exist on a fresh OpenWrt install: nothing else on the router
+	// creates it. keygen is normally the very first command run
+	// against a new node (PLAN.md section 5), so it makes the
+	// directory itself rather than requiring a separate provisioning
+	// step. 0755 matches /etc/stunmesh/config.yaml's directory; the
+	// key file itself stays 0600, set explicitly below and by
+	// os.CreateTemp regardless of this directory's mode.
+	if merr := os.MkdirAll(dir, 0o755); merr != nil {
+		return fmt.Errorf("create directory %s: %w", dir, merr)
+	}
 
 	tmp, err := os.CreateTemp(dir, ".identity.key.tmp-*")
 	if err != nil {

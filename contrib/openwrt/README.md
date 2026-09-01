@@ -48,7 +48,7 @@ config stunmesh-agent 'main'
     option controller_pubkey          '...'
     list   proxy                      'https://dhtproxy2.jami.net'
     list   proxy                      'https://dhtproxy3.jami.net'
-    option private_key_file           '/etc/stunmesh/provd/identity.key'
+    option private_key_file           '/etc/stunmesh/agent/identity.key'
     option boot_delay                 '15'
     option fetch_interval             '5'
     option full_apply_interval_hours  '24'
@@ -62,7 +62,7 @@ config stunmesh-agent 'main'
 | `node_id` | `--node-id` | yes |
 | `controller_pubkey` | `--controller-pubkey` | yes |
 | `proxy` (list) | `--proxy` (repeated, once per entry) | no -- falls back to the binary's built-in default list when the section has none |
-| `private_key_file` | `--identity-key` | yes |
+| `private_key_file` | `--identity-key` | no -- defaults to `/etc/stunmesh/agent/identity.key`, the same default `stunmesh-agent keygen` writes to when it is not given `--identity-key` either |
 | `boot_delay` | sleep before the first fetch (init only) | no -- defaults to 15 |
 | `fetch_interval` | minutes between the frequent, diff-based cron runs (init only) | no -- defaults to 5 |
 | `full_apply_interval_hours` | hours between the periodic `--full-apply` cron runs (init only) | no -- defaults to 24 |
@@ -71,7 +71,7 @@ config stunmesh-agent 'main'
 
 `--last` and `--stunmesh-config` are not in the UCI schema. Both
 scripts omit those flags and let `stunmesh-agent` use its own
-defaults (`/etc/stunmesh/provd/last.json` and
+defaults (`/etc/stunmesh/agent/last.json` and
 `/etc/stunmesh/config.yaml`).
 
 The identity private key itself is never in `/etc/config/stunmesh-agent`. That
@@ -82,8 +82,8 @@ be mode 0600, written once by `stunmesh-agent keygen`.
 ### Missing or incomplete configuration
 
 Both scripts treat a missing `/etc/config/stunmesh-agent`, or a `main` section
-missing `namespace`, `node_id`, `controller_pubkey`, or
-`private_key_file`, as "not provisioned yet": they log one line with
+missing `namespace`, `node_id`, or `controller_pubkey`, as "not provisioned
+yet": they log one line with
 `logger -t stunmesh-agent` and exit 0. Neither script fails, retries in
 a loop, or writes a cron line in this case. This is the state of a
 freshly flashed node before an operator has run the manual key

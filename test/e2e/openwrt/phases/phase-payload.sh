@@ -48,7 +48,7 @@ phase_payload() {
 	# string is always available and unambiguous for a plain file: owner
 	# read+write, nothing else.
 	assert_ssh_output_contains "identity key is mode 0600" \
-		"ls -l /etc/stunmesh/provd/identity.key" "-rw-------"
+		"ls -l /etc/stunmesh/agent/identity.key" "-rw-------"
 
 	# The four options both shipped scripts refuse to run without
 	# (contrib/openwrt/README.md section 2). A readable-but-wrong value
@@ -82,7 +82,7 @@ phase_payload() {
 	assert_equal "/etc/config/stunmesh-agent controller_pubkey matches what run.sh injected" \
 		"$got_controller_pubkey" "$CONTROLLER_PUBKEY"
 	assert_equal "/etc/config/stunmesh-agent private_key_file matches the identity key's guest path" \
-		"$got_private_key_file" "/etc/stunmesh/provd/identity.key"
+		"$got_private_key_file" "/etc/stunmesh/agent/identity.key"
 
 	assert_ssh_ok "stunmesh stand-in runs and exits 0" \
 		"/etc/init.d/stunmesh reload"

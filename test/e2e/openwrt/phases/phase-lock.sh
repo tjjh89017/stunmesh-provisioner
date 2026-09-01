@@ -76,7 +76,7 @@ phase_lock_overlap() {
 	publish_fixture "$LOCK_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
 	point_proxies_at "$E2E_NAMESPACE" "$FAKEPROXY_HOST_URL"
 
-	delayed_fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${DELAYED_FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	delayed_fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${DELAYED_FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 
 	before_actions=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wc -l < /tmp/stunmesh-stub-actions.log" 0)
 

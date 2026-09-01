@@ -65,7 +65,7 @@ phase_reboot_uci_persistence() {
 
 	render_reboot_fixture
 	publish_fixture "$REBOOT_FIXTURE_DIR" "$E2E_NAMESPACE" "$E2E_NODE_ID"
-	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/provd/identity.key"
+	fetch_cmd="/usr/sbin/stunmesh-agent fetch --namespace ${E2E_NAMESPACE} --node-id ${E2E_NODE_ID} --controller-pubkey ${CONTROLLER_PUBKEY} --proxy ${FAKEPROXY_GUEST_URL} --identity-key /etc/stunmesh/agent/identity.key"
 	assert_ssh_exit_code "a known-good bundle applies before the reboot (exit 0)" "$fetch_cmd" 0
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 	assert_ssh_output_contains "wg0 is up before the reboot" \

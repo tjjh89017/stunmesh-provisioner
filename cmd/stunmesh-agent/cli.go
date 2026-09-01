@@ -58,7 +58,7 @@ of them -- see below):
   --controller-pubkey <key>    controller public key, base64
   --backend <type>              storage backend (default ` + defaultBackend + `; the only type today)
   --proxy <url>                 dhtproxy base URL (repeatable; default: ` + defaultProxiesText + `)
-  --identity-key <file>         node identity private key file
+  --identity-key <file>         node identity private key file (default ` + defaultIdentityKeyPath + `)
   --last <file>                 last-applied bundle file (default ` + defaultLastPath + `)
   --lock <file>                 lock file (default ` + defaultLockPath + `)
   --stunmesh-config <file>      stunmesh-go config file (default ` + defaultStunmeshConfigPath + `)
@@ -78,12 +78,13 @@ default above, or, for --proxy, to the built-in list above. The
 init.d script on OpenWrt reads UCI and always passes flags; --config
 is for other systems that keep settings in a file instead.
 
-fetch requires --namespace, --node-id, --controller-pubkey, and
---identity-key (directly or through --config). At least one --proxy
-is always available, from a flag, --config, or the built-in default.
+fetch requires --namespace, --node-id, and --controller-pubkey
+(directly or through --config). --identity-key falls back to its
+default above when not given. At least one --proxy is always
+available, from a flag, --config, or the built-in default.
 
-keygen requires --identity-key (directly or through --config). It
-does not read or need any other setting.
+keygen needs only --identity-key, which falls back to its default
+above when not given. It does not read or need any other setting.
 
 stunmesh-agent never reads UCI. It reads settings only from flags and
 --config.
