@@ -24,14 +24,16 @@
 #      dhtkey/crypto/dhtproxy packages, using its own built-in default
 #      proxy list (cmd/stunmesh-agent/config.go's defaultProxies), never
 #      an overridden one. The published bundle is the smallest
-#      legitimate one ("wg": {}, empty "stunmesh"), which is exactly the
-#      content a fresh node's absent last.json already represents
-#      (internal/last's "Missing file" doc): a correct decrypt-and-
-#      compare applies nothing and exits ExitOK (0) without ever calling
-#      uci or ubus. That is what makes this leg practical without a VM:
-#      it proves the real decrypt-and-validate path end to end, on a
-#      plain Ubuntu runner, by construction rather than by mocking out
-#      the OpenWrt-only apply step.
+#      legitimate one ("wg": {}, empty "stunmesh"). --oneshot always
+#      forces a full apply (fetch.go's runFetchApply, forceAll=true),
+#      so applyDiff still runs its two unconditional steps, "uci commit
+#      network" and "ubus call network reload" (fetch_apply.go); with
+#      no WG interfaces in this bundle neither "ifup" nor a firewall
+#      command runs. This script puts stub uci/ubus ahead of PATH for
+#      that call, so it can exercise the real fetch/decrypt/diff/apply
+#      path end to end on a plain Ubuntu runner, without mocking out
+#      the OpenWrt-only pieces those two commands themselves are (the
+#      VM e2e harness covers the real uci/ubus behaviour).
 #   4. A few PUT probes of increasing size against dhtproxy3 alone
 #      record how large a value the proxy actually accepts, bracketing
 #      the maxDHTValueSize placeholder in
@@ -386,10 +388,31 @@ last: "${WORK}/last.json"
 lock: "${WORK}/agent.lock"
 EOF
 
+# --oneshot always forceAll=true (fetch.go's runFetchApply doc comment:
+# the CLI dropped its "no change" exit code), so applyDiff always runs,
+# even for this run's empty bundle (fetch_diff.go's diffStunmesh: an
+# empty stunmesh text classifies as StunmeshEmpty, never Unchanged).
+# applyDiff unconditionally runs "uci commit network" and "ubus call
+# network reload" (fetch_apply.go); with no WG interfaces in this
+# bundle it never runs "ifup" or a firewall command. A plain Ubuntu
+# runner has no real "uci"/"ubus", so a stub bin dir ahead of PATH
+# gives applyDiff something to call -- this leg proves the real
+# decrypt-and-diff path, not OpenWrt's own uci/ubus (the VM e2e harness
+# already covers that).
+STUB_BIN="${WORK}/stub-bin"
+mkdir -p "$STUB_BIN"
+for stub in uci ubus; do
+	cat >"${STUB_BIN}/${stub}" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+	chmod +x "${STUB_BIN}/${stub}"
+done
+
 log "Running the real stunmesh-agent --oneshot (its own built-in default proxies, no override)..."
 FETCH_STDERR="${WORK}/fetch-stderr"
 set +e
-"$AGENT_BIN" --oneshot --config "$AGENT_CONFIG" 2>"$FETCH_STDERR"
+PATH="${STUB_BIN}:${PATH}" "$AGENT_BIN" --oneshot --config "$AGENT_CONFIG" 2>"$FETCH_STDERR"
 FETCH_EXIT=$?
 set -e
 
@@ -399,7 +422,7 @@ log "$(cat "$FETCH_STDERR")"
 summary_line ""
 summary_line "## e2e-realnet: real stunmesh-agent --oneshot"
 summary_line ""
-summary_line "Exit code: ${FETCH_EXIT} (0 is the expected, successful outcome: --oneshot always exits 0 on a clean run, whether or not it applied anything -- cli.go's ExitOK doc comment. The real run got the real value from the real proxies, decrypted it with the real identity key against the real controller key, validated namespace/node_id/version, and found it identical to the empty state a fresh node's absent last.json already represents -- so it changed nothing and never called uci or ubus)."
+summary_line "Exit code: ${FETCH_EXIT} (0 is the expected, successful outcome: --oneshot always exits 0 on a clean run -- cli.go's ExitOK doc comment. The real run got the real value from the real proxies, decrypted it with the real identity key against the real controller key, validated namespace/node_id/version, and applied it: --oneshot always forces a full apply (fetch.go), which for this empty bundle means only the unconditional \"uci commit network\" and \"ubus call network reload\" steps ran, against this script's stub uci/ubus, not real ones)."
 summary_line ""
 summary_line "\`\`\`"
 summary_line "$(cat "$FETCH_STDERR")"
