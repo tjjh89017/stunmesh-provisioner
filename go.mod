@@ -3,7 +3,7 @@ module github.com/tjjh89017/stunmesh-provisioner
 go 1.25.0
 
 require (
-	github.com/tjjh89017/stunmesh-go v1.14.0
+	github.com/tjjh89017/stunmesh-go v1.15.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20260723152544-d701c51f7e4e
 	sigs.k8s.io/yaml v1.6.0
