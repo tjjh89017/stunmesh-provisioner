@@ -15,11 +15,11 @@ const firewallZoneNetworkOption = "network"
 // BuildFirewallZoneCreate returns the batch that creates the
 // "stunmesh" firewall zone with an accept-everything policy (PLAN.md
 // 6 "Firewall zone"): `option name 'stunmesh'`, input, output, and
-// forward all `ACCEPT`, and `mss_clamp '1'`. It does not add any
+// forward all `ACCEPT`, and `mtu_fix '1'`. It does not add any
 // network member; the caller adds each managed interface separately
 // with AddFirewallZoneNetwork.
 //
-// mss_clamp is on because a WireGuard tunnel's MTU is smaller than a
+// mtu_fix is on because a WireGuard tunnel's MTU is smaller than a
 // normal Ethernet link's, and a peer that skips the clamp can send a
 // TCP segment that comes back as an ICMP "fragmentation needed" the
 // path silently drops instead of honouring (PLAN.md 6 "Firewall
@@ -50,7 +50,7 @@ func BuildFirewallZoneCreate() Batch {
 	b = append(b, setCmd("firewall", FirewallZoneName, "input", "ACCEPT"))
 	b = append(b, setCmd("firewall", FirewallZoneName, "output", "ACCEPT"))
 	b = append(b, setCmd("firewall", FirewallZoneName, "forward", "ACCEPT"))
-	b = append(b, setCmd("firewall", FirewallZoneName, "mss_clamp", "1"))
+	b = append(b, setCmd("firewall", FirewallZoneName, "mtu_fix", "1"))
 	return b
 }
 
