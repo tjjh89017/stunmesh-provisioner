@@ -75,7 +75,7 @@ to have one and the flash space matters more.
 
 Every stunmesh-managed WireGuard interface is placed, by default, in a
 shared OpenWrt firewall zone named `stunmesh` (`option input/output/forward
-'ACCEPT'`, `option mss_clamp '1'`, no `masq`). The agent creates it the first time it applies any
+'ACCEPT'`, `option mtu_fix '1'`, no `masq`). The agent creates it the first time it applies any
 interface, adds each managed interface's `list network` entry as that
 interface comes and goes, and deletes the zone (and its forwardings) once
 the last managed interface is removed. It never touches a `firewall.stunmesh`

@@ -99,7 +99,7 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.input=ACCEPT"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.output=ACCEPT"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.forward=ACCEPT"}},
-		{Name: "uci", Args: []string{"set", "firewall.stunmesh.mss_clamp=1"}},
+		{Name: "uci", Args: []string{"set", "firewall.stunmesh.mtu_fix=1"}},
 		// The three default forwardings (PLAN.md 6 "Firewall zone")
 		// are created right after the zone, only on this first
 		// creation: lan->stunmesh, stunmesh->lan, and stunmesh->wan.

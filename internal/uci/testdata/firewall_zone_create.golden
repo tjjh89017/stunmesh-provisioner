@@ -3,4 +3,4 @@ uci set firewall.stunmesh.name=stunmesh
 uci set firewall.stunmesh.input=ACCEPT
 uci set firewall.stunmesh.output=ACCEPT
 uci set firewall.stunmesh.forward=ACCEPT
-uci set firewall.stunmesh.mss_clamp=1
+uci set firewall.stunmesh.mtu_fix=1
