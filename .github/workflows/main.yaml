@@ -216,15 +216,9 @@ jobs:
   # an unrelated reason, and so a push to main is never published unless
   # that whole chain went green first.
   #
-  # What it does differs by event:
-  #   - pull_request: build only (push: false), one platform (linux/amd64),
-  #     to catch a broken Dockerfile on the PR as cheaply as possible. A
-  #     PR carries no packages:write token -- doubly so from a fork -- and
-  #     must never attempt to publish.
-  #   - push (a real merge to main): also push, both platforms, tagged
-  #     "main" by the docker action's type=ref,event=branch pattern. This
-  #     is separate from the tag-triggered release.yml, which publishes
-  #     the "vX.Y.Z" / "latest" tags.
+  # Skips pull_request entirely: a PR cannot publish anyway (no
+  # packages:write token, doubly so from a fork), and building the image
+  # would only add runtime after the e2e gate for no benefit.
   #
   # This workflow's own "on: push" has no branch filter (it also runs for
   # a push to any other branch), so the publish condition below checks
@@ -233,6 +227,7 @@ jobs:
   docker:
     name: Docker image
     needs: e2e-required
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
