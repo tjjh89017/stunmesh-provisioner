@@ -4,9 +4,9 @@ go 1.25.0
 
 require (
 	github.com/tjjh89017/stunmesh-go v1.15.0
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20260723152544-d701c51f7e4e
-	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -27,8 +27,6 @@ require (
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

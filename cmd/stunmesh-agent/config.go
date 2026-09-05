@@ -10,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/yaml"
-
 	stunmeshapp "github.com/tjjh89017/stunmesh-go/app"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/yamlx"
 )
 
 // defaultConfigDir is --config-dir's default: the directory
@@ -104,10 +103,9 @@ type StunmeshConfig struct {
 //
 // json tags match config.yaml's documented keys exactly (README.md,
 // this repository's top-level CLAUDE.md). Decoding goes through
-// sigs.k8s.io/yaml.YAMLToJSON and then encoding/json with
-// DisallowUnknownFields, the same strict pattern internal/bundle uses
-// for the wire format, so a typo in a key name is rejected rather
-// than silently ignored.
+// yamlx.ToJSON and then encoding/json with DisallowUnknownFields, the
+// same strict pattern internal/bundle uses for the wire format, so a
+// typo in a key name is rejected rather than silently ignored.
 type rawConfig struct {
 	Namespace         *string                       `json:"namespace"`
 	NodeID            *string                       `json:"node_id"`
@@ -177,7 +175,7 @@ func parseRawConfig(path string) (*rawConfig, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 
-	jsonBytes, err := yaml.YAMLToJSON(data)
+	jsonBytes, err := yamlx.ToJSON(data)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: not valid yaml", ErrConfigMalformed, path)
 	}

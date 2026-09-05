@@ -283,6 +283,32 @@ func TestReadDeployment_MalformedProvdYAML(t *testing.T) {
 	}
 }
 
+func TestReadDeployment_MalformedProvdYAMLDoesNotLeakContent(t *testing.T) {
+	root := t.TempDir()
+	nsDir := setupNamespace(t, root, "test-ns")
+	const secret = "should-not-leak-into-the-error"
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "use_plugin: !!int "+secret+"\n")
+
+	_, err := store.ReadDeployment(root, "test-ns")
+	if !errors.Is(err, store.ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("err = %q, must not echo provd.yaml content", err.Error())
+	}
+}
+
+func TestReadDeployment_DuplicateKeyIsRejected(t *testing.T) {
+	root := t.TempDir()
+	nsDir := setupNamespace(t, root, "test-ns")
+	writeFile(t, filepath.Join(nsDir, "provd.yaml"), "use_plugin: dht\nuse_plugin: dht2\nplugins:\n  dht:\n    type: dhtproxy\n    proxies:\n      - https://dhtproxy2.jami.net\n")
+
+	_, err := store.ReadDeployment(root, "test-ns")
+	if !errors.Is(err, store.ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+}
+
 func TestReadDeployment_BadRepublishInterval(t *testing.T) {
 	root := t.TempDir()
 	nsDir := setupNamespace(t, root, "test-ns")
@@ -490,6 +516,21 @@ func TestReadNode_MalformedWGYAML(t *testing.T) {
 	_, err := store.ReadNode(root, "test-ns", "alpha")
 	if !errors.Is(err, store.ErrMalformed) {
 		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+}
+
+func TestReadNode_MalformedWGYAMLDoesNotLeakPrivateKey(t *testing.T) {
+	root := t.TempDir()
+	setupNamespace(t, root, "test-ns")
+	const secret = "should-not-leak-into-the-error"
+	setupNode(t, root, "test-ns", "alpha", "wg0:\n  private_key: !!int "+secret+"\n", "")
+
+	_, err := store.ReadNode(root, "test-ns", "alpha")
+	if !errors.Is(err, store.ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("err = %q, must not echo wg.yaml content", err.Error())
 	}
 }
 

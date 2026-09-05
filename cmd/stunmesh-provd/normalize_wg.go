@@ -60,9 +60,10 @@ func normalizeWG(wgJSON []byte) ([]byte, error) {
 
 // normalizeFwmark replaces iface["fwmark"] with a JSON integer when
 // wg.yaml gave it as a string, parsed with strconv.ParseUint(s, 0,
-// 32) (base 0: decimal, 0x hex, or leading-zero octal). A JSON number
-// passes through unchanged; any other present type, a parse error, or
-// zero is rejected.
+// 32) (base 0: decimal, 0x hex, or 0o octal). A leading-zero decimal
+// ("010") is rejected as ambiguous instead of silently read as octal.
+// A JSON number passes through unchanged; any other present type, a
+// parse error, or zero is rejected.
 func normalizeFwmark(iface map[string]any, name string) error {
 	v, present := iface["fwmark"]
 	if !present || v == nil {
@@ -72,6 +73,13 @@ func normalizeFwmark(iface map[string]any, name string) error {
 	case json.Number:
 		return nil
 	case string:
+		// strconv.ParseUint's base-0 mode reads a bare leading zero as
+		// octal (Go's C-style legacy rule), so "010" would silently
+		// become 8. Reject that shape instead: an explicit "0o" prefix
+		// or a plain decimal with no leading zero stay unambiguous.
+		if len(t) >= 2 && t[0] == '0' && t[1] >= '0' && t[1] <= '9' {
+			return fmt.Errorf("wg.yaml interface %q: fwmark: leading-zero decimal is ambiguous: %w", name, errFwmark)
+		}
 		n, err := strconv.ParseUint(t, 0, 32)
 		if err != nil || n == 0 {
 			return fmt.Errorf("wg.yaml interface %q: fwmark: %w", name, errFwmark)

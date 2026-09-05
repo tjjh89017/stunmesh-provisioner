@@ -32,11 +32,11 @@
 // presence semantics that internal/bundle depends on: an absent key,
 // an explicit empty map (`{}`), and an explicit empty list (`[]`)
 // must stay distinguishable (docs/format.md 6, 8; internal/bundle package
-// doc). This package converts wg.yaml with sigs.k8s.io/yaml.YAMLToJSON
+// doc). This package converts wg.yaml with internal/yamlx.ToJSON
 // instead of decoding it into a Go struct with a YAML library's own
 // tags.
 //
-// YAMLToJSON parses the YAML into a generic tree
+// yamlx.ToJSON parses the YAML into a generic tree
 // (map[string]interface{}, []interface{}, scalars) and marshals that
 // tree with encoding/json. A YAML key that is absent from the source
 // document is simply not a key in the map; an explicit `{}` or `[]`
@@ -50,28 +50,21 @@
 // hand forever after; converting to JSON reuses the one dialect
 // internal/bundle already speaks.
 //
-// sigs.k8s.io/yaml was chosen over decoding directly with a YAML
-// library (gopkg.in/yaml.v3 or go.yaml.in/yaml/v3) for that reason: it
-// turns wg.yaml into the exact seam cmd/stunmesh-provd/build_bundle.go
-// needs — JSON bytes it can embed under the `wg` key of the assembled
-// bundle and pass through bundle.Parse and bundle.Validate, the same
-// code path stunmesh-agent uses. That gets unknown-key rejection, the
-// no-`null` rule, the plain-base-10-integer rule, and the
-// unpaired-surrogate rule for free, with one rule table
-// (docs/format.md) instead of two.
+// yamlx.ToJSON turns wg.yaml into the exact seam
+// cmd/stunmesh-provd/build_bundle.go needs — JSON bytes it can embed
+// under the `wg` key of the assembled bundle and pass through
+// bundle.Parse and bundle.Validate, the same code path stunmesh-agent
+// uses. That gets unknown-key rejection, the no-`null` rule, the
+// plain-base-10-integer rule, and the unpaired-surrogate rule for
+// free, with one rule table (docs/format.md) instead of two.
 //
-// sigs.k8s.io/yaml is maintained by kubernetes-sigs and is the YAML
-// library Kubernetes itself uses for this same YAML-as-JSON pattern.
-// Its only transitive dependency is go.yaml.in/yaml/v2, the
-// yaml.v3-lineage fork that sigs.k8s.io/yaml now vendors its YAML
-// parsing from; no other module is pulled in. This package never
-// decodes wg.yaml into a typed struct itself (see ReadNode), so a
-// YAML syntax error is a structural error ("did not find expected
-// key"), not a type-mismatch error that could echo a field value
-// (some "cannot unmarshal into T" messages from struct-typed
-// decoding do echo the offending scalar); avoiding struct-typed
-// decoding here is itself part of the no-secrets-in-errors discipline
-// (see the package doc "Errors" section).
+// This package never decodes wg.yaml into a typed struct itself (see
+// ReadNode), so a YAML syntax error is a structural error ("did not
+// find expected key"), not a type-mismatch error that could echo a
+// field value (some "cannot unmarshal into T" messages from
+// struct-typed decoding do echo the offending scalar); avoiding
+// struct-typed decoding here is itself part of the no-secrets-in-errors
+// discipline (see the package doc "Errors" section).
 //
 // # Seam for bundle assembly (cmd/stunmesh-provd/build_bundle.go)
 //
@@ -147,10 +140,9 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/tjjh89017/stunmesh-provisioner/internal/backend"
 	"github.com/tjjh89017/stunmesh-provisioner/internal/crypto"
+	"github.com/tjjh89017/stunmesh-provisioner/internal/yamlx"
 )
 
 // ErrNotExist means a required file or directory is absent.
@@ -231,8 +223,8 @@ type Node struct {
 // exactly the "absent" case backendConfig's presence checks test for.
 //
 // An unknown top-level key, or an unknown key inside a plugins
-// entry, is silently ignored: sigs.k8s.io/yaml's Unmarshal goes
-// through encoding/json's default decoder, which does not reject
+// entry, is silently ignored: ReadDeployment decodes the yamlx.ToJSON
+// output with encoding/json's default decoder, which does not reject
 // unknown fields (unlike internal/bundle's decoder, which calls
 // DisallowUnknownFields). provd.yaml is operator-edited configuration,
 // not a value the network can forge, so this package keeps that
@@ -354,8 +346,12 @@ func ReadDeployment(root, namespace string) (*Deployment, error) {
 		return nil, err
 	}
 
+	jsonBytes, err := yamlx.ToJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrMalformed, provdPath)
+	}
 	var p provdYAML
-	if err := yaml.Unmarshal(data, &p); err != nil {
+	if err := json.Unmarshal(jsonBytes, &p); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrMalformed, provdPath, err)
 	}
 
@@ -420,7 +416,7 @@ func ReadNode(root, namespace, nodeID string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	wgJSON, err := yaml.YAMLToJSON(wgYAML)
+	wgJSON, err := yamlx.ToJSON(wgYAML)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrMalformed, wgPath)
 	}
