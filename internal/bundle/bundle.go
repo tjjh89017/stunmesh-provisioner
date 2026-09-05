@@ -16,8 +16,8 @@
 //
 // Every JSON number in the input must be a plain base-10 integer
 // (ErrNumber; see its doc comment), and `timestamp`, `listen_port`,
-// `mtu`, `routes[].metric`, and `persistent_keepalive` must each fall
-// within the range documented in docs/format.md 6 (ErrRange).
+// `mtu`, `fwmark`, `routes[].metric`, and `persistent_keepalive` must
+// each fall within the range documented in docs/format.md 6 (ErrRange).
 //
 // Canonical form preserves the presence of empty containers exactly
 // as received: a bundle parsed from JSON that explicitly has
@@ -122,9 +122,26 @@ type Interface struct {
 	// safe unlike Route.Metric.
 	MTU             *int              `json:"mtu,omitempty"`
 	RouteAllowedIPs *bool             `json:"route_allowed_ips,omitempty"`
+	Fwmark          *int64            `json:"fwmark,omitempty"`
+	RoutingTable    *RoutingTable     `json:"routing_table,omitempty"`
 	Routes          []Route           `json:"routes,omitempty"`
 	Options         map[string]string `json:"options,omitempty"`
 	Peers           map[string]Peer   `json:"peers"`
+}
+
+// RoutingTable names the netifd routing table for an interface's IPv4
+// and/or IPv6 traffic (docs/format.md 6, `wg.*.routing_table`).
+//
+// IPv4 and IPv6 are *string, not string with `omitempty`, so an
+// explicit `""` in the input stays distinguishable from an absent
+// key: nil means absent, a pointer to "" means the input had
+// `"ipv4":""` / `"ipv6":""`. See the Bundle doc comment for why
+// presence matters. A plain string field could not tell
+// `{"ipv6":"100"}` apart from `{"ipv4":"","ipv6":"100"}`, silently
+// treating the second as if ipv4 had never been set.
+type RoutingTable struct {
+	IPv4 *string `json:"ipv4,omitempty"`
+	IPv6 *string `json:"ipv6,omitempty"`
 }
 
 // MarshalJSON emits `routes`, `options`, and `peers` only when the
@@ -151,6 +168,12 @@ func (i Interface) MarshalJSON() ([]byte, error) {
 	}
 	if i.RouteAllowedIPs != nil {
 		m["route_allowed_ips"] = i.RouteAllowedIPs
+	}
+	if i.Fwmark != nil {
+		m["fwmark"] = i.Fwmark
+	}
+	if i.RoutingTable != nil {
+		m["routing_table"] = i.RoutingTable
 	}
 	if i.Routes != nil {
 		m["routes"] = i.Routes
@@ -470,10 +493,10 @@ var (
 	// ErrRange means a numeric field is present but outside the range
 	// documented in docs/format.md 6: `timestamp` (upper bound only;
 	// the lower bound is ErrTimestamp), `listen_port`, `mtu`,
-	// `routes[].metric`, and `persistent_keepalive`. Each bound closes
-	// a gap between Go's *int/int64 decoding and jq's float64
-	// arithmetic: a value outside the bound would round differently
-	// under jq than it decodes in Go, breaking the
+	// `fwmark`, `routes[].metric`, and `persistent_keepalive`. Each
+	// bound closes a gap between Go's *int/int64 decoding and jq's
+	// float64 arithmetic: a value outside the bound would round
+	// differently under jq than it decodes in Go, breaking the
 	// `jq -S -c 'del(.timestamp)'` byte-equality contract of
 	// Canonical (PLAN.md 4.5).
 	ErrRange = errors.New("bundle: numeric field is out of range")
@@ -490,6 +513,38 @@ var (
 	// ErrRoute means a route entry is invalid.
 	ErrRoute = errors.New("bundle: invalid route")
 )
+
+// isASCIIDigits reports whether s is non-empty and consists only of
+// ASCII digits.
+func isASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateRoutingTableValue checks one routing_table.ipv4 or
+// routing_table.ipv6 value (docs/format.md 6 and 7): non-empty, no
+// whitespace, and not an all-digit value starting with `0` (netifd
+// parses a numeric table with strtoul(..., 0), so a leading zero
+// means octal, and a lone `0` is RT_TABLE_UNSPEC).
+func validateRoutingTableValue(v, field, name string) error {
+	if v == "" {
+		return fmt.Errorf("%w %q: routing_table.%s is present but empty", ErrInterface, name, field)
+	}
+	if strings.ContainsAny(v, " \t\n\r\f\v") {
+		return fmt.Errorf("%w %q: routing_table.%s must not contain whitespace", ErrInterface, name, field)
+	}
+	if isASCIIDigits(v) && v[0] == '0' {
+		return fmt.Errorf("%w %q: routing_table.%s must not start with 0", ErrInterface, name, field)
+	}
+	return nil
+}
 
 // Validate checks a decoded bundle against PLAN.md 4.4.
 //
@@ -543,6 +598,26 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 		}
 		if iface.MTU != nil && (*iface.MTU < 576 || *iface.MTU > 65535) {
 			return fmt.Errorf("%w %q: mtu must be between 576 and 65535", ErrRange, name)
+		}
+		if iface.Fwmark != nil {
+			if m := *iface.Fwmark; m < 1 || m > 4294967295 {
+				return fmt.Errorf("%w %q: fwmark must be between 1 and 4294967295", ErrRange, name)
+			}
+		}
+		if rt := iface.RoutingTable; rt != nil {
+			if rt.IPv4 == nil && rt.IPv6 == nil {
+				return fmt.Errorf("%w %q: routing_table is present but empty", ErrInterface, name)
+			}
+			if rt.IPv4 != nil {
+				if err := validateRoutingTableValue(*rt.IPv4, "ipv4", name); err != nil {
+					return err
+				}
+			}
+			if rt.IPv6 != nil {
+				if err := validateRoutingTableValue(*rt.IPv6, "ipv6", name); err != nil {
+					return err
+				}
+			}
 		}
 
 		for pname, peer := range iface.Peers {

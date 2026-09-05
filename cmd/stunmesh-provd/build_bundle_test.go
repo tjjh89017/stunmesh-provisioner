@@ -226,6 +226,34 @@ func TestBuildBundle_ValidNodeProducesValidatedBundle(t *testing.T) {
 	}
 }
 
+// TestBuildBundle_FwmarkFlowsFromWGYAML pins wg.yaml's fwmark reaching the built bundle unchanged.
+func TestBuildBundle_FwmarkFlowsFromWGYAML(t *testing.T) {
+	const wgYAML = `wg0:
+  private_key: cGxhY2Vob2xkZXItcHJpdmF0ZS1rZXktMzItYnl0ZXMh
+  addresses:
+    - 10.0.0.1/24
+  fwmark: 51820
+  peers:
+    bravo:
+      public_key: cGxhY2Vob2xkZXItcHVibGljLWtleS0zMi1ieXRlcyE=
+      allowed_ips:
+        - 10.0.0.2/32
+`
+	node := testNode(t, "alpha", wgYAML, "")
+
+	b, err := buildBundle("myns", node, fixedNow())
+	if err != nil {
+		t.Fatalf("buildBundle: %v", err)
+	}
+	iface, ok := b.WG["wg0"]
+	if !ok {
+		t.Fatal("bundle has no wg0 interface")
+	}
+	if iface.Fwmark == nil || *iface.Fwmark != 51820 {
+		t.Fatalf("iface.Fwmark = %v, want 51820", iface.Fwmark)
+	}
+}
+
 func TestBuildBundle_ExplicitEmptyWGIsAccepted(t *testing.T) {
 	// "{}" is a real, deliberate document: it means "remove every
 	// interface" and must not be confused with the unedited-template

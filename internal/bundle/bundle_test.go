@@ -15,6 +15,7 @@
 //	  optional fields)                                 {} / populated
 //	Interface.ListenPort         *int                  absent / 0 / populated
 //	Interface.MTU                *int                  absent / 0 / populated
+//	Interface.Fwmark             *int64                absent / 0 / populated
 //	Interface.RouteAllowedIPs    *bool                 absent / false / true
 //	Interface.Routes             []Route               absent / [] / populated
 //	Interface.Options            map[string]string     absent / {} / populated
@@ -1265,6 +1266,34 @@ func TestInterfaceMTUStates(t *testing.T) {
 	})
 }
 
+// TestInterfaceFwmarkStates covers fwmark absent and populated for jq-canonical equality.
+func TestInterfaceFwmarkStates(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name  string
+		field string
+	}{
+		{"absent", ``},
+		{"populated", `,"fwmark":51820`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(`{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + tc.field + `}}}`)
+			b := mustParse(t, data)
+			if err := b.Validate("n", "a"); err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
 // TestInterfaceRouteAllowedIPsStates covers the three states of the
 // optional `route_allowed_ips` field: absent (default true, but
 // stored as absent, not as an explicit `true`), explicit false
@@ -1390,15 +1419,26 @@ func TestPeerPersistentKeepaliveStates(t *testing.T) {
 	}
 }
 
-// listenPortDoc, mtuDoc, metricDoc, and keepaliveDoc build a minimal
-// valid bundle JSON document with the given field set on `wg0`, or on
-// its first route (metric) or its `bravo` peer (persistent_keepalive).
-// Shared by the range-boundary and number-literal tests below.
+// listenPortDoc, mtuDoc, fwmarkDoc, metricDoc, and keepaliveDoc build
+// a minimal valid bundle JSON document with the given field set on
+// `wg0`, or on its first route (metric) or its `bravo` peer
+// (persistent_keepalive). Shared by the range-boundary and
+// number-literal tests below.
 func listenPortDoc(field string) string {
 	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
 }
 
 func mtuDoc(field string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
+}
+
+func fwmarkDoc(field string) string {
+	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
+}
+
+// routingTableDoc builds a minimal valid bundle JSON document with
+// the given routing_table field set on `wg0`.
+func routingTableDoc(field string) string {
 	return `{"version":1,"namespace":"n","node_id":"a","timestamp":1,"stunmesh":"","wg":{"wg0":{"private_key":"k","addresses":["1.1.1.1/32"],"peers":{}` + field + `}}}`
 }
 
@@ -1485,6 +1525,106 @@ func TestValidateMTURange(t *testing.T) {
 			}
 			wantJQCanonical(t, jqPath, data, got)
 		})
+	}
+}
+
+// TestValidateFwmarkRange checks the fwmark bound (1-4294967295, docs/format.md 6) at each edge.
+func TestValidateFwmarkRange(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"just below minimum (negative)", "-1", true},
+		{"zero", "0", true},
+		{"minimum", "1", false},
+		{"maximum", "4294967295", false},
+		{"just above maximum", "4294967296", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(fwmarkDoc(`,"fwmark":` + tc.value))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrRange) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrRange", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestParseRejectsFwmarkString checks a non-integer fwmark fails to parse.
+func TestParseRejectsFwmarkString(t *testing.T) {
+	data := []byte(fwmarkDoc(`,"fwmark":"51820"`))
+	if _, err := bundle.Parse(data); err == nil {
+		t.Fatal("Parse: got nil error, want an error for a string fwmark")
+	}
+}
+
+// TestValidateRoutingTable checks the routing_table rules (docs/format.md 6 and 7).
+func TestValidateRoutingTable(t *testing.T) {
+	jqPath := jqOrSkip(t)
+
+	cases := []struct {
+		name    string
+		field   string
+		wantErr bool
+	}{
+		{"ipv4 only", `,"routing_table":{"ipv4":"100"}`, false},
+		{"ipv6 only", `,"routing_table":{"ipv6":"100"}`, false},
+		{"both", `,"routing_table":{"ipv4":"100","ipv6":"200"}`, false},
+		{"non-digit name", `,"routing_table":{"ipv4":"main"}`, false},
+		{"empty object", `,"routing_table":{}`, true},
+		{"ipv4 empty string", `,"routing_table":{"ipv4":""}`, true},
+		{"ipv4 empty string alongside ipv6", `,"routing_table":{"ipv4":"","ipv6":"100"}`, true},
+		{"ipv4 all zero", `,"routing_table":{"ipv4":"0"}`, true},
+		{"ipv4 leading zero", `,"routing_table":{"ipv4":"0100"}`, true},
+		{"ipv4 whitespace", `,"routing_table":{"ipv4":"1 00"}`, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(routingTableDoc(tc.field))
+			b := mustParse(t, data)
+			err := b.Validate("n", "a")
+			if tc.wantErr {
+				if !errors.Is(err, bundle.ErrInterface) {
+					t.Fatalf("Validate: got %v, want error wrapping ErrInterface", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate: unexpected error: %v", err)
+			}
+			got, err := b.Canonical()
+			if err != nil {
+				t.Fatalf("Canonical: unexpected error: %v", err)
+			}
+			wantJQCanonical(t, jqPath, data, got)
+		})
+	}
+}
+
+// TestParseRejectsRoutingTableUnknownKey checks phase 1 rejects an
+// unknown key inside routing_table.
+func TestParseRejectsRoutingTableUnknownKey(t *testing.T) {
+	data := []byte(routingTableDoc(`,"routing_table":{"ipv4":"100","bogus":"1"}`))
+	if _, err := bundle.Parse(data); err == nil {
+		t.Fatal("Parse: got nil error, want an error for an unknown routing_table key")
 	}
 }
 
