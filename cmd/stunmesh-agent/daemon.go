@@ -145,19 +145,13 @@ func needsEmbeddedRun(diff *Diff) bool {
 }
 
 // runDaemon is the default command: hold cfg.LockPath for the whole
-// process lifetime (the daemon's multi-instance guard, replacing the
-// old per-fetch lock now that there is no cron driving repeated
-// short-lived runs), run one fetch/apply cycle immediately, then tick
-// on cfg.RefreshInterval (a normal cycle) and, when
-// cfg.FullApplyInterval is positive, on that interval too (a
-// forceAll cycle). SIGINT and SIGTERM are the only signals handled:
-// both mean a graceful shutdown (cancel the context, stop the
-// embedded app, release the lock, exit 0). There is no SIGHUP reload:
-// changing a running daemon's settings means restarting it (systemd
-// or procd both already know how to do that), not signalling it --
-// the daemon's own startup already does "reread config.yaml, run one
-// cycle immediately", so a restart is exactly the reload an operator
-// wants.
+// process lifetime (the daemon's multi-instance guard), run one
+// fetch/apply cycle immediately, then tick on cfg.RefreshInterval (a
+// normal cycle) and, when cfg.FullApplyInterval is positive, on that
+// interval too (a forceAll cycle). SIGINT and SIGTERM are the only
+// signals handled: both mean a graceful shutdown (cancel the context,
+// stop the embedded app, release the lock, exit 0). There is no
+// SIGHUP handler; restart the process to reload.
 func runDaemon(env *Env, cfg *Config) int {
 	lock, err := acquireLock(cfg.LockPath)
 	if err != nil {
@@ -323,21 +317,11 @@ func (r *embeddedRunner) stop() {
 // embedded app (cur, possibly nil) still matches what should be
 // running, and rebuilds it when it does not.
 //
-// checkAlways is set only for the daemon's very first cycle
-// (runDaemon): a freshly (re)started daemon must resume running
-// stunmesh-go against whatever last.json already recorded, even when
-// this cycle's own diff is nil (nothing changed since last.json) or
-// reports no interface/stunmesh change -- last.json is the source of
-// truth for "should something be running right now", not this one
-// cycle's diff.
-//
-// On every other cycle, reconcileEmbedded only acts when diff itself
-// reports a stunmesh or interface change (see needsEmbeddedRun's
-// sibling condition below): an unrelated cycle must not tear down and
-// restart a perfectly good running app.
-//
-// Rebuilding always stops the old instance (if any) before starting
-// the new one: the two must never run concurrently against the same
+// checkAlways, set only on the daemon's first cycle, forces a check
+// against last.json even when this cycle's diff reports no change.
+// On every other cycle, it only acts when diff itself reports a
+// stunmesh or interface change. A rebuild always stops the old
+// instance first, so two never run concurrently against the same
 // config file.
 func reconcileEmbedded(env *Env, factory appFactory, cfg *Config, cur *embeddedRunner, diff *Diff, checkAlways bool) *embeddedRunner {
 	act := checkAlways

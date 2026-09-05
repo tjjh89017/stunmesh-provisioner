@@ -143,9 +143,9 @@ func TestSameContent_MissingLastMatchesAnEmptyBundle(t *testing.T) {
 	}
 }
 
-// TestSameContent_AbsentVsExplicitEmptyAreDifferent pins PLAN.md 4.3/
-// 4.5: an absent key and an explicit empty container are different
-// content. It uses the `options` field of an interface, which is
+// TestSameContent_AbsentVsExplicitEmptyAreDifferent pins that an
+// absent key and an explicit empty container are different content.
+// It uses the `options` field of an interface, which is
 // *map[string]string with no `omitempty` semantics baked into
 // presence: nil means absent, a non-nil empty map means `"options":{}`
 // was present.
@@ -352,9 +352,9 @@ func TestCheckAndApply_FullApplyBypassesEqualContentShortcut(t *testing.T) {
 	}
 
 	// wg0 is already a recorded firewall zone member, so manageFirewall
-	// (PLAN.md 6 "Firewall zone") has nothing to add there; the point of
-	// this assertion is that writeUCI actually ran the interface's own
-	// create batch again, not that the firewall zone changed.
+	// has nothing to add there; the point of this assertion is that
+	// writeUCI actually ran the interface's own create batch again,
+	// not that the firewall zone changed.
 	var sawCreate bool
 	for _, call := range fake.Calls() {
 		if call.Name == "uci" && len(call.Args) == 2 && call.Args[0] == "set" && call.Args[1] == "network.wg0=interface" {
@@ -366,8 +366,8 @@ func TestCheckAndApply_FullApplyBypassesEqualContentShortcut(t *testing.T) {
 	}
 
 	// "uci commit network" and "ubus call network reload" must have run
-	// too: a full apply is the whole procedure (PLAN.md 6), not just
-	// the per-interface create batch.
+	// too: a full apply is the whole procedure, not just the
+	// per-interface create batch.
 	var sawCommit, sawReload bool
 	for _, call := range fake.Calls() {
 		if call.Name == "uci" && len(call.Args) == 2 && call.Args[0] == "commit" && call.Args[1] == "network" {

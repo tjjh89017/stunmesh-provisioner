@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# phase-smoke.sh -- placeholder phase proving the harness skeleton works.
+# phase-smoke.sh -- asserts the harness itself can boot, inject files,
+# and reach the guest over SSH.
 #
 # This is NOT a stunmesh-agent test. It injects no payload and checks no
 # bundle; it only claims two things about a freshly booted, unmodified
 # guest: ubus answers, and uci show network names the lan interface (the
-# lan section this harness's own injection wrote before boot). A later item
-# replaces this file with the real stunmesh-agent assertions; this one
-# exists only to prove boot -> inject -> SSH -> assert works end to end.
+# lan section this harness's own injection wrote before boot).
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 set -euo pipefail

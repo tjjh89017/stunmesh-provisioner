@@ -1,12 +1,11 @@
-// Package store reads and writes the operator's provisioning tree
-// (PLAN.md 7.1).
+// Package store reads and writes the operator's provisioning tree.
 //
 // The read side (ReadDeployment, ReadNode, Namespaces, Nodes) never
 // modifies a file. The write side (WriteFile, CreateDir) is the
 // shared, single-responsibility layer that `stunmesh-provd init` and
-// `node add` (stage 2 items 4 and 5) build on to create the tree; it
-// never overwrites a file the operator already owns. See "Write
-// primitives" below.
+// `node add` (cmd/stunmesh-provd/init_cmd.go, node_cmd.go) build on
+// to create the tree; it never overwrites a file the operator already
+// owns. See "Write primitives" below.
 //
 // # Tree layout
 //
@@ -32,7 +31,7 @@
 // wg.yaml must become the bundle's `wg` section without losing the
 // presence semantics that internal/bundle depends on: an absent key,
 // an explicit empty map (`{}`), and an explicit empty list (`[]`)
-// must stay distinguishable (PLAN.md 4.3, 4.5; internal/bundle package
+// must stay distinguishable (docs/format.md 6, 8; internal/bundle package
 // doc). This package converts wg.yaml with sigs.k8s.io/yaml.YAMLToJSON
 // instead of decoding it into a Go struct with a YAML library's own
 // tags.
@@ -53,12 +52,12 @@
 //
 // sigs.k8s.io/yaml was chosen over decoding directly with a YAML
 // library (gopkg.in/yaml.v3 or go.yaml.in/yaml/v3) for that reason: it
-// turns wg.yaml into the exact seam stage 2 item 6 (bundle assembly)
+// turns wg.yaml into the exact seam cmd/stunmesh-provd/build_bundle.go
 // needs — JSON bytes it can embed under the `wg` key of the assembled
 // bundle and pass through bundle.Parse and bundle.Validate, the same
-// code path stunmesh-agent uses. That gets item 6 unknown-key
-// rejection, the no-`null` rule, the plain-base-10-integer rule, and
-// the unpaired-surrogate rule for free, with one rule table
+// code path stunmesh-agent uses. That gets unknown-key rejection, the
+// no-`null` rule, the plain-base-10-integer rule, and the
+// unpaired-surrogate rule for free, with one rule table
 // (docs/format.md) instead of two.
 //
 // sigs.k8s.io/yaml is maintained by kubernetes-sigs and is the YAML
@@ -74,13 +73,13 @@
 // decoding here is itself part of the no-secrets-in-errors discipline
 // (see the package doc "Errors" section).
 //
-// # Seam for bundle assembly (stage 2 item 6)
+// # Seam for bundle assembly (cmd/stunmesh-provd/build_bundle.go)
 //
 // Node.WG is JSON bytes shaped exactly like the bundle's `wg` value:
 // a map of interface name to interface fields, with presence
 // preserved. It is not wrapped in an outer `{"wg": ...}` envelope.
-// Item 6 assembles the full bundle object (`version`, `namespace`,
-// `node_id`, `timestamp`, this `wg` value, and `stunmesh`) and
+// build_bundle.go assembles the full bundle object (`version`,
+// `namespace`, `node_id`, `timestamp`, this `wg` value, and `stunmesh`) and
 // validates the assembled whole with bundle.Parse and
 // (*bundle.Bundle).Validate. This package performs no bundle-level
 // validation itself; it only decodes files.
@@ -95,7 +94,7 @@
 //   - ErrInvalidKey: a key file exists and parses as text but is not a
 //     valid key (bad base64, wrong length).
 //
-// stunmesh-provd publish (stage 2 item 7) uses this to skip one bad
+// stunmesh-provd publish uses this to skip one bad
 // node without aborting the others. No error message from this
 // package ever includes a file's content or a key's value; only a
 // path, a namespace, a node ID, or a field name.
@@ -125,14 +124,14 @@
 // modes calls CreateDir once per level, parent first.
 //
 // Mode policy is the caller's choice, not something these primitives
-// bake in, but PLAN.md 7.1 fixes two: controller.key and wg.yaml are
+// bake in, but two are fixed: controller.key and wg.yaml are
 // 0600, because they hold a private key. Every other file in the
-// tree is 0644. For directories, PLAN.md 7.1 does not specify a mode;
+// tree is 0644. For directories, no mode is specified;
 // this package recommends 0700 for a namespace directory and a node
 // directory, tighter than the 0755 of a plain directory (root,
-// nodes/). Both hold at least one secret file. The plan describes no
-// group-based access model and the controller runs as a single
-// operator or root account, so there is no one who legitimately needs
+// nodes/). Both hold at least one secret file. The controller runs as
+// a single operator or root account with no group-based access model,
+// so there is no one who legitimately needs
 // to list a secret directory's file names without also being able to
 // read the 0600 files inside it; keeping the directory listing itself
 // private costs nothing and follows the same reasoning that already
@@ -207,7 +206,7 @@ type Node struct {
 	// IdentityPublicKey is identity.pub, parsed.
 	IdentityPublicKey crypto.Key
 	// WG is wg.yaml, converted to JSON. It is shaped exactly like the
-	// bundle's `wg` value (PLAN.md 4.2): a map of interface name to
+	// bundle's `wg` value (docs/format.md 5): a map of interface name to
 	// interface fields. Presence is preserved: a field absent from
 	// wg.yaml stays absent in WG, and an explicit empty map or list
 	// stays present-and-empty. See the package doc "YAML decision"
@@ -321,7 +320,8 @@ func listDirs(dir string) ([]string, error) {
 // separator.
 //
 // ResolveName is exported so that `stunmesh-provd init` and `node
-// add` (stage 2 items 4 and 5) validate a namespace or node ID name
+// add` (cmd/stunmesh-provd/init_cmd.go, node_cmd.go) validate a
+// namespace or node ID name
 // the same way the read side does, before they call WriteFile or
 // CreateDir with the resulting path.
 func ResolveName(root, name string) (string, error) {

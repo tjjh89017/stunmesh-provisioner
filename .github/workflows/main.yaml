@@ -9,10 +9,7 @@
 #
 # Chain: lint & test -> build (matrix) -> build-required -> e2e -> e2e-realnet ->
 # E2E (e2e-required below, the single check branch protection names).
-# e2e runs on every push and pull_request, not workflow_dispatch-only: a
-# required check that only runs on manual dispatch never blocks a merge.
-# That trade costs real runner minutes on every push, but it is the one
-# this job exists to make.
+# A required check that only runs on manual dispatch never blocks a merge.
 
 name: CI
 
@@ -169,13 +166,8 @@ jobs:
         uses: ./.github/actions/e2e-realnet
 
   # The single check a branch protection rule will name, hence the short
-  # display name below. It gates on BOTH e2e jobs: a merge waits on a
-  # real round trip against the real Jami proxies, not just the fake one
-  # inside the OpenWrt VM. This is a deliberate choice, not an oversight
-  # -- it means a real Jami outage can block a pull request, and that
-  # trade was made knowingly. Do not narrow this back to needs: e2e
-  # alone to "fix" a flaky third-party outage; fix or wait out the
-  # outage instead.
+  # display name below. Gates on both e2e jobs, the fake proxy and the
+  # real Jami proxies.
   #
   # Must be red whenever either e2e job failed, was cancelled, or was
   # skipped -- a skipped dependency must not read as success, which is
@@ -206,24 +198,8 @@ jobs:
             exit 1
           fi
 
-  # Additive: neither e2e-required nor either aggregate gate job above
-  # depends on this one, so a broken Dockerfile cannot block a merge by
-  # itself -- it can only fail its own job.
-  #
-  # needs: e2e-required ties this job to the full check -> build ->
-  # build-required -> e2e/e2e-realnet chain, so it never wastes a build
-  # (or, worse, a publish) on a commit that was already going to fail for
-  # an unrelated reason, and so a push to main is never published unless
-  # that whole chain went green first.
-  #
-  # Skips pull_request entirely: a PR cannot publish anyway (no
-  # packages:write token, doubly so from a fork), and building the image
-  # would only add runtime after the e2e gate for no benefit.
-  #
-  # This workflow's own "on: push" has no branch filter (it also runs for
-  # a push to any other branch), so the publish condition below checks
-  # github.ref itself rather than trusting github.event_name alone --
-  # otherwise a push to a feature branch would publish a "main" tag too.
+  # Never gates a merge: no job depends on this one.
+  # Skips pull requests; a PR has no packages:write token to publish with.
   docker:
     name: Docker image
     needs: e2e-required

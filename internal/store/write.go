@@ -8,11 +8,10 @@ import (
 )
 
 // ErrExists means the caller asked to write a file that is already
-// there. It is not a failure. `stunmesh-provd init` and `node add`
-// (stage 2 items 4 and 5) are meant to run again against a tree that
-// already has some files, and a caller tells "did not write it,
-// because the operator already owns it" apart from a real error with
-// errors.Is(err, ErrExists).
+// there. It is not a failure: `init_cmd.go` and `node_cmd.go` are
+// meant to run again against a tree that already has some files, and
+// a caller tells "already owned by the operator" apart from a real
+// error with errors.Is(err, ErrExists).
 var ErrExists = errors.New("store: already exists")
 
 // WriteFile creates path with data and mode. It never overwrites an

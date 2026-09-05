@@ -370,7 +370,7 @@ func TestRunNodeAdd_NoSecretInOutput(t *testing.T) {
 // store.ResolveName rejects for path-escape reasons is one dhtkey.Key
 // rejects too. A node_id that `node add` could create but that
 // dhtkey.Key later refuses would be a node that can never be
-// published to (PLAN.md 7.4 traps).
+// published to.
 func TestNodeIDAcceptedByResolveNameIsAddressableByDHTKey(t *testing.T) {
 	root := t.TempDir()
 	const namespace = "myns"

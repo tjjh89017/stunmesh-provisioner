@@ -35,16 +35,16 @@ ExecStart=/usr/local/bin/stunmesh-provd --dir /etc/stunmesh/provd publish
 # with, for example, "useradd --system --no-create-home --shell
 # /usr/sbin/nologin stunmesh-provd" (see contrib/systemd/README.md). The
 # namespace directories and their files are mode 0700/0600, owned by
-# whoever ran `init` and `node add` (stage 2 items 2-3): the operator must
-# either run those commands as this same user, or chown the tree to it
-# afterward, or this service will fail to read its own configuration.
+# whoever ran `init` and `node add`: the operator must either run those
+# commands as this same user, or chown the tree to it afterward, or this
+# service will fail to read its own configuration.
 User=stunmesh-provd
 Group=stunmesh-provd
 
 # --- Filesystem ------------------------------------------------------------
 # publish only ever reads the tree (internal/store's read side performs no
-# writes, and publish never calls store's write primitives -- stage 2
-# items 2-3). ProtectSystem=strict makes the whole filesystem read-only
+# writes, and publish never calls store's write primitives).
+# ProtectSystem=strict makes the whole filesystem read-only
 # except /dev, /proc, /sys, and any ReadWritePaths; nothing is listed
 # there because this service needs none. ReadOnlyPaths is redundant with
 # strict here but states the one directory this unit actually cares about

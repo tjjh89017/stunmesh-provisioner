@@ -6,17 +6,14 @@ import (
 )
 
 // sameContent reports whether state and b hold the same content
-// (PLAN.md 4.5): `wg` plus `stunmesh`, with `timestamp` excluded and
-// the presence of every key -- absent versus an explicit empty
+// (docs/format.md 8): `wg` plus `stunmesh`, with `timestamp` excluded
+// and the presence of every key -- absent versus an explicit empty
 // container -- taken into account exactly.
 //
 // Both sides are canonicalized by the same code: sameContent builds a
 // synthetic *bundle.Bundle from state (stateToBundle) and compares it
 // with b through bundle.Bundle.Equal, which calls bundle.Canonical on
-// each side. There is no separate canonicalization path for last.json
-// content; reusing bundle.Canonical/Equal is the guarantee that both
-// sides are canonicalized identically -- a hand-written comparison
-// could not make that promise as cheaply or as verifiably.
+// each side.
 //
 // state.WG and state.Stunmesh, and b.WG and b.Stunmesh, are the only
 // fields sameContent's answer depends on: stateToBundle copies b's

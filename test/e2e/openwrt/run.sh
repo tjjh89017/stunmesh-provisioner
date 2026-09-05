@@ -34,7 +34,8 @@
 # between two real `--oneshot` runs. phases/phase-routes.sh and
 # phase-firewall.sh prove route_allowed_ips: false and that an
 # operator-added firewall zone survives an apply. phases/phase-reboot.sh
-# proves PLAN.md 2.6's "no boot step" claim against a real guest reboot.
+# proves the tunnel comes back from UCI alone, with no boot step, after
+# a real guest reboot.
 #
 # Every phase_* function is self-contained: it publishes whatever
 # fixture it needs and does not assume any other phase already ran, or

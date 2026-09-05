@@ -320,11 +320,9 @@ stop_fake_proxy() {
 # delayed-instance counterparts of start_fake_proxy's own variables.
 #
 # phase-lock.sh is the only caller. It needs a GET that stays open
-# long enough for a second, real `stunmesh-agent fetch` to reliably
-# start while the first still holds the lock (see fakeproxy/main.go's
-# getDelay doc comment) -- a delay every other phase's fetches would
-# otherwise have to pay too, if this were the same instance
-# start_fake_proxy already runs for the rest of the harness.
+# long enough for a second, real `stunmesh-agent --oneshot` run to
+# reliably start while the first still holds the lock (see
+# fakeproxy/main.go's getDelay doc comment).
 start_delayed_fake_proxy() {
 	local port="$1" delay="$2"
 	log "Starting the delayed fake dhtproxy on port ${port} (get-delay ${delay})..."
@@ -335,11 +333,6 @@ start_delayed_fake_proxy() {
 	[[ -n "$DELAYED_FAKEPROXY_HOST_URL" && -n "$DELAYED_FAKEPROXY_GUEST_URL" ]] \
 		|| die "Delayed fake dhtproxy URLs were not set for port ${port}."
 
-	# Same readiness probe as start_fake_proxy, deliberately not
-	# factored out into a shared helper: the two callers already read
-	# fine on their own, and a shared helper would need to somehow
-	# hand back which of two different PID/URL variable sets to fill,
-	# for no real gain in a file this size.
 	local probe_key="0000000000000000000000000000000000000001"
 	local attempt=1 code
 	while true; do
@@ -405,10 +398,9 @@ setup_controller() {
 
 # point_proxies_at NAMESPACE PROXY_URL -- overwrites
 # <namespace>/provd.yaml's proxy list with PROXY_URL alone, replacing the
-# default Jami proxies `init` wrote (PLAN.md 7.3, init_cmd.go's
-# defaultProvdYAML). provd.yaml is one of the files PLAN.md 7.1 names as
-# the operator's to edit; this harness plays the operator's part here the
-# same way it hand-writes /etc/config/network for the guest.
+# default Jami proxies `init` wrote (init_cmd.go's defaultProvdYAML).
+# This harness plays the operator's part editing that file, the same
+# way it hand-writes /etc/config/network for the guest.
 point_proxies_at() {
 	local namespace="$1" proxy_url="$2"
 	local path="${PROVD_ROOT}/${namespace}/provd.yaml"
@@ -851,10 +843,9 @@ guest_capture_failed() {
 }
 
 # reboot_guest IMAGE PORT KEY LOG_FILE -- reboots the running guest and
-# proves it came back from a real reboot, not a second fresh boot:
-# phase-reboot.sh's whole point (PLAN.md 2.6, "No boot step. UCI is
-# persistent.") only holds if the guest that answers SSH afterwards is
-# the same disk having actually restarted, not a new VM.
+# proves it came back from a real reboot, not a second fresh boot: the
+# guest that answers SSH afterwards must be the same disk having
+# actually restarted, not a new VM.
 #
 # Sends "reboot" over SSH -- the connection drops as the guest goes
 # down, so its own exit status is meaningless and ignored. Then waits
@@ -866,9 +857,8 @@ guest_capture_failed() {
 # the just-exited guest wrote its own UCI commits to, not a copy.
 #
 # Bounded to reboot_timeout_seconds (default 60s) waiting for QEMU to
-# exit, the same pattern boot_guest's own `timeout` and wait_for_ssh's
-# attempt bound use: a hung shutdown fails loudly here instead of
-# wait_for_ssh timing out later with a misleading "never came up".
+# exit: a hung shutdown fails loudly here instead of wait_for_ssh
+# timing out later with a misleading "never came up".
 reboot_guest() {
 	local image="$1" port="$2" key="$3" log_file="$4"
 	local reboot_timeout_seconds="${REBOOT_TIMEOUT_SECONDS:-60}"

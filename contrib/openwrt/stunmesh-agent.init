@@ -1,32 +1,15 @@
 #!/bin/sh /etc/rc.common
 # stunmesh-agent.init -- procd service for stunmesh-agent (daemon mode).
 #
-# stunmesh-agent is a long-running daemon (README.md, CLAUDE.md), not a
-# cron-driven one-shot command any more: it fetches, decrypts, checks,
-# and applies once at start, then ticks on its own refresh_interval and
-# full_apply_interval (both read from config.yaml). This script's only
-# job is to (re)generate /etc/stunmesh/agent/config.yaml from UCI, then
-# hand the process to procd as a supervised, respawned instance.
+# stunmesh-agent is a long-running daemon (README.md, CLAUDE.md): it
+# fetches, decrypts, checks, and applies once at start, then ticks on
+# its own refresh_interval and full_apply_interval (both read from
+# config.yaml). This script's only job is to (re)generate
+# /etc/stunmesh/agent/config.yaml from UCI, then hand the process to
+# procd as a supervised, respawned instance.
 #
-# # No reload_signal
-#
-# stunmesh-agent has no SIGHUP handler: an operator-facing "reload"
-# (a UCI edit, `/etc/init.d/stunmesh-agent reload`) regenerates
-# config.yaml and restarts the process outright, through the default
-# rc.common restart() (stop then start). The daemon's own startup
-# already does "read config.yaml, run one cycle immediately", so a
-# restart already is the reload an operator wants; there is nothing a
-# signal would do that a restart does not.
-#
-# # No boot_delay
-#
-# Earlier revisions of this script slept before the first fetch, so a
-# not-yet-up WAN link would not fail the very first attempt. The
-# daemon does not need that any more: a failed cycle at startup (no
-# route to the dhtproxy yet) is logged and retried on the next
-# refresh_interval tick, not fatal (cmd/stunmesh-agent/daemon.go's doc
-# comment on runDaemon) -- the daemon's own retry loop already covers
-# what boot_delay used to work around, so it is not reintroduced here.
+# stunmesh-agent has no SIGHUP handler, so `/etc/init.d/stunmesh-agent
+# reload` regenerates config.yaml and restarts the process outright.
 
 START=95
 STOP=10
@@ -77,7 +60,7 @@ yaml_scalar() {
 # "main" section's use_plugin option must reference) as one entry of
 # config.yaml's "plugins" map. Only "type" and "proxies" exist today
 # (docs/format.md section 3); "list proxies" is the only accepted list
-# name (no "list proxy": that was the old, retired UCI option name).
+# name.
 write_plugin_entry() {
 	local uci_name="$1"
 	local type proxies
@@ -100,8 +83,7 @@ write_plugin_entry() {
 # use_plugin) and writes config.yaml (mode 0600). It returns 1 (and
 # leaves any existing config.yaml untouched) when the file is absent
 # or "main" is missing a required option -- "not provisioned yet", not
-# an error; start_service treats that as "do not start" (see below),
-# the same calm-and-quiet behavior the old cron-driven script had.
+# an error; start_service treats that as "do not start" (see below).
 write_config() {
 	config_load "$UCI_PACKAGE" || {
 		log "no /etc/config/$UCI_PACKAGE; skipping"

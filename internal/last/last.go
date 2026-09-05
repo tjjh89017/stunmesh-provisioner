@@ -1,29 +1,28 @@
 // Package last reads and writes last.json, the agent's memory of what
-// it created on this node (PLAN.md 2.6, 4.5, 6).
+// it created on this node (docs/format.md 8).
 //
 // # Schema
 //
 // last.json holds, for every interface the agent ever applied:
 //
-//   - Content: the interface's own fields (PLAN.md 4.2 "wg" value),
-//     stored as a bundle.Interface. A later item (the diff, PLAN.md
-//     6) canonicalizes this and the corresponding interface from the
-//     new bundle the same way, and compares the two: equal content is
-//     "unchanged", different content is "changed".
+//   - Content: the interface's own fields (the bundle's `wg` value),
+//     stored as a bundle.Interface. The diff step canonicalizes this
+//     and the corresponding interface from the new bundle the same
+//     way, and compares the two: equal content is "unchanged",
+//     different content is "changed".
 //   - Sections: the exact UCI section names the agent created for
 //     this interface (the interface section itself, its route
-//     sections, and its peer sections). A later item (the apply,
-//     PLAN.md 6) deletes a "changed" or "removed" interface's
-//     sections by these exact recorded names, never by pattern
-//     (PLAN.md 6 "Rules").
+//     sections, and its peer sections). The apply step deletes a
+//     "changed" or "removed" interface's sections by these exact
+//     recorded names, never by pattern.
 //
 // last.json also holds Stunmesh, the stunmesh-go config text the
 // agent last wrote, for the same "unchanged" vs. "changed" comparison
-// (PLAN.md 4.5: content is `wg` + `stunmesh`).
+// (docs/format.md 8: content is `wg` + `stunmesh`).
 //
 // State.WG reuses bundle.Interface directly, rather than a private
 // copy of its fields, so the presence rules bundle.Interface already
-// encodes (PLAN.md 4.3; an absent field and an explicit empty
+// encodes (docs/format.md 6; an absent field and an explicit empty
 // container are different content, see the internal/bundle package
 // doc) apply here for free: encoding/json's normal (Un)Marshal
 // behavior on bundle.Interface's fields -- most of them already
@@ -35,8 +34,7 @@
 //
 // A missing last.json is not an error. It means nothing has been
 // applied to this node yet, so every interface in the next bundle is
-// new (PLAN.md 4.5 "Missing last.json: treat as empty"). Read returns
-// an empty, non-nil State in this case.
+// new. Read returns an empty, non-nil State in this case.
 //
 // # Corrupt or unreadable file
 //
@@ -48,21 +46,19 @@
 // make the agent believe every interface is new; it would try to
 // create sections that already exist in UCI from the last successful
 // apply, and it would lose the one record of which sections it is
-// allowed to delete later (PLAN.md 6 "the agent deletes sections only
-// by the exact names that last.json records"). Failing hard instead
-// stops the agent from touching UCI at all until the operator
-// intervenes, which matches PLAN.md 2.7: recovery from a lost
-// last.json is out of scope for v1, and the sections stay in UCI
-// until the operator removes them by hand. A node that cannot tell
-// what it owns must not guess.
+// allowed to delete later. Failing hard instead stops the agent from
+// touching UCI at all until the operator intervenes: recovery from a
+// lost last.json is out of scope, and the sections stay in UCI until
+// the operator removes them by hand. A node that cannot tell what it
+// owns must not guess.
 //
 // # Writing
 //
-// Write is atomic and sets mode 0600 (PLAN.md 6: "last.json ...
-// contains the tunnel private keys and the stunmesh text"). The
-// caller decides when to call Write; PLAN.md 6 requires that to be
-// only after every apply step has succeeded. This package does not
-// enforce that ordering -- it only makes the write itself safe.
+// Write is atomic and sets mode 0600, because last.json contains the
+// tunnel private keys and the stunmesh text. The caller decides when
+// to call Write, only after every apply step has succeeded; this
+// package does not enforce that ordering -- it only makes the write
+// itself safe.
 //
 // # No secrets in errors
 //
@@ -100,14 +96,14 @@ type State struct {
 	WG map[string]Interface `json:"wg"`
 	// Stunmesh is the stunmesh-go config text the agent last wrote.
 	// It is always present once a bundle has been applied at all
-	// (bundle.Bundle.Stunmesh is a required field, PLAN.md 4.3), so,
+	// (bundle.Bundle.Stunmesh is a required field, docs/format.md 6), so,
 	// unlike bundle.Bundle.Stunmesh, this field does not need a
 	// pointer to keep "absent" distinguishable from "": an empty
 	// State (missing last.json) is the only absent case, and Read
 	// reports that with an empty WG, not with this field.
 	Stunmesh string `json:"stunmesh"`
 	// Firewall records what the agent last did to the shared
-	// "stunmesh" firewall zone (PLAN.md 6 "Firewall zone"). The zero
+	// "stunmesh" firewall zone. The zero
 	// value (ZoneOwned false, Members nil) means the agent has never
 	// created or owned that zone -- either nothing has been applied
 	// yet, or a conflicting operator-owned firewall.stunmesh exists
@@ -117,7 +113,7 @@ type State struct {
 
 // FirewallState records the agent's ownership of, and membership in,
 // the shared "stunmesh" firewall zone and its three default
-// forwarding sections (PLAN.md 6 "Firewall zone"). Unlike Sections,
+// forwarding sections. Unlike Sections,
 // which is per-interface, FirewallState is recorded once at the top
 // level of State: every managed interface shares one zone (and the
 // zone's forwardings), not one zone each.
@@ -131,8 +127,8 @@ type FirewallState struct {
 	// agent owns the zone but not its forwardings, or the reverse. A
 	// later apply only ever creates, modifies, or deletes any of these
 	// four sections while ZoneOwned is true, or while the zone section
-	// does not exist yet at all (PLAN.md 6 "Rules": never touch a
-	// section the agent did not create). ZoneOwned false with an
+	// does not exist yet at all: the agent never touches a section it
+	// did not create. ZoneOwned false with an
 	// existing firewall.stunmesh means a conflicting, operator-owned
 	// zone was found; the agent leaves it, and any forwarding section
 	// under these same fixed names, untouched, and does not track
@@ -142,7 +138,7 @@ type FirewallState struct {
 	// "network" list option, in the order the agent added them. It is
 	// meaningful only while ZoneOwned is true; a later apply removes
 	// an interface from this list by its exact recorded name, never
-	// by pattern (PLAN.md 6 "Rules"), and deletes the whole zone
+	// by pattern, and deletes the whole zone
 	// section (and its forwardings), rather than emptying this list
 	// one entry at a time, once the last member is removed.
 	Members []string `json:"members,omitempty"`
@@ -153,23 +149,22 @@ type FirewallState struct {
 // content. See the package doc "Schema".
 type Interface struct {
 	// Content is the interface's fields as they were in the bundle
-	// the agent applied (PLAN.md 4.2 "wg" value). It is not the UCI
+	// the agent applied (the bundle's `wg` value). It is not the UCI
 	// text; it is the input the agent built that UCI text from, kept
 	// so a later fetch can compare it against the new bundle's
-	// interface (PLAN.md 4.5, 6).
+	// interface.
 	Content bundle.Interface `json:"content"`
 	// Sections names every UCI section the agent created for this
-	// interface. A later item deletes exactly these names, never a
-	// pattern (PLAN.md 6 "Rules").
+	// interface. The apply step deletes exactly these names, never a
+	// pattern.
 	Sections Sections `json:"sections"`
 }
 
-// Sections names the UCI sections one interface's apply created
-// (PLAN.md 6 "UCI layout").
+// Sections names the UCI sections one interface's apply created.
 type Sections struct {
-	// Interface is the interface section's name. PLAN.md 6 fixes it
-	// equal to the bundle's interface key ("section name = netdev
-	// name = bundle key"), so this field is always redundant with the
+	// Interface is the interface section's name. It equals the
+	// bundle's interface key ("section name = netdev name = bundle
+	// key"), so this field is always redundant with the
 	// State.WG map key that holds it; it is still recorded explicitly
 	// so Sections is a complete, self-contained list of every section
 	// name a later delete step must remove, with no rule to
@@ -228,7 +223,7 @@ func Read(path string) (*State, error) {
 
 // emptyState is the State Read returns for a missing last.json: no
 // interface has ever been applied, so every interface in the next
-// bundle is new (PLAN.md 4.5).
+// bundle is new (docs/format.md 8).
 func emptyState() *State {
 	return &State{
 		Version: CurrentVersion,
@@ -243,19 +238,19 @@ func emptyState() *State {
 // loss at any point during Write leaves path either absent, or still
 // holding its previous content, or holding the new content in full --
 // never truncated or partially written. os.Rename replaces an
-// existing path atomically on every platform this project targets
-// (Linux; PLAN.md 2.1.1 "OpenWrt only"), so Write both creates a new
-// last.json and updates an existing one the same way; unlike
+// existing path atomically on Linux, the only platform this project
+// targets, so Write both creates a new last.json and updates an
+// existing one the same way; unlike
 // writeIdentityKeyAtomic in cmd/stunmesh-agent/keygen_cmd.go, Write
 // must succeed against an existing path, because the caller writes
-// last.json again after every successful apply (PLAN.md 6, step 7).
+// last.json again after every successful apply.
 //
 // Write does not create path's parent directory; the caller is
 // responsible for that directory already existing (on OpenWrt,
 // /etc/stunmesh/agent/, the same directory the identity key lives
 // in). In practice this is never a problem: keygen always runs
-// before fetch (PLAN.md section 5) and creates that directory when it
-// writes the identity key (see writeIdentityKeyAtomic in
+// before fetch and creates that directory when it writes the
+// identity key (see writeIdentityKeyAtomic in
 // cmd/stunmesh-agent/keygen_cmd.go), so it already exists by the time
 // fetch's first Write call needs it.
 //

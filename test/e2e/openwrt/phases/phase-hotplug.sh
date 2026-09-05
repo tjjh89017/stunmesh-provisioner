@@ -4,20 +4,10 @@
 # stunmesh-agent on WAN ifup, only when the service is already
 # running).
 #
-# contrib/openwrt/tests/test_hotplug.sh already covers hotplug-iface's
-# own guard clauses and its read-config-and-dispatch path against a
-# fake $ACTION/$INTERFACE and a fake $BIN. What is untested anywhere
-# is whether netifd's real hotplug call reaches the real script: this
-# phase fires real "ifup"/"ifdown" through the real `ifup`/`ifdown`
-# tools, on real (if minimal) netifd interfaces, and reads the real
-# syslog and process table for the restart it should, or should not,
-# have triggered.
-#
-# Firing real events, not calling /etc/hotplug.d/iface/95-stunmesh-agent
-# by hand with fabricated $ACTION/$INTERFACE, is deliberate: a
-# hand-called script proves the script's own logic (already covered by
-# test_hotplug.sh); only a real ifup/ifdown proves netifd's hotplug
-# call actually reaches it, with the environment netifd itself sets.
+# This phase fires real "ifup"/"ifdown" through the real `ifup`/
+# `ifdown` tools, on real (if minimal) netifd interfaces, and reads
+# the real syslog and process table for the restart it should, or
+# should not, have triggered.
 #
 # The guest's only interface with a real NIC is "lan" (eth0, the SSH
 # path this whole harness runs over) -- bringing it down to test
@@ -29,11 +19,7 @@
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses SSH_PORT and SSH_KEY, set by run.sh before any phase runs.
-# Self-contained like every other phase (see run.sh's own doc
-# comment): it starts and stops the daemon service itself, and adds
-# and removes its own "wan"/"testif" UCI sections, not assuming any
-# other phase already defined a "wan" interface or left the service
-# running (none of the others do).
+# Self-contained: publishes its own fixture.
 set -euo pipefail
 
 HOTPLUG_LOG_LINE="wan up: restarting stunmesh-agent"

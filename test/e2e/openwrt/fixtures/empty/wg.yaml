@@ -1,12 +1,7 @@
 # empty -- an e2e fixture for lib.sh's publish_fixture.
 #
-# Explicit "wg: {}": zero WireGuard interfaces. PLAN.md 4.2/4.3 makes
-# this a legitimate bundle value, not an error (unlike node add's own
-# fully-commented-out template, which is deliberately invalid YAML
-# content -- see cmd/stunmesh-provd/node_cmd.go's wgYAMLTemplate doc).
-# This item only has to prove a real bundle reaches the fake dhtproxy
-# and is retrievable at its DHT key; it does not test what the guest
-# does with any interface, so the smallest valid content is the right
-# content. A later item adds a fixture with real interfaces once it
-# starts asserting what the guest's agent does with one.
+# Explicit "wg: {}": zero WireGuard interfaces, a legitimate bundle
+# value, not an error (unlike node add's own fully-commented-out
+# template, which is deliberately invalid YAML content -- see
+# cmd/stunmesh-provd/node_cmd.go's wgYAMLTemplate doc).
 {}

@@ -14,7 +14,7 @@ type Command struct {
 
 // Batch is an ordered list of Command values. Order matters: it is
 // the exact sequence a caller must run the commands in, and the exact
-// sequence an integration test asserts (PLAN.md stage 3 item 12). See
+// sequence cmd/stunmesh-agent/fetch_integration_test.go asserts. See
 // the package doc "Ordering".
 type Batch []Command
 

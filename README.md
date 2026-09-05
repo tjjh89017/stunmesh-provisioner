@@ -60,10 +60,9 @@ docker run -d --name stunmesh-provd \
 | `EXTRA_MIN=1` (adds `upx --lzma --best`) | 1.8 MiB (1,886,860 bytes) |
 | `EXTRA_MIN=1 EMBED_CA=0` | 1.7 MiB (1,786,972 bytes) |
 
-The default build is what a release or the OpenWrt package ships
-(`.plan/PLAN.md` 2.1.1: "Releases and the OpenWrt package do not use
-UPX"). `EXTRA_MIN=1` is the smallest size for a router with little
-flash space.
+The default build is what a release or the OpenWrt package ships. A
+release and the OpenWrt package do not use UPX. `EXTRA_MIN=1` is the
+smallest size for a router with little flash space.
 
 `EMBED_CA=1` is the default. The embedded roots cost 128 KiB of the
 default build and 98 KiB after UPX, and they activate only when the
@@ -108,19 +107,13 @@ managed zone at all (a hand-added zone under a different name, the way
 `test/e2e/openwrt/phases/phase-firewall.sh` covers, is unaffected either
 way).
 
-## Periodic full apply (`--full-apply`)
+## Periodic full apply
 
-`stunmesh-agent fetch --full-apply` skips the "no change since last
-apply" shortcut and reruns the entire apply procedure -- UCI, both
-`uci commit`s, both reloads, `ifup`, the stunmesh config file, and
-`last.json` -- even when the newest bundle is identical to what
-`last.json` already recorded. `contrib/openwrt/stunmesh-agent.init`
-installs a second, independently tagged cron line that runs it once a
-day by default (`option full_apply_interval_hours` in
-`/etc/config/stunmesh-agent`, alongside the existing frequent,
-diff-based line); see `contrib/openwrt/README.md` section 3. This is
-also what re-adds a pre-existing interface to the firewall zone above
-if it was applied by an older agent build, before this feature shipped.
+On its own `full_apply_interval` tick (`config.yaml`), the daemon skips
+the "no change since last apply" shortcut and reruns the entire apply
+procedure -- UCI, both `uci commit`s, both reloads, `ifup`, the stunmesh
+config file, and `last.json` -- even when the newest bundle is identical
+to what `last.json` already recorded.
 
 ## OpenWrt end-to-end tests
 
@@ -128,10 +121,10 @@ if it was applied by an older agent build, before this feature shipped.
 the real `stunmesh-agent` binary against it. It proves the agent's
 `uci`, `ubus` and hotplug calls work on real `netifd`, not a mocked
 `exec` -- fetching and applying a bundle, diffing and removing
-interfaces, the cron line, hotplug, lock contention, routes, a
+interfaces, hotplug, lock contention, routes, a
 firewall zone surviving an apply, and a reboot with no proxy or agent
 running. CI (`e2e-required` in `.github/workflows/main.yaml`) gates on
 it for every push and pull request. See
 `test/e2e/openwrt/README.md` for how to run and extend it.
 
-Status: pre-alpha, see .plan/PLAN.md
+Status: pre-alpha.

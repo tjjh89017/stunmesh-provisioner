@@ -14,15 +14,9 @@
 # phase failure here means the injected copy actually drifted, not that
 # this phase's own expectation is stale.
 #
-# This phase checks the VALUE of every option contrib/openwrt/README.md
-# section 2 marks "Required: yes" -- namespace, node_id,
-# controller_pubkey -- not just that uci can read it. use_plugin is
-# checked too, since this harness always sets it (there is no default
-# proxy this VM could reach). No other phase reads any of this from
-# UCI: every fetch phase runs against /etc/stunmesh/agent/config.yaml,
-# which inject_guest_files writes directly. A value assertion on an
-# option nothing reads would test the injection code, not the payload's
-# fitness for the scripts that consume it.
+# This phase checks the VALUE of every required option -- namespace,
+# node_id, controller_pubkey, and use_plugin -- not just that uci can
+# read it; every other phase reads config.yaml instead.
 set -euo pipefail
 
 phase_payload() {

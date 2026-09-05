@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# phase-daemon.sh -- assertions D: the procd daemon service
-# (contrib/openwrt/README.md section 1). Every other phase drives the
-# agent via a direct `--oneshot`; this one goes through
-# /etc/init.d/stunmesh-agent, the real UCI-to-config.yaml and procd
-# path.
+# phase-daemon.sh -- assertions D: the procd daemon service, driven
+# through /etc/init.d/stunmesh-agent, the real UCI-to-config.yaml and
+# procd path.
 #
 # Sourced by run.sh. Uses HERE, WORK, SSH_PORT, SSH_KEY,
-# E2E_NAMESPACE, E2E_NODE_ID. Self-contained: publishes its own
-# fixture and always stops the service before returning, so it never
-# leaves a daemon running for a later phase's `--oneshot` to contend
-# with.
+# E2E_NAMESPACE, E2E_NODE_ID.
+# Self-contained: publishes its own fixture.
 set -euo pipefail
 
 # render_daemon_fixture -- renders fixtures/basic-wg0/wg.yaml.tmpl with
 # fresh WireGuard key material. Sets DAEMON_FIXTURE_DIR and
 # DAEMON_PEER_PUBKEY. Called plainly, not via command substitution, so
-# a rendering failure's `die` still aborts the run (see
-# phase-fetch-basic.sh's render_fetch_basic_fixture).
+# a rendering failure's `die` still aborts the run.
 render_daemon_fixture() {
 	local node_priv peer_pub psk rendered_dir
 	read -r node_priv _ < <(generate_wg_keypair)

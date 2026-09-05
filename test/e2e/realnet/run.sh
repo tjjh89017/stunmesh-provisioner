@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # run.sh -- the realnet e2e leg: a real round trip against the real
-# Jami dhtproxy instances, and the measurements stage5-openwrt-device.md
-# checklist item 7 asks for.
+# Jami dhtproxy instances.
 #
-# preflight.sh (a separate composite-action step, see its own header)
-# already proved both proxies answer HTTP requests before this script
-# ever runs. Everything this script fails on afterward is therefore
-# treated as a stunmesh-provisioner contract problem, not a proxy
-# outage -- see fail_contract and fail_network below for how a reader
-# tells the two apart without opening the log.
+# preflight.sh checks both proxies first. Everything this script fails
+# on afterward is therefore treated as a stunmesh-provisioner contract
+# problem, not a proxy outage -- see fail_contract and fail_network
+# below for how a reader tells the two apart without opening the log.
 #
 # What this proves, in order:
 #

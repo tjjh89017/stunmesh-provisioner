@@ -25,8 +25,7 @@ func newEmbeddedApp(opts stunmeshapp.Options) (embeddedApp, error) {
 }
 
 // appFactoryFor returns env.NewApp, or newEmbeddedApp when env.NewApp
-// is nil, mirroring runnerFor's pattern in fetch_apply.go for
-// execx.Runner.
+// is nil.
 func appFactoryFor(env *Env) func(stunmeshapp.Options) (embeddedApp, error) {
 	if env.NewApp != nil {
 		return env.NewApp

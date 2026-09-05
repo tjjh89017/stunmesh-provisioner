@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
-# phase-reboot.sh -- assertions F: reboot (stage5 checklist item 11:
-# "Reboot without the proxy: the tunnel is up from UCI."; PLAN.md
-# 2.6: "No boot step. UCI is persistent. The tunnel is up after a
-# reboot without the proxy or the agent.").
+# phase-reboot.sh -- assertions F: the tunnel is up from UCI alone
+# after a reboot, with no proxy reachable and no agent process
+# involved.
 #
-# Every earlier phase proves what stunmesh-agent does when it runs.
-# This phase proves the opposite claim: that the tunnel does not need
-# it to run again. netifd brings up every non-disabled UCI interface
-# at boot on its own; PLAN.md 2.6 says that alone is enough to bring
-# wg0 back after a reboot, with no proxy reachable and no
-# stunmesh-agent process involved at all. Nothing before this phase
-# has rebooted the guest even once -- every other phase's "real
-# netifd/uci" claim is about a *running* box.
+# netifd brings up every non-disabled UCI interface at boot on its
+# own, with no help from stunmesh-agent.
 #
 # To make "no proxy and no agent run" watertight, this phase stops the
 # fake dhtproxy entirely before rebooting: with it gone, even the
@@ -25,11 +18,7 @@
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
 # E2E_FAKEPROXY_PORT and IMAGE_PATH, all set by run.sh or lib.sh before
 # any phase runs.
-# Self-contained like every other phase (see
-# run.sh's own doc comment): it establishes its own known-good wg0
-# bundle before rebooting, rather than trusting whatever an earlier
-# phase happened to leave behind, and restarts the fake dhtproxy
-# before returning so a later phase's own publish_fixture still works.
+# Self-contained: publishes its own fixture.
 set -euo pipefail
 
 # render_reboot_fixture -- renders fixtures/basic-wg0/wg.yaml.tmpl (the
@@ -88,10 +77,9 @@ phase_reboot_uci_persistence() {
 	assert_ssh_ok "no stunmesh-agent process survives into the reboot" \
 		"! pgrep -x /usr/sbin/stunmesh-agent"
 
-	# guest_capture, not a plain `var=$(guest_exec ...)`: see
-	# phase-fetch-basic.sh's identical comment on the same pattern, and
-	# lib.sh's guest_capture, for why a failed read here must not abort
-	# the harness under `set -e`.
+	# guest_capture, not a plain `var=$(guest_exec ...)`: see lib.sh's
+	# guest_capture for why a failed read here must not abort the
+	# harness under `set -e`.
 	before_network_sha=$(guest_capture "$SSH_PORT" "$SSH_KEY" "sha256sum /etc/config/network")
 	before_pubkey=$(guest_capture "$SSH_PORT" "$SSH_KEY" "wg show wg0 public-key")
 

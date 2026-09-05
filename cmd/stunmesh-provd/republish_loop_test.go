@@ -356,12 +356,11 @@ func TestRunRepublishLoop_NodeAddedMidRunIsPublished(t *testing.T) {
 
 // hangingProxyListener opens a raw TCP listener that accepts exactly
 // one connection, reads whatever the client sends, and never writes a
-// response: it models an unreachable dhtproxy (PLAN.md 7.2's "10 nodes
-// and unreachable proxies" scenario from Defect 2's report) at the
-// transport level, with no HTTP server framework in the way to
-// complicate connection-close accounting. accepted fires once the
-// connection is established, so a test can wait for the request to be
-// in flight before acting.
+// response: it models an unreachable dhtproxy at the transport level,
+// with no HTTP server framework in the way to complicate
+// connection-close accounting. accepted fires once the connection is
+// established, so a test can wait for the request to be in flight
+// before acting.
 func hangingProxyListener(t *testing.T) (url string, accepted <-chan struct{}) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -393,8 +392,8 @@ func hangingProxyListener(t *testing.T) (url string, accepted <-chan struct{}) {
 	return "http://" + ln.Addr().String(), ch
 }
 
-// TestRunRepublishLoop_AbandonsPromptlyOnContextCancelDuringRound proves
-// Defect 2's fix: a SIGTERM-equivalent context cancellation reaching
+// TestRunRepublishLoop_AbandonsPromptlyOnContextCancelDuringRound
+// proves that a SIGTERM-equivalent context cancellation reaching
 // runRepublishLoop while a round is stuck inside one node's DHT put
 // aborts that put at once instead of waiting out the rest of
 // putTimeout (30s). The fake proxy never responds, so the only way

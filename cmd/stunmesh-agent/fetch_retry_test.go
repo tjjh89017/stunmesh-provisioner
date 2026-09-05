@@ -73,9 +73,9 @@ func failOnUCITarget(targets ...string) *failMatching {
 }
 
 // TestFetch_RetryAfterCommitSucceedsButLaterStepFails is the
-// reproduction test for the defect PLAN.md 6's "Rules" warns against:
-// "Write last.json only after every step is OK. If a step fails, the
-// next fetch tries again. The apply is idempotent."
+// reproduction test for the defect the apply procedure's idempotency
+// rule guards against: write last.json only after every step is OK,
+// so a failed step gets retried cleanly on the next fetch.
 //
 // Before the fix, an apply that got past "uci commit network" and then
 // failed at a later step (here, "ubus call network reload") left
@@ -88,7 +88,7 @@ func failOnUCITarget(targets ...string) *failMatching {
 // recovered on its own.
 //
 // execx.Fake has no notion of persistent uci state across two runs
-// (each doFetch call gets its own fresh fake), so this test cannot
+// (each runFetchApply call gets its own fresh fake), so this test cannot
 // rely on a plain fake to reproduce "the section is genuinely gone by
 // the third run" on its own. Run 3 uses failOnUCITarget to make the
 // fake behave the way a real uci would for wg0's now-actually-deleted
@@ -161,8 +161,8 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 	// --- Run 2: remove wg0 (InterfaceRemoved). "ubus call network
 	// reload" fails, right after "uci commit network" succeeds -- so
 	// wg0's sections are genuinely gone from UCI once run 2 returns,
-	// even though last.json still records them (PLAN.md 6: write
-	// last.json only after every step is OK).
+	// even though last.json still records them (write last.json only
+	// after every step is OK).
 	publish(t, integrationBundleJSON(namespace, nodeID, 200, "", stunmeshV1))
 
 	fake2 := &failMatching{
@@ -177,7 +177,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 		t.Fatalf("run 2: code = %d, want %d (ExitError); calls=%+v stderr=%q", code, ExitError, calls2, stderr)
 	}
 	// Confirm the run actually reached and passed "uci commit network"
-	// before failing, and did not write last.json (PLAN.md 6's rule).
+	// before failing, and did not write last.json.
 	foundCommit := false
 	for _, c := range calls2 {
 		if c.Name == "uci" && len(c.Args) == 2 && c.Args[0] == "commit" && c.Args[1] == "network" {
@@ -195,14 +195,14 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 		t.Fatalf("last.Read after run 2: %v", err)
 	}
 	if _, ok := st.WG["wg0"]; !ok {
-		t.Fatalf("last.json lost wg0 after run 2's failure, want it unchanged (PLAN.md 6: write last.json only after every step is OK): %+v", st.WG)
+		t.Fatalf("last.json lost wg0 after run 2's failure, want it unchanged: %+v", st.WG)
 	}
 
 	// --- Run 3: the next fetch, same bundle as run 2. wg0's sections are
 	// genuinely gone (run 2's commit removed them for real), so "uci
 	// get"/"uci delete" on those exact names fail, the way a real uci
-	// would. This is the self-healing retry PLAN.md 6 requires: it must
-	// succeed anyway.
+	// would. This is the self-healing retry the apply procedure
+	// requires: it must succeed anyway.
 	fake3 := failOnUCITarget("network.wg0_p_alpha", "network.wg0_p_bravo", "network.wg0_p_charlie", "network.wg0")
 
 	code, calls3, stderr := runWith(t, fake3)
@@ -224,8 +224,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 // TestFetch_RetryAfterCommitSucceedsButLaterStepFails covers for the
 // delete half. See that test's doc comment for the general shape of
 // the window: "uci commit network" succeeds, a later step (here,
-// "ubus call network reload") fails, and last.json stays unwritten
-// (PLAN.md 6: write last.json only after every step is OK).
+// "ubus call network reload") fails, and last.json stays unwritten.
 //
 // Before the fix, the next fetch recomputed the same diff against the
 // same, stale last.json (still not recording wg0 at all, since run 1
@@ -237,7 +236,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterStepFails(t *testing.T) {
 // a second time, without any command failing and without any log
 // output -- the silent corruption this test pins.
 //
-// This test drives two real doFetch calls, the same way
+// This test drives two real runFetchApply calls, the same way
 // TestFetch_RetryAfterCommitSucceedsButLaterStepFails does, and
 // asserts run 2's exact command sequence: after the fix, writeUCI
 // clears each list option (a tolerant "uci get" + "uci delete" pair,
@@ -298,7 +297,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 
 	// wg0 has one address and one peer (bravo) with one allowed_ips
 	// entry -- the minimum needed to exercise both list options
-	// BuildInterface uses add_list for (PLAN.md 6 "UCI layout").
+	// BuildInterface uses add_list for.
 	const wg0 = `{"private_key":"wg0-priv","addresses":["10.0.0.1/24"],` +
 		`"peers":{"bravo":{"public_key":"bravo-pub","allowed_ips":["10.0.0.2/32"]}}}`
 
@@ -329,7 +328,7 @@ func TestFetch_RetryAfterCommitSucceedsButLaterCreateStepFails(t *testing.T) {
 		t.Fatalf("run 1 never reached \"uci commit network\": calls=%+v", calls1)
 	}
 	if _, err := os.Stat(cfg.LastPath); !os.IsNotExist(err) {
-		t.Fatalf("last.json was written after run 1's failure, want it absent (PLAN.md 6: write last.json only after every step is OK): err=%v", err)
+		t.Fatalf("last.json was written after run 1's failure, want it absent: err=%v", err)
 	}
 
 	// --- Run 2: the retry, same bundle as run 1. last.json still does

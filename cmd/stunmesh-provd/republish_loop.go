@@ -21,8 +21,8 @@ import (
 // round. It only affects how soon the loop notices an operator has
 // finished fixing or creating a namespace; it is not a per-node
 // republish period. 5m matches the republish_interval `init` writes
-// by default (PLAN.md 7.3), so an idle controller polls the tree at
-// roughly the pace an operator would otherwise expect it to publish.
+// by default, so an idle controller polls the tree at roughly the
+// pace an operator would otherwise expect it to publish.
 const fallbackPollInterval = 5 * time.Minute
 
 // nodeKey identifies one node's cache entry across rounds of the
@@ -34,7 +34,7 @@ type nodeKey struct {
 
 // cacheEntry is what the republish loop keeps in memory for one node,
 // across rounds, so it can tell whether the next round's build
-// produced the same thing to publish (PLAN.md 7.2 step 6).
+// produced the same thing to publish.
 //
 // bundle and identityPub are compared, not sealed: sealed is what
 // gets re-put when they still match.
@@ -55,8 +55,8 @@ func runPublishLoop(env *Env, ns string) int {
 	return runRepublishLoop(ctx, env, ns)
 }
 
-// runRepublishLoop runs publish rounds until ctx is canceled (PLAN.md
-// 7.2 step 6). Each round:
+// runRepublishLoop runs publish rounds until ctx is canceled. Each
+// round:
 //
 //  1. re-reads the whole tree (resolveNamespaces, then every
 //     namespace's provd.yaml and every one of its nodes) -- so an
@@ -71,8 +71,8 @@ func runPublishLoop(env *Env, ns string) int {
 //     canceled, whichever comes first.
 //
 // A namespace's due time comes from its own provd.yaml
-// republish_interval (PLAN.md 7.1): namespaces are allowed different
-// periods, and each is checked against its own schedule, not a global
+// republish_interval: namespaces are allowed different periods, and
+// each is checked against its own schedule, not a global
 // one. The loop still re-reads every namespace every round (step 1
 // above) so it notices a newly added or removed namespace at once;
 // only the decision "publish this namespace now or wait" is
@@ -85,17 +85,10 @@ func runPublishLoop(env *Env, ns string) int {
 // namespaces, matching runPublish/publishRound's rule that one bad
 // namespace or node never aborts the rest.
 //
-// A round that ends without a single node to publish -- env.Dir has no
-// namespace directories at all, or every namespace it does have is
-// still without a nodes/ directory (`init` ran, `node add` never did)
-// -- prints one diagnostic line to stderr every round (see
-// nothingToPublishLine), the loop's counterpart to --once's "nothing
-// to publish" (publish_cmd.go). Without it, a controller pointed at an
-// empty or half-provisioned volume runs forever with nothing in
-// `docker logs`, which reads as "working" rather than "waiting for you
-// to add a node." This check runs regardless of any namespace's due
-// time, so it reflects the tree's current state every round, not just
-// rounds that happened to publish.
+// A round that ends without a single node to publish prints one
+// diagnostic line to stderr every round (see nothingToPublishLine),
+// so a controller pointed at an empty or half-provisioned volume does
+// not run silently in `docker logs`.
 //
 // runRepublishLoop returns ExitOK on a clean shutdown (ctx canceled).
 // It returns ExitError only when the tree itself cannot be resolved at
@@ -183,26 +176,16 @@ func runRepublishLoop(ctx context.Context, env *Env, ns string) int {
 }
 
 // nothingToPublishLine reports the diagnostic runRepublishLoop prints
-// when a round finds nothing to publish anywhere in the tree, so an
-// idle or half-provisioned controller is not silent in `docker logs`
-// the way it was before this check existed. ok is false when at least
-// one namespace has at least one node -- the normal, nothing-to-report
-// case -- so the caller prints nothing.
+// when a round finds nothing to publish anywhere in the tree. ok is
+// false when at least one namespace has at least one node, so the
+// caller prints nothing.
 //
-// namespaces empty means env.Dir has no namespace directories at all
-// (dir mounted but never `init`-ed, or an empty volume). haveNodes
-// false with a non-empty namespaces means every namespace that could
-// be read has no nodes/ directory or an empty one (`init` ran, `node
-// add` never did); emptyNamespaces names them; a namespace whose
-// provd.yaml or nodes/ directory failed to read for some other reason
-// is not folded in, because its own error already appears in this
-// round's output and this line must not read as "everything is fine
-// except empty."
-//
-// It never receives a namespace name or dir path that is not already
-// safe to print: env.Dir and store.Namespaces' names are the operator's
-// own configuration, not derived from any bundle content, so this
-// carries no secret (see CLAUDE.md's logging convention).
+// namespaces empty means env.Dir has no namespace directories at all.
+// haveNodes false with a non-empty namespaces means every namespace
+// that could be read has no nodes/ directory or an empty one;
+// emptyNamespaces names them. A namespace whose provd.yaml or nodes/
+// directory failed to read for some other reason is not folded in,
+// because its own error already appears in this round's output.
 func nothingToPublishLine(dir string, namespaces []string, haveNodes bool, emptyNamespaces []string) (line string, ok bool) {
 	if len(namespaces) == 0 {
 		return fmt.Sprintf("stunmesh-provd: publish: nothing to publish in %s (no namespaces)", dir), true
@@ -215,10 +198,7 @@ func nothingToPublishLine(dir string, namespaces []string, haveNodes bool, empty
 
 // pruneCache drops cache entries for namespaces no longer present in
 // the tree, so a removed namespace's nodes do not linger in memory
-// forever. It is safe (if slightly wasteful) to skip this: a stale
-// entry is never read again unless the same namespace and node ID
-// reappear, and then reusing it is correct -- identical content still
-// means identical bytes.
+// forever.
 func pruneCache(cache map[nodeKey]cacheEntry, namespaces []string) {
 	live := make(map[string]bool, len(namespaces))
 	for _, ns := range namespaces {
@@ -234,8 +214,8 @@ func pruneCache(cache map[nodeKey]cacheEntry, namespaces []string) {
 // publishNamespaceCached is publishNamespace's counterpart for the
 // republish loop: it publishes every node in one namespace, re-putting
 // a node's cached sealed bytes when nothing about it changed instead
-// of sealing again (PLAN.md 7.2 step 6). deployment is already read,
-// unlike publishNamespace, because the loop needs it to compute the
+// of sealing again. deployment is already read, unlike
+// publishNamespace, because the loop needs it to compute the
 // namespace's due time regardless of whether this round publishes it.
 func publishNamespaceCached(ctx context.Context, env *Env, deployment *store.Deployment, now time.Time, cache map[nodeKey]cacheEntry) []nodeReport {
 	nodeIDs, err := store.Nodes(env.Dir, deployment.Namespace)
@@ -259,18 +239,16 @@ func publishNamespaceCached(ctx context.Context, env *Env, deployment *store.Dep
 }
 
 // publishNodeCached is publishNode's counterpart for the republish
-// loop (PLAN.md 7.2 step 6). It always prepares the node fresh (build
-// and validate the bundle from the current files, PLAN.md 7.2 steps
-// 1-3): a node's files can change between rounds, and re-reading them
-// is how the loop notices. What it skips, when it can, is sealing and
-// choosing a new nonce (steps 4-5's encryption): when this round's
+// loop. It always prepares the node fresh (build and validate the
+// bundle from the current files): a node's files can change between
+// rounds, and re-reading them is how the loop notices. What it skips,
+// when it can, is sealing and choosing a new nonce: when this round's
 // Bundle compares equal, by content (bundle.Bundle.Equal, which
-// ignores timestamp per PLAN.md 4.5), to the cached one, and
-// IdentityPublicKey has not changed either, the cached ciphertext is
-// still exactly what a node holding that identity key and looking at
-// that content would expect, so putting it again is correct and
-// avoids filling the DHT key with equivalent-but-distinct values
-// (PLAN.md 7.2 step 6).
+// ignores timestamp), to the cached one, and IdentityPublicKey has
+// not changed either, the cached ciphertext is still exactly what a
+// node holding that identity key and looking at that content would
+// expect, so putting it again is correct and avoids filling the DHT
+// key with equivalent-but-distinct values.
 //
 // A node whose prepareNode fails is not cached: its previous cache
 // entry, if any, is left in place, so a transient failure (for

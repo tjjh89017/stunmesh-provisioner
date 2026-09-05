@@ -13,8 +13,8 @@
 // in a process-local map, never expires anything, and never talks to
 // OpenDHT. That is exactly what the e2e harness needs: something for the
 // real `stunmesh-provd publish` to put a bundle to, and for the harness
-// (and, in a later item, the guest's stunmesh-agent) to read it back
-// from, all inside the trusted network QEMU's slirp already provides.
+// and the guest's stunmesh-agent to read it back from, all inside the
+// trusted network QEMU's slirp already provides.
 //
 // No TLS: the guest reaches the host only at 10.0.2.2 through QEMU's
 // user-mode networking (slirp), a link that never leaves the host
@@ -53,18 +53,8 @@ func main() {
 // doc), so nothing beyond a request's method and path is ever logged.
 //
 // getDelay, when non-zero, is slept at the start of every GET (see
-// get). This exists for phase-lock.sh's overlap check alone: PLAN.md
-// section 5's lock rule ("a second fetch while one runs exits 0 at
-// once") is only provable against a *real* race between two real
-// stunmesh-agent fetch processes, not by inspecting the lock file.
-// Two processes launched back to back would, without this, both
-// likely finish their local, in-VM round trip before the second one
-// even starts -- flock has nothing to contend over by then. A
-// deliberate delay on the winner's GET holds the lock open long
-// enough that a second fetch, launched moments later, reliably
-// arrives while the first still holds it. Every other GET in the
-// harness runs through a store with getDelay 0, so no other check's
-// timing is affected.
+// get): it holds the lock open long enough for a second, real
+// `stunmesh-agent --oneshot` run to reliably overlap the first.
 type store struct {
 	mu       sync.Mutex
 	values   map[string][]byte // key -> the exact PUT request body

@@ -1,11 +1,8 @@
 #!/bin/sh
 # hotplug-iface -- restarts stunmesh-agent when the WAN interface comes up.
 #
-# OpenWrt runs every /etc/hotplug.d/iface/* script for every interface
-# hotplug event on the box: every ifup, ifdown, and ifupdate, for every
-# configured interface, not only WAN. Reacting to all of them would
-# restart the daemon far more often than needed. This script reacts to
-# exactly one case:
+# OpenWrt runs this script for every ifup/ifdown/ifupdate event on
+# every interface. It reacts to exactly one case:
 #
 #   ACTION=ifup on the logical interface named "wan"
 #
@@ -16,16 +13,7 @@
 # README.md if a deployment's WAN interface has a different logical
 # name; it must be added here.
 #
-# # Why a restart, not a signal
-#
-# stunmesh-agent has no SIGHUP handler (README.md, daemon.go's doc
-# comment on runDaemon): the daemon already runs one fetch/apply cycle
-# immediately at startup, so restarting it is exactly "trigger an
-# immediate cycle now that WAN is up" -- the same effect a signal would
-# have had, through the one reload mechanism the daemon actually
-# has. `/etc/init.d/stunmesh-agent restart` is also what
-# stunmesh-agent.init's own reload_service does, so this script does
-# not duplicate that logic; it just calls it.
+# The agent has no SIGHUP handler, so a restart is the trigger.
 #
 # # Only when the service is actually running
 #
@@ -34,8 +22,7 @@
 # restarted by a hotplug event: "running" (an rc.common command
 # USE_PROCD=1 provides) reports 0 only when procd already has a
 # supervised instance for this service, so a stopped or never-started
-# service is left alone here, exactly like the old lock-based
-# not-provisioned-yet check used to leave it alone.
+# service is left alone here.
 
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan" ] || exit 0

@@ -23,29 +23,28 @@ func runnerFor(env *Env) execx.Runner {
 	return execx.Exec{}
 }
 
-// applyDiff runs the apply procedure (PLAN.md 6) for diff, the result
-// of computeDiff, and writes cfg.LastPath on success. state is the
-// last.json content applyChanges already read; applyDiff needs it
+// applyDiff runs the apply procedure for diff, the result of
+// computeDiff, and writes cfg.LastPath on success. state is the
+// last.json content checkAndApply already read; applyDiff needs it
 // only to carry forward the recorded UCI sections of an unchanged
 // interface into the new last.json (an InterfaceDiff for
 // InterfaceUnchanged does not carry Sections; see fetch_diff.go).
 //
 // # Steps
 //
-// applyDiff runs the steps in this exact order (PLAN.md 6):
+// applyDiff runs the steps in this exact order:
 //
 //  1. Delete the recorded sections of every removed or changed
 //     interface, then create the sections of every new or changed
 //     interface (uciBatch, one interface at a time, in diff.Interfaces
 //     order).
-//     1a. Firewall zone reconciliation (manageFirewall, PLAN.md 6
-//     "Firewall zone"): only when step 1 touched at least one
-//     interface (anyInterfaceChanged). Stages the "stunmesh" zone's
-//     creation or deletion, its three default forwarding sections'
-//     creation or deletion (tied to the zone's own lifecycle), and
-//     "network" list membership for every interface that is now new
-//     or was just removed. This is staged, like step 1; nothing here
-//     takes effect until the commits below.
+//     1a. Firewall zone reconciliation (manageFirewall): only when
+//     step 1 touched at least one interface (anyInterfaceChanged).
+//     Stages the "stunmesh" zone's creation or deletion, its three
+//     default forwarding sections' creation or deletion (tied to the
+//     zone's own lifecycle), and "network" list membership for every
+//     interface that is now new or was just removed. This is staged,
+//     like step 1; nothing here takes effect until the commits below.
 //  2. "uci commit network", once.
 //  3. "uci commit firewall", once, but only when step 1a staged a
 //     change (see this function's doc comment "Firewall config
@@ -56,103 +55,23 @@ func runnerFor(env *Env) execx.Runner {
 //     ifupChangedInterfaces's doc comment for why step 4 alone is not
 //     enough here, and why a removed interface needs nothing more.
 //  6. "/etc/init.d/firewall reload", only when step 1a staged a
-//     change (see this function's doc comment "/etc/init.d/firewall
-//     reload" for why it runs here, after ifup).
+//     change.
 //  7. Write cfg.Stunmesh.WritePath (mode 0600), or delete it when the
-//     new stunmesh text is empty. This binary no longer shells out to
-//     "/etc/init.d/stunmesh reload|stop": the caller (daemon.go's
-//     manageEmbeddedApp, and runOneshot) rebuilds or stops the
-//     embedded stunmesh-go app instead, after inspecting the Diff this
-//     function's caller (checkAndApply, fetch.go) returns.
+//     new stunmesh text is empty. The daemon rebuilds or stops the
+//     embedded stunmesh-go app afterwards (reconcileEmbedded in
+//     daemon.go), after inspecting the Diff this function's caller
+//     (checkAndApply, fetch.go) returns.
 //  8. Write cfg.LastPath (mode 0600, last.Write), only when every step
 //     above succeeded. This is where the firewall zone's ZoneOwned
 //     and Members (last.FirewallState) actually get recorded.
 //
 // applyDiff stops at the first failing step and returns an error. It
 // never writes cfg.LastPath after a failure, so the next cycle sees
-// the same diff and retries the same steps (PLAN.md 6 "Rules": "the
-// apply is idempotent").
+// the same diff and retries the same steps: the apply is idempotent.
 //
-// # Recovery from a failure during step 1
-//
-// "uci set", "uci add_list", and "uci delete" only stage changes; they
-// take no effect on the running system until "uci commit" runs. If
-// step 1 fails partway through, applyDiff runs "uci revert network"
-// before returning, discarding every staged change from this run. The
-// next fetch then starts from the same, unmodified UCI state as this
-// one did, and retries the same delete-then-create commands cleanly.
-// Without this revert, a stale staged delete or create from the
-// failed run could make a delete command in the next run's retry fail
-// (a section it expects to still exist could already be staged
-// absent), for a reason the next run cannot tell apart from a real
-// failure -- execx's secret policy deliberately does not let a caller
-// read a failed command's stderr to distinguish "not found" from
-// anything else (see internal/execx's package doc "Secret policy").
-// Reverting removes that ambiguity instead of trying to parse around
-// it.
-//
-// # No revert after "uci commit" succeeds
-//
-// Once "uci commit network" succeeds, UCI already reflects the new
-// state; there is nothing staged left to revert, and applyDiff does
-// not call revert again after that point. A failure in a later step
-// (network reload, ifup, or the stunmesh config file) leaves UCI
-// committed to the new state but last.json still describing the old
-// one. The next fetch recomputes
-// the same diff against that stale last.json and retries step 1's
-// deletes for the same section names.
-//
-// # Retrying a delete after a successful commit
-//
-// A retry's delete step names sections this run's own earlier commit
-// may have already removed. A real uci returns non-zero for deleting
-// a section that is not there, so a plain, unconditional delete would
-// fail again on every following fetch, wedging the node until an
-// operator intervenes by hand.
-//
-// writeUCI avoids this through deleteSections: before it deletes a
-// recorded section, it checks with "uci get" whether the section is
-// still there, and skips the delete when it is not. The exact names
-// it checks and deletes are still only the ones last.json (or, for a
-// section about to be recreated, this same diff) records -- this
-// tolerance changes nothing about PLAN.md 6's "Rules": "The agent
-// deletes sections by the exact names that last.json records. It
-// never deletes by pattern."
-//
-// execx's secret policy (see internal/execx's package doc) does not
-// let deleteSections read a failed "uci get" or "uci delete" call's
-// exit code or output, so it cannot ask "is this failure specifically
-// 'not found'?". It does not need to: "uci get" on one exact,
-// already-known section name has, in practice, exactly one common
-// failure reason -- the section is not there -- so deleteSections
-// reads any failure of that specific, narrow call as "absent, nothing
-// to delete", not as "unknown, proceed anyway". A "uci get" failure
-// for any other underlying reason (a corrupt config file, a missing
-// uci binary) does not stay hidden: the same underlying problem
-// surfaces immediately at the delete or create call that follows,
-// which deleteSections does not tolerate.
-//
-// # Retrying a create after a successful commit
-//
-// A retry's create step reruns the same "uci set" and "uci add_list"
-// calls the earlier, partly-applied run already issued once. "uci
-// set" only overwrites, so rerunning it is harmless. "uci add_list"
-// appends: it does not check whether the value is already there. A
-// plain, unconditional rerun of the create commands would silently
-// double every entry of every list option -- "addresses" on the
-// interface, "allowed_ips" on each peer -- and keep doubling them on
-// every following retry, with no failing command and nothing in the
-// log to point at.
-//
-// writeUCI avoids this through clearListOptions: immediately before
-// it runs an interface's create batch, it clears every list option
-// uci.ListOptions names for that interface, the same tolerant
-// "uci get" then "uci delete" pattern deleteIfPresent already uses
-// for a whole section, applied to one "<section>.<option>" path at a
-// time. A path that is not there yet (a genuine first-time create) is
-// left alone -- there is nothing to clear -- and the create batch
-// then populates it from empty, exactly as it would have without a
-// prior failed attempt.
+// A failed step 1 reverts the staged UCI changes with "uci revert
+// network"; deleteSections and clearListOptions make a retry
+// idempotent by skipping a delete or list-append that already ran.
 func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) error {
 	runner := runnerFor(env)
 
@@ -161,8 +80,8 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) error {
 		return fmt.Errorf("uci: %w", err)
 	}
 
-	// Firewall zone reconciliation (PLAN.md 6 "Firewall zone") only
-	// has anything to do when writeUCI just touched at least one
+	// Firewall zone reconciliation only has anything to do when
+	// writeUCI just touched at least one
 	// interface: an interface's membership in the "stunmesh" zone
 	// depends only on whether it now exists (new/changed/unchanged)
 	// or was just removed, never on the stunmesh section alone. See
@@ -187,8 +106,8 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) error {
 		return fmt.Errorf("uci commit: %w", err)
 	}
 
-	// The firewall config commits separately from network (PLAN.md 6
-	// "Firewall zone"): the two configs are staged and committed
+	// The firewall config commits separately from network: the two
+	// configs are staged and committed
 	// independently by uci itself, and only firewallChanged interfaces
 	// stage anything under "firewall" at all. Once "uci commit
 	// network" above has succeeded, network is no longer revertible
@@ -210,28 +129,18 @@ func applyDiff(env *Env, cfg *Config, diff *Diff, state *last.State) error {
 	}
 
 	// "/etc/init.d/firewall reload" runs after "ubus call network
-	// reload" and every "ifup" (PLAN.md 6 "Firewall zone"): the
-	// firewall reload should see every interface's final state --
-	// created, torn down, or re-pushed by ifup -- rather than reload
-	// against network state that is still mid-transition. It runs
-	// before the stunmesh init.d step, the same relative position
-	// "ubus call network reload" already has to that step.
+	// reload" and every "ifup": the firewall reload should see every
+	// interface's final state -- created, torn down, or re-pushed by
+	// ifup -- rather than reload against network state that is still
+	// mid-transition.
 	if firewallChanged {
 		if _, err := runner.Run("/etc/init.d/firewall", "reload"); err != nil {
 			return fmt.Errorf("firewall reload: %w", err)
 		}
 	}
 
-	// Step 7 writes cfg.Stunmesh.WritePath (or deletes it, when the new
-	// stunmesh text is empty); it no longer calls
-	// "/etc/init.d/stunmesh reload|stop". Managing the embedded
-	// stunmesh-go app's own lifecycle (rebuilding it when the file this
-	// just wrote changed) is the caller's job (daemon.go's
-	// manageEmbeddedApp, runOneshot in daemon.go), not applyDiff's: the
-	// caller already has the diff this function returns via
-	// checkAndApply, and doing it here would mean either blocking this
-	// function on a network-facing daemon restart or duplicating the
-	// "what changed" decision in two places.
+	// Step 7 writes or deletes the stunmesh config file. The daemon
+	// rebuilds the embedded app afterwards.
 	if err := applyStunmeshConfig(cfg.Stunmesh.WritePath, diff); err != nil {
 		return fmt.Errorf("stunmesh config: %w", err)
 	}
@@ -257,8 +166,8 @@ func revertUCI(runner execx.Runner, config string) {
 	_, _ = runner.Run("uci", "revert", config)
 }
 
-// manageFirewall runs the firewall half of step 1 (PLAN.md 6
-// "Firewall zone"): stage the "stunmesh" zone's creation, deletion,
+// manageFirewall runs the firewall half of step 1: stage the
+// "stunmesh" zone's creation, deletion,
 // and "network" list membership so every stunmesh-managed WireGuard
 // interface -- new, changed, or unchanged -- ends up a member, and
 // every removed interface does not. It stages only; the caller
@@ -317,10 +226,10 @@ func revertUCI(runner execx.Runner, config string) {
 // may already be there, and must not end up listed twice.
 //
 // Removing the last member does not use RemoveFirewallZoneNetwork at
-// all: manageFirewall deletes the whole zone section instead (PLAN.md
-// 6 "Rules" -- delete by the exact recorded name, the same as
-// BuildDelete does for an interface's own sections), since there is
-// no reason to leave an empty, agent-owned zone behind.
+// all: manageFirewall deletes the whole zone section instead, by its
+// exact recorded name, the same as BuildDelete does for an
+// interface's own sections, since there is no reason to leave an
+// empty, agent-owned zone behind.
 func manageFirewall(runner execx.Runner, diff *Diff, have last.FirewallState) (last.FirewallState, bool, error) {
 	haveMembers := make(map[string]bool, len(have.Members))
 	for _, name := range have.Members {
@@ -369,7 +278,7 @@ func manageFirewall(runner execx.Runner, diff *Diff, have last.FirewallState) (l
 			return last.FirewallState{}, false, err
 		}
 		if present {
-			// Operator-owned: leave it alone, PLAN.md 6 "Rules".
+			// Operator-owned: leave it alone.
 			return last.FirewallState{}, false, nil
 		}
 		if err := runFirewallZoneCreate(runner); err != nil {
@@ -417,8 +326,8 @@ func firewallZonePresent(runner execx.Runner) (bool, error) {
 }
 
 // runFirewallZoneCreate runs uci.BuildFirewallZoneCreate's batch, then
-// uci.BuildFirewallForwardingsCreate's (PLAN.md 6 "Firewall zone"):
-// the zone always exists before the forwardings that name it as their
+// uci.BuildFirewallForwardingsCreate's: the zone always exists before
+// the forwardings that name it as their
 // src or dest are created. The three forwardings share the zone's
 // lifecycle exactly (see DeleteFirewallForwardings' doc comment), so
 // they are always created here, together with the zone, never on
@@ -442,23 +351,17 @@ func removeFirewallNetworkArgs(iface string) []string {
 	return uci.RemoveFirewallZoneNetwork(iface).Args
 }
 
-// writeUCI runs step 1 of the apply procedure (PLAN.md 6): for every
-// interface in diff.Interfaces, in order, delete its recorded
-// sections (InterfaceRemoved, InterfaceChanged) and then create its
-// sections from the new content (InterfaceNew, InterfaceChanged). It
-// runs no network command; PLAN.md 6 step 3/4 ("write UCI... No
-// network command yet") is exactly this function plus the caller's
-// later "uci commit network".
+// writeUCI runs step 1 of the apply procedure: for every interface in
+// diff.Interfaces, in order, delete its recorded sections
+// (InterfaceRemoved, InterfaceChanged) and then create its sections
+// from the new content (InterfaceNew, InterfaceChanged). It runs no
+// network command; the caller runs "uci commit network" afterwards.
 //
-// The delete half goes through deleteSections, not a plain batch run:
-// see applyDiff's doc comment "Retrying a delete after a successful
-// commit" for why a delete must tolerate an already-absent section.
-//
-// The create half clears each interface's list options first, through
-// clearListOptions, before running its create batch: see applyDiff's
-// doc comment "Retrying a create after a successful commit" for why a
-// create must not let "uci add_list" append onto a list an earlier,
-// partly-applied create already populated.
+// The delete half goes through deleteSections, which tolerates an
+// already-absent section. The create half clears each interface's
+// list options first, through clearListOptions, so "uci add_list"
+// never appends onto a list an earlier, partly-applied create already
+// populated.
 func writeUCI(runner execx.Runner, diff *Diff) error {
 	for _, id := range diff.Interfaces {
 		switch id.Change {
@@ -478,8 +381,7 @@ func writeUCI(runner execx.Runner, diff *Diff) error {
 				return err
 			}
 		case InterfaceUnchanged:
-			// Nothing to do: PLAN.md 6's change table has no row for
-			// an unchanged interface.
+			// Nothing to do for an unchanged interface.
 		}
 	}
 	return nil
@@ -500,15 +402,9 @@ func createInterface(runner execx.Runner, name string, iface bundle.Interface) e
 }
 
 // clearListOptions deletes each "network.<path>" in options if it is
-// currently there, through deleteIfPresent -- the same tolerant check
-// deleteIfPresent already runs for a whole section, applied here to
-// one "<section>.<option>" path at a time. See applyDiff's doc
-// comment "Retrying a create after a successful commit" for why a
-// create must clear a list option before repopulating it, and why
-// this reuses deleteIfPresent rather than a second idiom: the
-// underlying command pattern -- "uci get" first, "uci delete" only if
-// that succeeds -- is exactly the same regardless of whether the name
-// after "network." is a whole section or one of its options.
+// currently there, through deleteIfPresent, so a create never lets
+// "uci add_list" append onto values a previous partial run left
+// behind.
 func clearListOptions(runner execx.Runner, options []string) error {
 	for _, option := range options {
 		if err := deleteIfPresent(runner, option); err != nil {
@@ -518,19 +414,16 @@ func clearListOptions(runner execx.Runner, options []string) error {
 	return nil
 }
 
-// deleteSections runs the delete half of step 1 (PLAN.md 6) for one
-// interface's recorded sections: peer sections, then route sections,
-// then the interface section last, the same order uci.BuildDelete
-// builds (see its doc comment). It deletes only the exact names
-// sections records, never a pattern (PLAN.md 6 "Rules").
+// deleteSections runs the delete half of step 1 for one interface's
+// recorded sections: peer sections, then route sections, then the
+// interface section last, the same order uci.BuildDelete builds (see
+// its doc comment). It deletes only the exact names sections records,
+// never a pattern.
 //
 // Unlike a plain uci.BuildDelete batch run through runUCIBatch,
 // deleteSections checks each section with deleteIfPresent first and
-// skips a section that is not there. See applyDiff's doc comment
-// "Retrying a delete after a successful commit" for why: a retry
-// after "uci commit network" already succeeded once names sections
-// that commit may have already removed, and a plain delete would fail
-// on them every time, wedging the node.
+// skips a section that is not there, so a retry does not fail on a
+// section an earlier, partly-applied commit already removed.
 func deleteSections(runner execx.Runner, sections last.Sections) error {
 	for _, peer := range sections.Peers {
 		if err := deleteIfPresent(runner, peer); err != nil {
@@ -585,46 +478,23 @@ func runUCIBatch(runner execx.Runner, batch uci.Batch) error {
 	return nil
 }
 
-// ifupChangedInterfaces runs step 4 of the apply procedure (see
-// applyDiff's doc comment "Steps"): "ifup <iface>" for every
-// interface in diff.Interfaces whose Change is InterfaceNew or
-// InterfaceChanged, in diff.Interfaces order. It runs after "ubus
-// call network reload" already ran (step 3).
+// ifupChangedInterfaces runs step 4 of the apply procedure: "ifup
+// <iface>" for every interface in diff.Interfaces whose Change is
+// InterfaceNew or InterfaceChanged, in diff.Interfaces order. It runs
+// after "ubus call network reload" already ran (step 3).
 //
-// PLAN.md 6 flagged this as an open assumption: "network reload also
-// restarts a WireGuard interface when only its wireguard_<iface> peer
-// sections changed. ... If it is false, add ifup <iface> for each
-// changed interface." The e2e harness measured it on a real OpenWrt
-// guest and found the assumption false: after a fetch that changed
-// only one peer of one interface, "uci commit network" and "ubus call
-// network reload" both succeeded, but "wg show" on the running kernel
-// interface still listed the old peer, never the new one. A plain
-// reload restages UCI; it does not, by itself, push a
-// wireguard_<iface> peer change into the kernel. An explicit "ifup
-// <iface>" for the affected interface is what makes netifd
-// reconfigure it for real.
-//
-// InterfaceRemoved gets no ifup. The same e2e measurement found the
-// opposite result for removal: "network reload" alone already tears a
-// removed interface's kernel netdev down, with no extra "ifup" or
-// "ifdown" needed. Adding one here would also be wrong on its own
-// terms: step 1 already deleted the interface's UCI section, so
-// "ifup" on that name has no config left to bring up. Do not add it
-// back; the asymmetry between "changed needs ifup" and "removed does
-// not" is the measured behavior, not an oversight.
-//
-// InterfaceUnchanged gets no ifup either: reload never touches an
-// unchanged interface, and there is nothing new to push into it.
+// "network reload" does not push a peer-only change into the kernel;
+// a changed interface needs an explicit "ifup". A removed interface
+// gets none: reload already tears its netdev down, and step 1 already
+// deleted its UCI section, so there is no config left to bring up.
+// InterfaceUnchanged gets none either.
 //
 // A failing "ifup" is fatal, the same as a failing reload immediately
 // before it: ifupChangedInterfaces returns the error, and applyDiff
-// stops without writing last.json (see applyDiff's doc comment "No
-// revert after uci commit succeeds").
-// UCI is already committed to the new state by this point, so the
-// next fetch recomputes the same diff and retries the same "ifup"
-// call. Unlike step 1's "uci add_list", "ifup" on an interface that
-// is already up is a normal, idempotent netifd operation, not one
-// that needs a tolerant retry path of its own.
+// stops without writing last.json. UCI is already committed to the
+// new state by this point, so the next fetch recomputes the same diff
+// and retries the same "ifup" call; "ifup" on an interface that is
+// already up is a normal, idempotent netifd operation.
 func ifupChangedInterfaces(runner execx.Runner, diff *Diff) error {
 	for _, id := range diff.Interfaces {
 		if id.Change != InterfaceNew && id.Change != InterfaceChanged {
@@ -639,10 +509,9 @@ func ifupChangedInterfaces(runner execx.Runner, diff *Diff) error {
 
 // anyInterfaceChanged reports whether diff.Interfaces holds at least
 // one interface whose Change is not InterfaceUnchanged. The caller
-// (daemon.go's manageEmbeddedApp) rebuilds the embedded stunmesh-go
-// app "if the stunmesh text or any interface changed"; this is the
-// "any interface changed" half of that condition, the same role it
-// played for the old "/etc/init.d/stunmesh reload" call.
+// (daemon.go's reconcileEmbedded) rebuilds the embedded stunmesh-go
+// app when the stunmesh text or any interface changed; this is the
+// "any interface changed" half of that condition.
 func anyInterfaceChanged(diff *Diff) bool {
 	for _, id := range diff.Interfaces {
 		if id.Change != InterfaceUnchanged {
@@ -652,8 +521,8 @@ func anyInterfaceChanged(diff *Diff) bool {
 	return false
 }
 
-// applyStunmeshConfig runs step 5 of the apply procedure (PLAN.md 6):
-// write path (mode 0600) with diff.StunmeshContent when the stunmesh
+// applyStunmeshConfig runs step 5 of the apply procedure: write path
+// (mode 0600) with diff.StunmeshContent when the stunmesh
 // text changed, delete path when the new stunmesh text is empty, or
 // do nothing when the text is unchanged. Deleting a path that is
 // already absent is not an error (os.IsNotExist is treated as
@@ -722,14 +591,13 @@ func writeStunmeshConfigAtomic(path, content string) error {
 }
 
 // buildState builds the last.json content to write after a
-// successful apply (PLAN.md 6 step 7): "record every interface's
-// section names". For InterfaceNew and InterfaceChanged, it records
-// the sections BuildInterface just created (sectionsFor). For
-// InterfaceUnchanged, it carries forward the sections already
-// recorded in state (the new diff never touched that interface, so
-// its recorded sections still name what is in UCI). InterfaceRemoved
-// interfaces are dropped: their sections are gone, and PLAN.md 6
-// records only what the agent still owns.
+// successful apply: every interface's section names. For
+// InterfaceNew and InterfaceChanged, it records the sections
+// BuildInterface just created (sectionsFor). For InterfaceUnchanged,
+// it carries forward the sections already recorded in state (the new
+// diff never touched that interface, so its recorded sections still
+// name what is in UCI). InterfaceRemoved interfaces are dropped:
+// their sections are gone.
 func buildState(diff *Diff, state *last.State) *last.State {
 	wg := make(map[string]last.Interface, len(diff.Interfaces))
 	for _, id := range diff.Interfaces {
@@ -754,15 +622,9 @@ func buildState(diff *Diff, state *last.State) *last.State {
 }
 
 // sectionsFor names the UCI sections BuildInterface creates for name
-// and iface (PLAN.md 6 "Rules": interface "<iface>", route
-// "<iface>_r_<n>", peer "<iface>_p_<peer>"). It names them through
-// uci.RouteSectionNames and uci.PeerSectionNames, the same functions
-// internal/uci's own BuildInterface derives its create commands'
-// section names from (both go through routeSectionName and
-// peerSectionName). sectionsFor holds no naming rule of its own: it
-// cannot drift from what BuildInterface actually creates, because
-// there is only one implementation of the naming convention, and this
-// is it, called from the record side too.
+// and iface: interface "<iface>", route "<iface>_r_<n>", peer
+// "<iface>_p_<peer>". It names them through uci.RouteSectionNames and
+// uci.PeerSectionNames, the same functions BuildInterface itself uses.
 func sectionsFor(name string, iface bundle.Interface) last.Sections {
 	return last.Sections{
 		Interface: name,

@@ -14,14 +14,7 @@ import (
 // --- newBackend: the *Config -> dial.Config adapter (docs/format.md
 // section 3) ---
 //
-// newBackend itself is now a thin adapter over
-// internal/backend/dial.New: the type-dispatch logic (unknown type
-// never panics and never echoes the bad value, an empty dhtproxy
-// proxy list forwards dhtproxy.New's own error) is exercised once,
-// for both binaries, by internal/backend/dial's own test file. These
-// tests only cover what is specific to this binary: that newBackend
-// maps Config's fields into dial.Config correctly, including
-// fetchProxyTimeout, which only this binary's newBackend passes.
+// These tests cover only this binary's field mapping into dial.Config.
 
 func TestNewBackend_DHTProxyTypeBuildsDHTProxyClient(t *testing.T) {
 	var stdout, stderr bytes.Buffer

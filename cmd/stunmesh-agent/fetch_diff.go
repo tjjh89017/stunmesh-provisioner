@@ -8,8 +8,7 @@ import (
 )
 
 // InterfaceChange classifies one interface's difference between the
-// new bundle and last.json (PLAN.md stage 3 item 6, PLAN.md 6 change
-// table).
+// new bundle and last.json.
 type InterfaceChange int
 
 const (
@@ -45,8 +44,7 @@ func (c InterfaceChange) String() string {
 }
 
 // StunmeshChange classifies the `stunmesh` section's difference
-// between the new bundle and last.json (PLAN.md stage 3 item 6,
-// PLAN.md 6 change table).
+// between the new bundle and last.json.
 type StunmeshChange int
 
 const (
@@ -57,7 +55,7 @@ const (
 	// non-empty and differs from the text last.json recorded.
 	StunmeshChanged
 	// StunmeshEmpty means the new bundle's stunmesh text is "". This is
-	// a real instruction (PLAN.md 6): delete the stunmesh config file
+	// a real instruction: delete the stunmesh config file
 	// and stop stunmesh-go. StunmeshEmpty always wins over
 	// StunmeshUnchanged, even when last.json also recorded "": the
 	// apply step must still ensure the file is gone and stunmesh-go is
@@ -82,13 +80,12 @@ func (c StunmeshChange) String() string {
 }
 
 // InterfaceDiff is one interface's diff result. It carries everything
-// the apply step (PLAN.md 6, the next stage 3 item) needs for that one
-// interface, so the apply step never has to re-derive anything from
-// the bundle or last.json itself.
+// the apply step needs for that one interface, so the apply step
+// never has to re-derive anything from the bundle or last.json
+// itself.
 type InterfaceDiff struct {
 	// Name is the interface name: the bundle's `wg` key, and the UCI
-	// interface section name (PLAN.md 6: "section name = netdev name =
-	// bundle key").
+	// interface section name.
 	Name string
 	// Change is this interface's change class.
 	Change InterfaceChange
@@ -100,16 +97,15 @@ type InterfaceDiff struct {
 	Content *bundle.Interface
 	// Sections names the UCI sections last.json recorded for this
 	// interface. It is meaningful for InterfaceChanged and
-	// InterfaceRemoved (the apply step deletes exactly these names,
-	// PLAN.md 6 "Rules") and is the zero value otherwise.
+	// InterfaceRemoved (the apply step deletes exactly these names)
+	// and is the zero value otherwise.
 	Sections last.Sections
 }
 
-// Diff is the full per-fetch diff result (PLAN.md stage 3 item 6): one
-// InterfaceDiff for every interface name that appears in the new
-// bundle, in last.json, or both, plus the stunmesh classification. It
-// is the value the apply step (PLAN.md 6, the next stage 3 item)
-// consumes directly.
+// Diff is the full per-fetch diff result: one InterfaceDiff for every
+// interface name that appears in the new bundle, in last.json, or
+// both, plus the stunmesh classification. It is the value the apply
+// step consumes directly.
 type Diff struct {
 	// Interfaces holds one entry for every interface name in the union
 	// of the new bundle's `wg` and last.json's WG. The order is the
@@ -128,29 +124,17 @@ type Diff struct {
 }
 
 // computeDiff computes the diff between b, the new bundle (already
-// past every PLAN.md 4.4 check), and state, the last.json content
-// checkAndApply already read. Ordinarily (forceAll false) computeDiff
-// assumes b and state do not carry identical content as a whole
-// (checkAndApply's sameContent check already ruled that out); it does
-// not special-case that possibility itself.
+// past every check inside decryptAndSelect), and state, the last.json
+// content checkAndApply already read. Ordinarily (forceAll false)
+// computeDiff assumes b and state do not carry identical content as a
+// whole (checkAndApply's sameContent check already ruled that out);
+// it does not special-case that possibility itself.
 //
-// forceAll comes from runFetchApply's own forceAll parameter
-// (fetch.go: always true for --oneshot, true on the daemon's periodic
-// full-apply tick, false otherwise): when
-// true, checkAndApply has deliberately skipped that sameContent check
-// (a periodic full re-apply must run even when nothing changed), so
-// computeDiff classifies every interface present in both b and state
-// as InterfaceChanged -- never InterfaceUnchanged -- and every
-// non-empty stunmesh text as StunmeshChanged, even when the content is
-// byte-for-byte identical on both sides. This is what makes a full
-// apply actually rewrite every step (PLAN.md 6): the apply procedure
-// only does work for InterfaceNew/InterfaceChanged/InterfaceRemoved
-// and for a Stunmesh value other than StunmeshUnchanged, so an
-// InterfaceUnchanged/StunmeshUnchanged classification would otherwise
-// make forceAll a no-op for any interface or stunmesh text that
-// genuinely did not change. InterfaceNew and InterfaceRemoved are
-// unaffected by forceAll: there is no "identical content" question for
-// an interface that exists on only one side.
+// forceAll reclassifies every present interface as changed and every
+// non-empty stunmesh text as changed, so a full apply does real work.
+// InterfaceNew and InterfaceRemoved are unaffected: there is no
+// "identical content" question for an interface that exists on only
+// one side.
 //
 // state.WG is never nil (last.Read's doc comment, "Missing file"), so
 // computeDiff ranges over it directly.
@@ -159,7 +143,7 @@ type Diff struct {
 // through interfaceEqual, which reuses bundle.Bundle.Canonical/Equal
 // -- the same canonicalization path sameContent (fetch_compare.go)
 // already uses for the whole bundle -- so presence (an absent field
-// versus an explicit empty container, PLAN.md 4.3) is respected
+// versus an explicit empty container, docs/format.md 6) is respected
 // exactly, and there is only one place in this codebase that decides
 // what "equal content" means.
 func computeDiff(b *bundle.Bundle, state *last.State, forceAll bool) (*Diff, error) {
@@ -239,9 +223,9 @@ func computeDiff(b *bundle.Bundle, state *last.State, forceAll bool) (*Diff, err
 
 // diffStunmesh classifies the stunmesh section (see StunmeshChange).
 // An empty newStunmesh always classifies as StunmeshEmpty, even when
-// oldStunmesh is also "": PLAN.md 6 treats an empty stunmesh as a real
-// instruction (delete the file, stop stunmesh-go), not as the absence
-// of a change. forceAll (see computeDiff's doc comment) promotes an
+// oldStunmesh is also "": an empty stunmesh is a real instruction
+// (delete the file, stop stunmesh-go), not the absence of a change.
+// forceAll (see computeDiff's doc comment) promotes an
 // otherwise-StunmeshUnchanged non-empty text to StunmeshChanged, so a
 // full apply rewrites the stunmesh config file and reloads stunmesh-go
 // even when the text did not actually change.

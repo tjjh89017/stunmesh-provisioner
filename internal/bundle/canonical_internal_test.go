@@ -2,9 +2,9 @@ package bundle
 
 // Table-driven unit tests for unescapeLineSeparators, the helper that
 // undoes encoding/json's unconditional U+2028/U+2029 escaping so
-// Canonical matches the `jq -S -c 'del(.timestamp)'` reference bytes
-// (PLAN.md 4.5). White-box (package bundle, not bundle_test) because
-// the helper is unexported.
+// Canonical matches the `jq -S -c 'del(.timestamp)'` reference bytes.
+// White-box (package bundle, not bundle_test) because the helper is
+// unexported.
 //
 // Inputs below are built with plain double-quoted string literals, so
 // `\\` is one literal backslash byte and `\\u2028` is the six ASCII
