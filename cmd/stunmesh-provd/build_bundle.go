@@ -55,10 +55,11 @@ var errUneditedWGTemplate = errors.New("wg.yaml is still the unedited template; 
 // assembledBundle is the wire shape buildBundle marshals to produce
 // the inner bundle JSON that goes into bundle.Parse.
 //
-// WG is json.RawMessage, holding node.WG's bytes unchanged.
-// json.Marshal copies a json.RawMessage's bytes into the output
-// as-is (it does not re-encode them), so store's already-valid `wg`
-// JSON (PLAN.md 4.2) is embedded verbatim: no double-encoding, no
+// WG is json.RawMessage, holding node.WG's bytes after normalizeWG
+// (PLAN.md 4.2's `wg` JSON, with fwmark and routing_table coerced to
+// the bundle's expected types). json.Marshal copies a json.RawMessage's
+// bytes into the output as-is (it does not re-encode them), so this
+// already-valid `wg` JSON is embedded verbatim: no double-encoding, no
 // string concatenation, and no risk of the assembled document
 // escaping wrong. Namespace, NodeID, and Stunmesh are plain Go
 // strings, so encoding/json escapes them the normal, correct way.
@@ -119,12 +120,17 @@ func buildBundle(namespace string, node *store.Node, now time.Time) (*bundle.Bun
 		return nil, fmt.Errorf("node %q: wg.yaml: %w", node.NodeID, errUneditedWGTemplate)
 	}
 
+	wg, err := normalizeWG(node.WG)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", node.NodeID, err)
+	}
+
 	data, err := json.Marshal(assembledBundle{
 		Version:   1,
 		Namespace: namespace,
 		NodeID:    node.NodeID,
 		Timestamp: now.Unix(),
-		WG:        node.WG,
+		WG:        wg,
 		Stunmesh:  node.Stunmesh,
 	})
 	if err != nil {

@@ -105,6 +105,42 @@ func TestBuildInterface_Minimal(t *testing.T) {
 	checkGolden(t, "interface_minimal.golden", got)
 }
 
+// TestBuildInterface_Fwmark covers an interface with fwmark set.
+func TestBuildInterface_Fwmark(t *testing.T) {
+	iface := bundle.Interface{
+		PrivateKey: "wg0-private-key",
+		Addresses:  []string{"10.0.0.1/24"},
+		MTU:        intPtr(1420),
+		Fwmark:     int64Ptr(51820),
+		Peers: map[string]bundle.Peer{
+			"bravo": {
+				PublicKey:  "bravo-public-key",
+				AllowedIPs: []string{"10.0.0.2/32"},
+			},
+		},
+	}
+	got := uci.BuildInterface("wg0", iface).Text()
+	checkGolden(t, "interface_fwmark.golden", got)
+}
+
+// TestBuildInterface_RoutingTable covers an interface with both
+// routing_table.ipv4 and routing_table.ipv6 set.
+func TestBuildInterface_RoutingTable(t *testing.T) {
+	iface := bundle.Interface{
+		PrivateKey:   "wg0-private-key",
+		Addresses:    []string{"10.0.0.1/24"},
+		RoutingTable: &bundle.RoutingTable{IPv4: strPtr("100"), IPv6: strPtr("200")},
+		Peers: map[string]bundle.Peer{
+			"bravo": {
+				PublicKey:  "bravo-public-key",
+				AllowedIPs: []string{"10.0.0.2/32"},
+			},
+		},
+	}
+	got := uci.BuildInterface("wg0", iface).Text()
+	checkGolden(t, "interface_routing_table.golden", got)
+}
+
 // TestBuildInterface_IPv6 covers an interface whose addresses and
 // routes are IPv6-only, and a peer whose endpoint is a bracketed
 // IPv6 literal, once with a port and once without.

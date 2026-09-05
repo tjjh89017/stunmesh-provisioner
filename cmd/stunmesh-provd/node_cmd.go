@@ -54,10 +54,16 @@ const wgYAMLTemplate = `# wg.yaml -- WireGuard settings for this node.
 #   private_key: <this node's WireGuard tunnel private key, base64>
 #   addresses:
 #     - 10.0.0.1/24
-#   # listen_port, mtu, route_allowed_ips, routes, and options are
-#   # optional. See docs/format.md for their rules.
+#   # listen_port, mtu, fwmark, routing_table, route_allowed_ips,
+#   # routes, and options are optional. See docs/format.md for their
+#   # rules.
 #   # listen_port: 51820
 #   # mtu: 1420
+#   # fwmark: 0xca6c
+#   # fwmark accepts decimal, 0x hex, or a quoted string.
+#   # routing_table:
+#   #   ipv4: 100
+#   #   ipv6: 100
 #   # route_allowed_ips: false
 #   # routes:
 #   #   - cidr: 10.20.0.0/16

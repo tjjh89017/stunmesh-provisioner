@@ -64,6 +64,7 @@ func TestFormatDocMatchesBundleFields(t *testing.T) {
 	var fieldNames []string
 	fieldNames = append(fieldNames, jsonTags(bundle.Bundle{})...)
 	fieldNames = append(fieldNames, jsonTags(bundle.Interface{})...)
+	fieldNames = append(fieldNames, jsonTags(bundle.RoutingTable{})...)
 	fieldNames = append(fieldNames, jsonTags(bundle.Route{})...)
 	fieldNames = append(fieldNames, jsonTags(bundle.Peer{})...)
 

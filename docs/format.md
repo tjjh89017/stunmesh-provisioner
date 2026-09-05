@@ -174,6 +174,10 @@ omit the key instead of setting it to `null` (section 7).
 | `wg.*.listen_port` | No | Integer, 1-65535. Absent: WireGuard picks a random port. |
 | `wg.*.addresses` | Yes | List. At least one entry. |
 | `wg.*.mtu` | No | Integer, 576-65535. Absent: use the platform default. |
+| `wg.*.fwmark` | No | Integer, 1-4294967295. Zero is not permitted; omit the key instead. Absent: no fwmark on this interface. |
+| `wg.*.routing_table` | No | Object with optional `ipv4` and `ipv6` string keys. Absent: no routing table override on this interface. An empty object (`{}`) is rejected. |
+| `wg.*.routing_table.ipv4` | No | String. Non-empty, no whitespace; if all ASCII digits, must not start with `0`. |
+| `wg.*.routing_table.ipv6` | No | String. Non-empty, no whitespace; if all ASCII digits, must not start with `0`. |
 | `wg.*.route_allowed_ips` | No | Boolean. Default `true`. Installs a route for each peer's `allowed_ips` on this interface. |
 | `wg.*.routes` | No | List of static routes on this interface. Default empty. |
 | `wg.*.options` | No | Map of string to string. Extra options for the interface. |
@@ -248,9 +252,10 @@ ID and against each field's rule from section 6:
 | 10 | `timestamp` is a positive integer, at most 9007199254740991 (2^53-1). |
 | 11 | `stunmesh` is present (an empty string is valid; the key must exist). |
 | 12 | `wg` is present (an empty map is valid; the key must exist). |
-| 13 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535 and a present `mtu` is 576-65535. |
-| 14 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
-| 15 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
+| 13 | Every interface has `private_key`, at least one address, and a `peers` map; a present `listen_port` is 1-65535, a present `mtu` is 576-65535, and a present `fwmark` is 1-4294967295. |
+| 14 | A present `routing_table` is not an empty object; a present `routing_table.ipv4` or `routing_table.ipv6` is non-empty, has no whitespace, and, if all ASCII digits, does not start with `0`. |
+| 15 | Every peer has `public_key` and at least one `allowed_ips` entry, does not have a present-but-empty `preshared_key` or `endpoint`, and a present `persistent_keepalive` is 0-65535. |
+| 16 | Every route has a `cidr`, does not have a present-but-empty `gateway`, and a present `metric` is 0-4294967295. |
 
 If one check fails, the node rejects the value. The node changes no
 file.

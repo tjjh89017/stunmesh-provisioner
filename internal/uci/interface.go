@@ -1,6 +1,7 @@
 package uci
 
 import (
+	"fmt"
 	"net"
 	"sort"
 	"strconv"
@@ -33,6 +34,18 @@ func BuildInterface(name string, iface bundle.Interface) Batch {
 	}
 	if iface.MTU != nil {
 		b = append(b, setCmd("network", name, "mtu", strconv.Itoa(*iface.MTU)))
+	}
+	if iface.Fwmark != nil {
+		// LuCI's fwmark validator requires "0x" hex (^0x[a-fA-F0-9]{1,8}$).
+		b = append(b, setCmd("network", name, "fwmark", fmt.Sprintf("0x%x", *iface.Fwmark)))
+	}
+	if iface.RoutingTable != nil {
+		if iface.RoutingTable.IPv4 != nil {
+			b = append(b, setCmd("network", name, "ip4table", *iface.RoutingTable.IPv4))
+		}
+		if iface.RoutingTable.IPv6 != nil {
+			b = append(b, setCmd("network", name, "ip6table", *iface.RoutingTable.IPv6))
+		}
 	}
 	b = append(b, optionCommands(name, iface.Options)...)
 
