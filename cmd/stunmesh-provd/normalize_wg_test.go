@@ -30,7 +30,7 @@ func TestBuildBundle_FwmarkString(t *testing.T) {
 		want int64
 	}{
 		{"quoted hex", `"0xca6c"`, 51820},
-		{"quoted octal", `"010"`, 8},
+		{"quoted octal", `"0o10"`, 8},
 		{"quoted decimal", `"51820"`, 51820},
 		{"bare integer", `51820`, 51820},
 	}
@@ -70,7 +70,7 @@ func TestBuildBundle_FwmarkMaxValuePreservesPrecision(t *testing.T) {
 
 // TestBuildBundle_FwmarkRejected checks an invalid fwmark fails buildBundle.
 func TestBuildBundle_FwmarkRejected(t *testing.T) {
-	for _, raw := range []string{`"0"`, `"abc"`, `"0x1ffffffff"`, `true`} {
+	for _, raw := range []string{`"0"`, `"abc"`, `"0x1ffffffff"`, `"010"`, `true`} {
 		t.Run(raw, func(t *testing.T) {
 			node := testNode(t, "alpha", wgFwmark(raw), "")
 			if _, err := buildBundle("myns", node, fixedNow()); err == nil {
@@ -81,11 +81,10 @@ func TestBuildBundle_FwmarkRejected(t *testing.T) {
 }
 
 // TestBuildBundle_FwmarkUnquotedYAMLHexOctal pins what
-// store.ReadNode's sigs.k8s.io/yaml conversion does to an unquoted
-// wg.yaml fwmark before normalizeWG ever runs: YAML 1.1 resolves
-// `0x..` and `0..` as hex/octal integers, so both already land on
-// buildBundle as a JSON number with the same value ParseUint(s, 0,
-// 32) would give a quoted string.
+// store.ReadNode's yamlx conversion does to an unquoted wg.yaml
+// fwmark before normalizeWG ever runs: `0x..`, `0o..`, and a bare
+// leading-zero `0..` all resolve to hex/octal integers, so each
+// already lands on buildBundle as a JSON number.
 func TestBuildBundle_FwmarkUnquotedYAMLHexOctal(t *testing.T) {
 	cases := []struct {
 		name string
@@ -94,6 +93,7 @@ func TestBuildBundle_FwmarkUnquotedYAMLHexOctal(t *testing.T) {
 	}{
 		{"unquoted hex", "0xca6c", 51820},
 		{"unquoted octal", "010", 8},
+		{"unquoted 0o octal", "0o10", 8},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

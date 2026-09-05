@@ -51,7 +51,7 @@ const wgYAMLTemplate = `# wg.yaml -- WireGuard settings for this node.
 #   # listen_port: 51820
 #   # mtu: 1420
 #   # fwmark: 0xca6c
-#   # fwmark accepts decimal, 0x hex, or a quoted string.
+#   # fwmark accepts decimal, 0x hex, or 0o octal.
 #   # routing_table:
 #   #   ipv4: 100
 #   #   ipv6: 100
