@@ -223,13 +223,13 @@ func TestPublishRound_SealedBytesMatchBundleCanonicalContent(t *testing.T) {
 		t.Fatalf("reports = %+v", reports)
 	}
 	if reports[0].Bundle == nil {
-		t.Fatal("reports[0].Bundle is nil, item 8 needs it for change detection")
+		t.Fatal("reports[0].Bundle is nil, republish_loop.go needs it for change detection")
 	}
 	if len(reports[0].Sealed) == 0 {
-		t.Fatal("reports[0].Sealed is empty, item 8 needs it to re-put unchanged content")
+		t.Fatal("reports[0].Sealed is empty, republish_loop.go needs it to re-put unchanged content")
 	}
 	if reports[0].IdentityPublicKey == (crypto.Key{}) {
-		t.Fatal("reports[0].IdentityPublicKey is unset, item 8 needs it for change detection")
+		t.Fatal("reports[0].IdentityPublicKey is unset, republish_loop.go needs it for change detection")
 	}
 }
 
@@ -350,8 +350,9 @@ func TestPublishRound_SecondRoundWithUnchangedFilesPutsIdenticalCanonicalContent
 
 	// The sealed bytes themselves differ every round (crypto.Seal
 	// picks a random nonce each call): publishRound always reseals.
-	// It is item 8's job to notice the canonical content did not
-	// change and skip the reseal, re-putting the cached bytes instead.
+	// It is republish_loop.go's job to notice the canonical content
+	// did not change and skip the reseal, re-putting the cached bytes
+	// instead.
 	if string(reports1[0].Sealed) == string(reports2[0].Sealed) {
 		t.Fatal("two calls to publishRound produced identical Sealed bytes; Seal's nonce is not random")
 	}

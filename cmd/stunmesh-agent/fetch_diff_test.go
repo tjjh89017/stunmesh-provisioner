@@ -207,7 +207,7 @@ func TestComputeDiff_StunmeshUnchanged(t *testing.T) {
 	}
 }
 
-// TestComputeDiff_StunmeshEmptyBeatsUnchanged pins PLAN.md 6: an empty
+// TestComputeDiff_StunmeshEmptyBeatsUnchanged pins that an empty
 // `stunmesh` is always the "delete and stop" instruction, even when
 // last.json already recorded an empty stunmesh text. It is never
 // folded into StunmeshUnchanged just because both sides are "".
@@ -241,8 +241,7 @@ func TestComputeDiff_StunmeshEmptyFromNonEmpty(t *testing.T) {
 }
 
 // TestComputeDiff_AllClassesTogether exercises new, changed, unchanged
-// and removed interfaces in one bundle/state pair, matching the shape
-// the integration test (item 12) will drive applyChanges with.
+// and removed interfaces in one bundle/state pair.
 func TestComputeDiff_AllClassesTogether(t *testing.T) {
 	b := parseTestBundle(t, `{"version":1,"namespace":"ns","node_id":"n1","timestamp":100,"wg":{`+
 		`"new_if":{"private_key":"pk","addresses":["10.0.0.1/24"],"peers":{}},`+
@@ -295,7 +294,7 @@ func TestComputeDiff_AllClassesTogether(t *testing.T) {
 	}
 }
 
-// TestComputeDiff_ForceAllPromotesUnchangedToChanged pins --full-apply's
+// TestComputeDiff_ForceAllPromotesUnchangedToChanged pins forceAll's
 // effect on computeDiff (its forceAll parameter's doc comment): an
 // interface whose content is byte-for-byte identical to last.json is
 // InterfaceChanged, not InterfaceUnchanged, when forceAll is true --

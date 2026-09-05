@@ -20,19 +20,18 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/uci"
 )
 
-// This file is stage 3 item 12, the stage's acceptance criterion: an
-// end-to-end integration test that drives the real doFetch, through a
-// real httptest DHT proxy serving really-sealed bundles, against a
-// fake exec runner and a real temporary last.json, covering all five
-// scenarios PLAN.md 2.6 and 6 describe.
+// This file is an end-to-end integration test that drives the real
+// runFetchApply, through a real httptest DHT proxy serving
+// really-sealed bundles, against a fake exec runner and a real
+// temporary last.json, covering five scenarios.
 //
 // # Why one chained run, not five independent ones
 //
-// Scenario 2 ("same bundle exits 3") only means something once
-// scenario 1 has actually written last.json: exit 3 against a missing
-// last.json would prove nothing (an empty last.json never equals a
-// non-empty bundle). Scenario 4 ("removed interface deletes its
-// sections") needs an interface that scenario 1 (or 3) actually
+// Scenario 2 ("the same bundle applies nothing") only means something
+// once scenario 1 has actually written last.json: it would prove
+// nothing against a missing last.json (an empty last.json never
+// equals a non-empty bundle). Scenario 4 ("removed interface deletes
+// its sections") needs an interface that scenario 1 (or 3) actually
 // created and recorded, with its real section names, not a
 // hand-built last.State a test fabricated to look plausible.
 // Scenario 5 needs a stunmesh config file that a real apply actually
@@ -40,12 +39,12 @@ import (
 //
 // So this test drives one identity key pair, one controller key
 // pair, one namespace/node_id, and one on-disk last.json/stunmesh
-// config path through five sequential doFetch calls, each building on
-// the on-disk state the previous call left behind -- the same way a
-// real node's cron job would call fetch five times as the controller
-// republishes a changing bundle. Each run gets its own fresh *Env
-// (fresh stdout/stderr buffers, fresh *execx.Fake) so command
-// sequence assertions never leak calls from an earlier run.
+// config path through five sequential runFetchApply calls, each
+// building on the on-disk state the previous call left behind, the
+// same way a real node's daemon loop would run five cycles as the
+// controller republishes a changing bundle. Each run gets its own
+// fresh *Env (fresh stdout/stderr buffers, fresh *execx.Fake) so
+// command sequence assertions never leak calls from an earlier run.
 //
 // # Two interfaces, to prove isolation
 //
@@ -99,9 +98,9 @@ var (
 	wg1Sections = last.Sections{Interface: "wg1", Peers: []string{"wg1_p_delta"}}
 )
 
-// integrationBundleJSON builds one complete plaintext bundle (PLAN.md
-// 4.2) for this test's namespace/node_id, with wg and stunmesh as
-// given. wg is the literal JSON object body for the bundle's `wg`
+// integrationBundleJSON builds one complete plaintext bundle
+// (docs/format.md 5) for this test's namespace/node_id, with wg and
+// stunmesh as given. wg is the literal JSON object body for the bundle's `wg`
 // key, e.g. `"wg0":...,"wg1":...` or "" for an empty bundle.
 func integrationBundleJSON(namespace, nodeID string, timestamp int64, wg, stunmesh string) []byte {
 	return []byte(fmt.Sprintf(
@@ -177,9 +176,9 @@ func uciClearListCalls(options []string) []execx.Call {
 var (
 	commitCall = execx.Call{Name: "uci", Args: []string{"commit", "network"}}
 	reloadCall = execx.Call{Name: "ubus", Args: []string{"call", "network", "reload"}}
-	// firewallProbeCall is manageFirewall's "uci get firewall.stunmesh"
-	// (PLAN.md 6 "Firewall zone"), staged whenever anyInterfaceChanged
-	// is true and at least one remaining interface is not yet a
+	// firewallProbeCall is manageFirewall's "uci get firewall.stunmesh",
+	// staged whenever anyInterfaceChanged is true and at least one
+	// remaining interface is not yet a
 	// recorded zone member. It is left unscripted in every fake here,
 	// so it defaults to success ("the zone already exists"); since
 	// none of these scenarios ever record the zone as agent-owned,
@@ -202,9 +201,9 @@ func ifupCall(iface string) execx.Call {
 }
 
 // switchableProxy is a real httptest.Server whose response body can
-// be changed between doFetch calls: each of the five scenarios below
-// serves a different sealed DHT value, without needing five separate
-// servers. set stores the exact bytes doFetch's next GET receives
+// be changed between runFetchApply calls: each of the five scenarios
+// below serves a different sealed DHT value, without needing five
+// separate servers. set stores the exact bytes the next GET receives
 // (already rendered as one dhtLine); the handler never calls a *T
 // method, since it may run on a goroutine other than the test's own.
 type switchableProxy struct {
@@ -231,10 +230,10 @@ func (p *switchableProxy) set(t *testing.T, sealed []byte) {
 	p.line = dhtLine(t, sealed)
 }
 
-// TestFetch_FiveScenariosChained is stage 3 item 12: the acceptance
-// criterion. See this file's package doc comment for why the five
-// scenarios run as one chain against one on-disk state, rather than
-// five independent setups.
+// TestFetch_FiveScenariosChained drives runFetchApply through five
+// scenarios. See this file's package doc comment for why they run as
+// one chain against one on-disk state, rather than five independent
+// setups.
 func TestFetch_FiveScenariosChained(t *testing.T) {
 	identityPriv, identityPub, err := crypto.Keygen()
 	if err != nil {
@@ -268,7 +267,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 	}
 
 	// run publishes plain as the next value the proxy serves (sealed
-	// for real, with real crypto), then drives one full doFetch
+	// for real, with real crypto), then drives one full runFetchApply
 	// against a fresh Env and a fresh *execx.Fake, and returns the
 	// exit code, the fake's recorded calls, and the captured stderr
 	// (for failure diagnostics only; no scenario below asserts on its
@@ -359,7 +358,7 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		}
 	})
 
-	// --- Scenario 2: same bundle exits 3. ------------------------------
+	// --- Scenario 2: the same bundle applies nothing. -------------------
 	//
 	// This must run after scenario 1: it re-publishes byte-identical
 	// content and proves nothing was applied a second time. The mtime
@@ -422,10 +421,8 @@ func TestFetch_FiveScenariosChained(t *testing.T) {
 		want := uciDeleteCalls(wg0Sections)
 		want = append(want, uciClearListCalls(uci.ListOptions("wg0", wg0IfaceV2))...)
 		want = append(want, uciCalls(uci.BuildInterface("wg0", wg0IfaceV2))...)
-		// stunmesh text is unchanged (still stunmeshV1), but wg0 changed,
-		// so step 6 still runs "reload" (PLAN.md 6 step 6 condition:
-		// stunmesh changed OR any interface changed). wg0 is
-		// InterfaceChanged, so it also gets an explicit "ifup".
+		// stunmesh text is unchanged (still stunmeshV1), but wg0 is
+		// InterfaceChanged, so it gets an explicit "ifup".
 		want = append(want, firewallProbeCall, commitCall, reloadCall, ifupCall("wg0"))
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("Calls() =\n%+v\nwant\n%+v", calls, want)

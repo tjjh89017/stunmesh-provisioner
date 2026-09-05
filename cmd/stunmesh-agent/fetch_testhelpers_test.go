@@ -15,12 +15,11 @@ import (
 )
 
 // runFetchApplyForTest wraps runFetchApply the way runOneshot and the
-// daemon loop call and log it (fetch.go, daemon.go), so a test written
-// against the old doFetch's "one call, one exit code" shape still
-// reads the same outcome: ExitOK for a nil error (including every
-// "nothing to do" case: no value, nothing usable, no change), ExitError
-// otherwise, with the error text written to env.Stderr the same way
-// runOneshot writes it.
+// daemon loop call and log it (fetch.go, daemon.go), reducing the
+// result to a single exit code: ExitOK for a nil error (including
+// every "nothing to do" case: no value, nothing usable, no change),
+// ExitError otherwise, with the error text written to env.Stderr the
+// same way runOneshot writes it.
 func runFetchApplyForTest(env *Env, cfg *Config, forceAll bool) int {
 	_, err := runFetchApply(env, cfg, forceAll)
 	if err != nil {
@@ -30,10 +29,8 @@ func runFetchApplyForTest(env *Env, cfg *Config, forceAll bool) int {
 	return ExitOK
 }
 
-// applyDiffForTest wraps applyDiff (fetch_apply.go, now error-returning
-// -- daemon.go and fetch.go both prefer a plain error since they log
-// or propagate it themselves) back into the old "exit code" shape the
-// pre-existing applyDiff test files were written against.
+// applyDiffForTest wraps applyDiff (fetch_apply.go) and reduces its
+// error result to an exit code, for tests that assert on a code.
 func applyDiffForTest(env *Env, cfg *Config, diff *Diff, state *last.State) int {
 	if err := applyDiff(env, cfg, diff, state); err != nil {
 		fmt.Fprintf(env.Stderr, "stunmesh-agent: apply: %v\n", err)
@@ -46,7 +43,7 @@ func applyDiffForTest(env *Env, cfg *Config, diff *Diff, state *last.State) int 
 // field set to something, none of it wired to a real network or a
 // real identity key) for a test that only cares about a specific
 // early failure (a held lock, a bad lock path) and needs the rest of
-// the Config to not be the reason doFetch/runFetchApply fails.
+// the Config to not be the reason runFetchApply fails.
 func validFetchConfig(lockPath string) *Config {
 	return &Config{
 		Namespace:        "ns",
@@ -112,10 +109,7 @@ func dhtLine(t *testing.T, raw []byte) []byte {
 
 // TestRunOneshot_SecondConcurrentHolderExitsOKWithOneLogLine and its
 // two siblings below pin runOneshot's lock handling (daemon.go): the
-// lock itself moved out of runFetchApply and into runOneshot/runDaemon
-// when the CLI stopped being cron-driven (a fetch subcommand run once
-// per invocation) and became a long-lived daemon (the lock now
-// guards the whole process, not one cycle).
+// caller (runOneshot or runDaemon), not runFetchApply, holds the lock.
 func TestRunOneshot_SecondConcurrentHolderExitsOKWithOneLogLine(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "agent.lock")
 

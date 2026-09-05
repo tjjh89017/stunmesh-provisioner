@@ -1,5 +1,5 @@
 // Package crypto provides authenticated encryption for the DHT
-// bundle value (PLAN.md section 4.1).
+// bundle value (docs/format.md 4).
 //
 // The wire format of a sealed value is:
 //
@@ -9,7 +9,7 @@
 // (Curve25519 + XSalsa20-Poly1305). The controller is the sender: it
 // seals with its own private key and the node's identity public key.
 // The node is the recipient: it opens with its own identity private
-// key and the controller's public key (PLAN.md section 2.4). box
+// key and the controller's public key (docs/format.md 4). box
 // gives confidentiality and sender authentication together, so no
 // separate signature is needed.
 //

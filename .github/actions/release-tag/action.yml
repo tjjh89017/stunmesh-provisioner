@@ -9,11 +9,7 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    # Every asset job needs the same string for its filename and its
-    # VERSION build-arg/ldflag. Resolving it once here, instead of
-    # repeating "git describe" inline in each job, keeps that string from
-    # drifting if the two ever disagree (for example a shallow checkout in
-    # one job producing a different --dirty suffix than another).
+    # Resolve the version once so every job uses the same string.
     - name: Resolve tag
       id: tag
       shell: bash

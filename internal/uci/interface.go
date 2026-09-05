@@ -11,15 +11,14 @@ import (
 )
 
 // BuildInterface builds the full UCI batch for one interface: the
-// interface section, its route sections, and its peer sections
-// (PLAN.md 6 "UCI layout for one interface"). name is the interface
-// name: the bundle's `wg` key, which PLAN.md 6 fixes equal to the UCI
+// interface section, its route sections, and its peer sections. name
+// is the interface name: the bundle's `wg` key, which is also the UCI
 // interface section name and the netdev name.
 //
 // BuildInterface does not validate iface; it assumes the caller
-// already ran it through bundle.Bundle.Validate (PLAN.md 4.4). It
-// still degrades gracefully on unvalidated input -- see routeFamily
-// for the one place that matters.
+// already ran it through bundle.Bundle.Validate. It still degrades
+// gracefully on unvalidated input -- see routeFamily for the one
+// place that matters.
 func BuildInterface(name string, iface bundle.Interface) Batch {
 	var b Batch
 
@@ -87,9 +86,8 @@ func ListOptions(name string, iface bundle.Interface) []string {
 }
 
 // buildRoute builds the UCI batch for one route section,
-// "<iface>_r_<n>" (PLAN.md 6 "UCI layout"). n is the route's index in
-// iface.Routes, in bundle order (bundle.Interface.Routes is a slice,
-// already ordered; PLAN.md 6 does not ask for any other order).
+// "<iface>_r_<n>". n is the route's index in iface.Routes, in bundle
+// order (bundle.Interface.Routes is a slice, already ordered).
 func buildRoute(iface string, n int, route bundle.Route) Batch {
 	section := routeSectionName(iface, n)
 	var b Batch
@@ -106,11 +104,9 @@ func buildRoute(iface string, n int, route bundle.Route) Batch {
 }
 
 // buildPeer builds the UCI batch for one peer section,
-// "<iface>_p_<peer>" (PLAN.md 6 "UCI layout"). routeAllowedIPs is
-// "1" or "0", already resolved by the caller from
-// iface.RouteAllowedIPsOrDefault() (PLAN.md 6: "from
-// wg.<iface>.route_allowed_ips" -- the interface's own setting, not a
-// per-peer field).
+// "<iface>_p_<peer>". routeAllowedIPs is "1" or "0", already resolved
+// by the caller from iface.RouteAllowedIPsOrDefault() -- the
+// interface's own setting, not a per-peer field.
 func buildPeer(iface, peer string, p bundle.Peer, routeAllowedIPs string) Batch {
 	section := peerSectionName(iface, peer)
 	var b Batch
@@ -140,11 +136,9 @@ func buildPeer(iface, peer string, p bundle.Peer, routeAllowedIPs string) Batch 
 
 // optionCommands returns one setCmd per entry of options, sorted by
 // key (see the package doc "Ordering"). A nil map and an empty,
-// non-nil map both produce no commands: an interface's or a peer's
-// Options presence distinguishes bundle content (PLAN.md 4.3), but
-// UCI itself has no notion of an "explicitly empty" option set, so
-// the two cases have nothing to tell apart once translated to UCI
-// commands.
+// non-nil map both produce no commands: UCI has no notion of an
+// "explicitly empty" option set, so the two cases have nothing to
+// tell apart once translated to UCI commands.
 func optionCommands(section string, options map[string]string) Batch {
 	var b Batch
 	for _, key := range sortedKeys(options) {
@@ -167,13 +161,13 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // routeSectionName returns the UCI section name for the n-th route of
-// iface: "<iface>_r_<n>" (PLAN.md 6 "Rules").
+// iface: "<iface>_r_<n>".
 func routeSectionName(iface string, n int) string {
 	return iface + "_r_" + strconv.Itoa(n)
 }
 
 // peerSectionName returns the UCI section name for peer on iface:
-// "<iface>_p_<peer>" (PLAN.md 6 "Rules").
+// "<iface>_p_<peer>".
 func peerSectionName(iface, peer string) string {
 	return iface + "_p_" + peer
 }
@@ -181,16 +175,13 @@ func peerSectionName(iface, peer string) string {
 // RouteSectionNames returns the UCI route section names that
 // BuildInterface(name, routes-holding-iface) creates for routes, in
 // the same order buildRoute assigns them: routes[n] names
-// "<name>_r_<n>", indexed by routes' own slice order (PLAN.md 6
-// "Rules"). It is the record side's read of the same naming
-// buildRoute already applies on the create side, so the two can never
-// drift apart: both call routeSectionName, and only routeSectionName
-// knows the "<iface>_r_<n>" format.
+// "<name>_r_<n>", indexed by routes' own slice order. It is the
+// record side's read of the same naming buildRoute already applies on
+// the create side, so the two can never drift apart.
 //
 // A caller records this alongside PeerSectionNames to build the
 // last.Sections a later apply deletes by (see internal/last's package
-// doc "Schema" and PLAN.md 6 "Rules": "The agent deletes sections by
-// the exact names that last.json records").
+// doc "Schema").
 func RouteSectionNames(name string, routes []bundle.Route) []string {
 	names := make([]string, len(routes))
 	for n := range routes {
@@ -204,13 +195,11 @@ func RouteSectionNames(name string, routes []bundle.Route) []string {
 // by peer name -- the same order buildPeer creates them in (see the
 // package doc "Ordering"). It is the record side's read of the same
 // naming buildPeer already applies on the create side, so the two can
-// never drift apart: both call peerSectionName, and only
-// peerSectionName knows the "<iface>_p_<peer>" format.
+// never drift apart.
 //
 // A caller records this alongside RouteSectionNames to build the
 // last.Sections a later apply deletes by (see internal/last's package
-// doc "Schema" and PLAN.md 6 "Rules": "The agent deletes sections by
-// the exact names that last.json records").
+// doc "Schema").
 func PeerSectionNames(name string, peers map[string]bundle.Peer) []string {
 	names := make([]string, 0, len(peers))
 	for _, peer := range sortedKeys(peers) {
@@ -220,8 +209,8 @@ func PeerSectionNames(name string, peers map[string]bundle.Peer) []string {
 }
 
 // routeFamily returns "route" for an IPv4 cidr and "route6" for an
-// IPv6 one (PLAN.md 6: "route6 for IPv6"). It first tries
-// net.ParseCIDR, the authoritative parse. bundle.Validate does not
+// IPv6 one. It first tries net.ParseCIDR, the authoritative parse.
+// bundle.Validate does not
 // check CIDR syntax (docs/format.md 6, "out of scope"), so
 // BuildInterface may see a cidr net.ParseCIDR rejects; rather than
 // fail the whole batch over a string this package was never asked to

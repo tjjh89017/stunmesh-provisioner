@@ -12,23 +12,19 @@ import (
 
 // maxDHTValueSize is the largest allowed size, in bytes, of the
 // base64-encoded DHT value: base64(nonce || nacl/box(inner bundle
-// JSON)) (PLAN.md 4.1, docs/format.md 4).
-//
-// 56 KiB is a placeholder. Stage 5 measures the real limit on a
-// device and replaces this constant; nothing else in this file
-// changes when it does.
+// JSON)) (docs/format.md 4).
 const maxDHTValueSize = 56 * 1024
 
 // naclBoxOverhead is the number of bytes golang.org/x/crypto/nacl/box
 // adds on top of the plaintext: a 24-byte nonce plus box's 16-byte
-// Poly1305 authenticator (PLAN.md 4.1, docs/format.md 4).
+// Poly1305 authenticator (docs/format.md 4).
 const naclBoxOverhead = 24 + 16
 
 // maxInnerBundleSize is the largest allowed size, in bytes, of the
 // inner bundle JSON, before it is ever encrypted.
 //
-// buildBundle runs before encryption (stage 2 item 7), so it cannot
-// measure the true DHT value maxDHTValueSize describes. It measures a
+// buildBundle runs before encryption, so it cannot measure the true
+// DHT value maxDHTValueSize describes. It measures a
 // smaller threshold instead, derived by undoing the two encoding
 // layers that stand between this file's output and the DHT value:
 // nacl/box's fixed overhead, then base64 (4 output bytes per 3 input
@@ -45,9 +41,9 @@ const naclBoxOverhead = 24 + 16
 const maxInnerBundleSize = 3*(maxDHTValueSize/4) - naclBoxOverhead
 
 // errUneditedWGTemplate is returned by buildBundle when a node's
-// wg.yaml is still the unedited template `node add` wrote (PLAN.md
-// 7.4): a file that is entirely comments, or otherwise empty,
-// converts to the YAML/JSON document `null`. bundle.Parse would
+// wg.yaml is still the unedited template `node add` wrote: a file
+// that is entirely comments, or otherwise empty, converts to the
+// YAML/JSON document `null`. bundle.Parse would
 // otherwise reject it with the generic bundle.ErrNull, which does not
 // tell an operator which file to fix or why.
 var errUneditedWGTemplate = errors.New("wg.yaml is still the unedited template; fill in at least one WireGuard interface")
@@ -56,20 +52,13 @@ var errUneditedWGTemplate = errors.New("wg.yaml is still the unedited template; 
 // the inner bundle JSON that goes into bundle.Parse.
 //
 // WG is json.RawMessage, holding node.WG's bytes after normalizeWG
-// (PLAN.md 4.2's `wg` JSON, with fwmark and routing_table coerced to
-// the bundle's expected types). json.Marshal copies a json.RawMessage's
+// (the `wg` JSON, with fwmark and routing_table coerced to the
+// bundle's expected types). json.Marshal copies a json.RawMessage's
 // bytes into the output as-is (it does not re-encode them), so this
 // already-valid `wg` JSON is embedded verbatim: no double-encoding, no
 // string concatenation, and no risk of the assembled document
 // escaping wrong. Namespace, NodeID, and Stunmesh are plain Go
 // strings, so encoding/json escapes them the normal, correct way.
-//
-// This is safer than building the JSON by hand with string
-// concatenation (which would have to reimplement JSON string
-// escaping for Namespace, NodeID, and Stunmesh) and safer than
-// building a bundle.Bundle by hand field by field (which would skip
-// bundle.Parse's phase-1 checks entirely; see the package doc for
-// why that must never happen).
 type assembledBundle struct {
 	Version   int             `json:"version"`
 	Namespace string          `json:"namespace"`
@@ -79,16 +68,15 @@ type assembledBundle struct {
 	Stunmesh  string          `json:"stunmesh"`
 }
 
-// buildBundle assembles and validates the inner bundle for one node
-// (PLAN.md 7.2 steps 2-3, stage 2 item 6).
+// buildBundle assembles and validates the inner bundle for one node.
 //
 // now is stamped as the bundle's timestamp. buildBundle never reads
-// the clock itself; the caller (stage 2 item 7's publish loop) passes
-// env.Now() explicitly. This lets a test fix the timestamp, which
-// matters because PLAN.md 4.5's canonical form excludes it: two
-// builds of the same, unchanged node one round apart get different
-// timestamps but must produce identical canonical bytes, and only an
-// injected clock lets a test demonstrate that.
+// the clock itself; the caller (the publish loop) passes env.Now()
+// explicitly. This lets a test fix the timestamp, which matters
+// because the canonical form excludes it: two builds of the same,
+// unchanged node one round apart get different timestamps but must
+// produce identical canonical bytes, and only an injected clock lets
+// a test demonstrate that.
 //
 // buildBundle assembles the full inner bundle JSON (see
 // assembledBundle) and always runs it through bundle.Parse and then
@@ -97,8 +85,8 @@ type assembledBundle struct {
 // never builds a bundle.Bundle by hand, so it can never publish a
 // bundle the agent would reject.
 //
-// A node whose wg.yaml is still the unedited template (PLAN.md 7.4)
-// decodes to the JSON document `null` at the top level, which
+// A node whose wg.yaml is still the unedited template decodes to the
+// JSON document `null` at the top level, which
 // bundle.Parse would reject with the generic bundle.ErrNull.
 // buildBundle checks for exactly that one shape -- the whole wg.yaml
 // document is `null`, not some deeper field -- and reports
@@ -146,8 +134,8 @@ func buildBundle(namespace string, node *store.Node, now time.Time) (*bundle.Bun
 		return nil, fmt.Errorf("node %q: %w", node.NodeID, err)
 	}
 
-	// Measure the exact bytes buildBundle's caller (stage 2 item 7)
-	// will encrypt: the validated bundle re-marshaled through its own
+	// Measure the exact bytes buildBundle's caller will encrypt: the
+	// validated bundle re-marshaled through its own
 	// MarshalJSON, not the assembled `data` above. The two are
 	// substantively the same content; re-marshaling the validated
 	// value is the one guaranteed to match what actually gets

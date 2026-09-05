@@ -9,19 +9,17 @@ it is.
 
 ## 1. What this proves, and what it does not
 
-The Go unit tests run `stunmesh-agent` against a fake `exec` (PLAN.md
-section 5). They prove the agent builds the right UCI commands. They
-cannot prove `netifd` actually does the right thing with those
-commands: whether `ubus call network reload` really reconfigures a
-running WireGuard interface, whether a removed UCI section really
-tears the kernel device down, whether a reboot really brings the
-tunnel back from UCI alone. This harness answers those questions
-against a real guest.
+The Go unit tests run `stunmesh-agent` against a fake `exec`. They
+prove the agent builds the right UCI commands. They cannot prove
+`netifd` actually does the right thing with those commands: whether
+`ubus call network reload` really reconfigures a running WireGuard
+interface, whether a removed UCI section really tears the kernel
+device down, whether a reboot really brings the tunnel back from UCI
+alone. This harness answers those questions against a real guest.
 
-It found a real defect this way: a plain `network reload` does not
-push a peer-only change into the kernel, so `fetch_apply.go` now runs
-`ifup <iface>` for every new or changed interface. `phases/phase-diff-removal.sh`
-is the check that caught it.
+A plain `network reload` does not push a peer-only change into the
+kernel, so `fetch_apply.go` runs `ifup <iface>` for every new or
+changed interface.
 
 Be precise about what it does not prove:
 
@@ -162,8 +160,8 @@ order).
   listed routes (with the second entry's metric) and nothing derived
   from the peer's own `allowed_ips`.
 - **`phase_firewall_survives`** (`phases/phase-firewall.sh`) -- adds a
-  firewall zone naming `wg0` by hand (the operator's one-time step,
-  PLAN.md 2.7), then publishes a second revision that forces `wg0`'s
+  firewall zone naming `wg0` by hand (the operator's one-time step),
+  then publishes a second revision that forces `wg0`'s
   own UCI sections to be deleted and recreated. Checks the hand-added
   zone, and its reference to `wg0`, survive untouched.
 - **`phase_daemon`** (`phases/phase-daemon.sh`) -- `/etc/init.d/
@@ -286,11 +284,7 @@ single function in isolation:
   `/sbin/init`.
 - **This harness builds a custom image with the ImageBuilder and
   injects files offline, instead of booting a stock image and
-  provisioning it over SSH.** A stock image was measured as a working
-  alternative -- empty-password root login and `apk add
-  kmod-wireguard wireguard-tools` both succeed -- but it depends on a
-  non-standard slirp subnet and an empty-password login that a real
-  OpenWrt user would not run with. The ImageBuilder path relies only
+  provisioning it over SSH.** The ImageBuilder path relies only
   on offline file injection, which this harness already needs for
   `inject_guest_files`, so it carries no extra load-bearing assumption
   of its own.
@@ -303,19 +297,9 @@ single function in isolation:
 - **Phases run in the explicit order `run.sh`'s `PHASE_ORDER` array
   lists, not file order, comment order or alphabetical order.**
   `run.sh` sources every `phases/phase-*.sh` file first, then calls
-  each function named in `PHASE_ORDER`, in that order: cheapest and
-  most basic first (`phase_smoke`, `phase_payload`), growing scenario
-  complexity through the middle, and `phase_reboot_uci_persistence`
-  last because a real guest reboot costs about 24s -- more than every
-  other phase combined -- and leaves the guest freshly booted, a poor
-  starting point for any phase after it. Before running anything,
-  `run.sh` cross-checks `PHASE_ORDER` against the `phase_*` functions
-  `declare -F` actually finds, in both directions, and `die`s if they
-  disagree: a phase file added without a `PHASE_ORDER` entry must not
-  silently never run, and a stale `PHASE_ORDER` entry with no matching
-  function must not silently be skipped. Every phase is still written
-  to be self-contained -- this list says what runs and when, it does
-  not license one phase depending on another's leftover state.
+  each function named in `PHASE_ORDER`, in that order. It cross-checks
+  `PHASE_ORDER` against the `phase_*` functions `declare -F` actually
+  finds, in both directions, and `die`s if they disagree.
 - **A stock OpenWrt image ships no `/etc/config/network` at all.**
   `/etc/board.d` writes one on first boot from board-detection logic,
   and the default it would pick (static `192.168.1.1`) is unreachable

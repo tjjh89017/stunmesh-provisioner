@@ -27,8 +27,7 @@ const defaultDir = "/etc/stunmesh/provd"
 
 // commandFunc is the signature every subcommand implements. It reads
 // its own flags and positional arguments from args and reports its
-// outcome through the returned exit code. Later items replace each
-// stub below with real behavior; the signature does not change.
+// outcome through the returned exit code.
 type commandFunc func(env *Env, args []string) int
 
 // commands maps a top-level command name to its handler. "node" is

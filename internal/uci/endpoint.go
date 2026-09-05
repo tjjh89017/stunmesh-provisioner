@@ -6,7 +6,7 @@ import (
 )
 
 // parseEndpoint splits a bundle peer's Endpoint field into the
-// endpoint_host and endpoint_port UCI options (PLAN.md 6 UCI layout).
+// endpoint_host and endpoint_port UCI options.
 //
 // Endpoint is `host:port`, with the host bracketed when it is an
 // IPv6 literal (`[fd00::1]:51820`), the same convention

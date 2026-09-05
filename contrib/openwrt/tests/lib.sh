@@ -42,10 +42,8 @@ assert_eq() {
 }
 
 # assert_no_stray_temp fails when the directory $1 holds any file
-# matching the mktemp template "$2.??????" (six characters, matching
-# the XXXXXX template both remove_cron and install_cron's helper use).
-# This is the check behind "leaves no stray temp file" for every
-# cron-management test.
+# matching the mktemp template "$2.??????" (the six-character XXXXXX
+# suffix mktemp appends).
 assert_no_stray_temp() {
 	dir="$1"
 	base="$2"

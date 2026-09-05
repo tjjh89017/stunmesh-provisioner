@@ -9,15 +9,11 @@ machine) builds a config bundle per node, seals it with `nacl/box`, and PUTs
 it to OpenDHT through the Jami dhtproxy REST API. `stunmesh-agent` (OpenWrt
 router, a long-running daemon) GETs the values, decrypts, validates,
 diffs against `last.json`, and applies the result through `uci` / `ubus`,
-managing an embedded copy of `stunmesh-go` in-process instead of shelling
-out to `/etc/init.d/stunmesh`.
+managing an embedded copy of `stunmesh-go` in-process.
 
-`.plan/PLAN.md` is the normative design: bundle format, DHT key derivation,
-validation phases, apply procedure, storage tree, milestones. `docs/format.md`
-is the normative field reference (it wins over PLAN.md 4.3 if they disagree).
-Read the relevant PLAN.md section before changing behaviour — most code
-comments cite section numbers (e.g. "PLAN.md 4.6") and those citations are
-expected to stay accurate.
+`docs/format.md` is the normative field reference: bundle format, DHT key
+derivation, and validation phases. Comments cite its section numbers (e.g.
+"docs/format.md 6") when a rule comes from there.
 
 ## Commands
 
@@ -71,7 +67,7 @@ on a pushed tag.
 Shared packages under `internal/` are used by both binaries:
 
 - `bundle` — the inner bundle type, JSON decode with the strict phase-1/phase-2
-  checks (PLAN.md 4.4), and `Canonical`, whose bytes must equal
+  checks (docs/format.md 7), and `Canonical`, whose bytes must equal
   `jq -S -c 'del(.timestamp)'`. Presence is content: an absent key and an
   explicit empty container (`"wg":{}`, `"routes":[]`) are different bundles.
   `timestamp` is never content.
@@ -97,28 +93,19 @@ Both `cmd/` mains are three lines: they call `Run(args, stdin, stdout, stderr,
 version)` so every command is testable with fake args and buffers. Keep new
 logic inside `Run`, not `main`.
 
-Agent apply order (PLAN.md 6, and `cmd/stunmesh-agent/fetch_apply.go`):
-write UCI → `uci commit network` → `ubus call network reload` → `ifup <iface>`
-for each new/changed interface → write `last.json`. The `ifup` step exists
-because the OpenWrt e2e harness proved a plain `network reload` does not push
-a peer-only change into the kernel. `applyDiff` no longer shells out to
-`/etc/init.d/stunmesh reload|stop`: the agent embeds stunmesh-go itself
-(`github.com/tjjh89017/stunmesh-go/app`), and the caller (the daemon loop or
-`--oneshot`, `cmd/stunmesh-agent/daemon.go`) rebuilds or stops the embedded
-app in-process after inspecting the `Diff` `applyDiff`'s caller returned.
-There is no more `ExitNoChange`/exit code 3: `--oneshot` always runs a full
-apply, so "nothing changed" and "applied" both exit 0; see `cli.go`'s exit
-code table.
+Agent apply order (`cmd/stunmesh-agent/fetch_apply.go`): write UCI → `uci
+commit network` → `ubus call network reload` → `ifup <iface>` for each
+new/changed interface → write `last.json`. `network reload` alone does not
+push a peer-only change into the kernel. The daemon rebuilds or stops the
+embedded stunmesh-go app after `applyDiff` returns.
 
-`stunmesh-agent` is a long-running daemon, not a cron-driven one-shot command:
-its default mode fetches/applies once at start, then ticks on its own
+`stunmesh-agent` is a long-running daemon. Its default mode fetches/applies
+once at start, then ticks on its own
 `refresh_interval` and `full_apply_interval` (both read from `config.yaml`,
 `cmd/stunmesh-agent/config.go`). `--oneshot` runs one full-apply cycle and
 exits; `--stunmesh-only` skips the fetch/apply loop entirely and runs only
 the embedded stunmesh-go app. `keygen` is the only subcommand. SIGINT/SIGTERM
-are a graceful shutdown; there is no SIGHUP reload -- restarting the process
-already rereads `config.yaml` and runs a cycle immediately, so that is the
-reload path.
+shut down gracefully; restart the process to reload.
 
 `contrib/openwrt/` holds the agent's two procd init scripts
 (`stunmesh-agent.init` for the daemon, `stunmesh-only.init` for
@@ -133,7 +120,8 @@ the running daemon (no signal, no flags) when the WAN interface comes up.
 ## Conventions
 
 - ASD-STE100 style in docs and comments: short sentences, active voice, one
-  instruction per sentence. Comments explain *why*, and cite PLAN.md sections.
+  instruction per sentence. Comments explain *why*, and cite docs/format.md
+  sections when a rule comes from there.
 - Every item gets unit tests; external commands go through `execx` with a fake.
 - Never log or embed a secret (tunnel private keys, preshared keys, the
   identity key, the decrypted bundle) in output or error text.
@@ -142,13 +130,3 @@ the running daemon (no signal, no flags) when the WAN interface comes up.
 - The controller holds every tunnel private key. `wg.yaml`, `last.json`, and
   the identity key are mode 0600; `/etc/config/network` is 0644 by OpenWrt
   convention and does hold tunnel keys.
-
-## Open work
-
-`.plan/README.md` maps stages to powerloop runs; `.plan/stage*.md` are the
-per-stage specs. `.issue/*.md` holds reviewed-but-unfixed findings (in
-Traditional Chinese), each with its verification status — reproduce a finding
-before acting on it. Stage 4 (`docs/provisioning.md`, `docs/controller.md`,
-`docs/openwrt.md`, `docs/security.md`) is not written yet, and the
-`.plan/stage5-openwrt-device.md` checklist is still unticked even though the
-OpenWrt VM e2e harness now covers most of its items automatically.

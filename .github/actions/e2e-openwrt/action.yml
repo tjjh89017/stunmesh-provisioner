@@ -16,17 +16,7 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    # There is no separate "enable KVM" step here. run.sh calls
-    # ensure_kvm_available (test/e2e/openwrt/lib.sh) itself, before it boots
-    # anything, so the udev rule and the read-write wait live in exactly one
-    # place: the harness that also has to run on a developer's own machine,
-    # with no GitHub Actions involved. Duplicating that logic into this
-    # action would give it two copies that drift apart the first time the
-    # timeout, the rule, or the poll changes in only one of them. If KVM
-    # never becomes read-write, the "Run the OpenWrt e2e harness" step below
-    # fails on ensure_kvm_available's own `die` message, which names exactly
-    # what happened and after how long -- that is enough to triage without a
-    # dedicated step or a $GITHUB_STEP_SUMMARY line.
+    # run.sh calls ensure_kvm_available itself, so this action needs no KVM step.
 
     # run.sh's own `need_cmd`/`need_cmd_root` checks name everything it
     # needs. qemu-system-x86, qemu-utils and zstd (unzstd) are not on the

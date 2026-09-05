@@ -1,8 +1,8 @@
 // Package execx runs external system commands.
 //
 // stunmesh-agent never calls os/exec directly. Every system change --
-// uci, ubus call network reload, /etc/init.d/stunmesh -- goes through
-// the Runner interface this package defines. A test uses Fake instead
+// uci, ubus call network reload, ifup, /etc/init.d/firewall -- goes
+// through the Runner interface this package defines. A test uses Fake instead
 // of Exec, so it never touches the real system and can assert the
 // exact sequence of commands the code under test ran (see "Fake" and
 // "Exact-sequence assertions" below).

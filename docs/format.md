@@ -9,11 +9,10 @@ inner bundle that the value carries after decryption, and the
 `provd.yaml` settings that select the backend that stores DHT values.
 
 Implementers of a publisher (`stunmesh-provd`) or an agent
-(`stunmesh-agent`) are the readers of this document. `PLAN.md` section
-4 is the design source. This document tracks the code in
-`internal/bundle`, `internal/dhtkey`, `internal/crypto`,
-`internal/dhtproxy`, and `internal/store`, and is more specific than
-`PLAN.md` where the code adds a rule.
+(`stunmesh-agent`) are the readers of this document. This document is
+the normative reference, and tracks the code in `internal/bundle`,
+`internal/dhtkey`, `internal/crypto`, `internal/dhtproxy`, and
+`internal/store`.
 
 ## 2. DHT key
 

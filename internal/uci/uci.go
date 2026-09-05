@@ -1,16 +1,15 @@
 // Package uci builds the UCI batch for one WireGuard interface, the
-// delete list for an interface's recorded sections (PLAN.md 6 "UCI
-// layout for one interface"), and the batch that manages the shared
-// "stunmesh" firewall zone every managed interface joins (PLAN.md 6
-// "Firewall zone"; see firewall.go).
+// delete list for an interface's recorded sections, and the batch
+// that manages the shared "stunmesh" firewall zone every managed
+// interface joins (see firewall.go).
 //
 // # Input and output
 //
-// BuildInterface takes one interface from a bundle.Bundle (already
-// decrypted and checked, PLAN.md 4.4) and returns a Batch: an ordered
-// list of Command values. BuildDelete takes the section names
-// last.Sections recorded for one interface and returns a Batch that
-// deletes exactly those names, never a pattern (PLAN.md 6 "Rules").
+// BuildInterface takes one interface from a bundle.Bundle, already
+// decrypted and checked, and returns a Batch: an ordered list of
+// Command values. BuildDelete takes the section names last.Sections
+// recorded for one interface and returns a Batch that deletes
+// exactly those names, never a pattern.
 // BuildFirewallZoneCreate, AddFirewallZoneNetwork,
 // RemoveFirewallZoneNetwork, and DeleteFirewallZone (firewall.go) are
 // the equivalent building blocks for the "stunmesh" firewall zone,
@@ -46,9 +45,9 @@
 //
 // A bundle.Interface stores Peers and every *.Options map as a Go
 // map, which does not iterate in a stable order. The apply step and
-// its integration test assert an exact command sequence (PLAN.md
-// stage 3 items 7, 9, 12), so BuildInterface fixes a deterministic
-// order at every point that reads from a map:
+// its integration test assert an exact command sequence, so
+// BuildInterface fixes a deterministic order at every point that
+// reads from a map:
 //
 //   - Peers: sorted by peer name, lexicographically (byte-wise
 //     strings.Compare order, matching sort.Strings).

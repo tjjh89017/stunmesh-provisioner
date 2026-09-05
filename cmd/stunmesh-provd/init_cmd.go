@@ -12,8 +12,8 @@ import (
 	"github.com/tjjh89017/stunmesh-provisioner/internal/store"
 )
 
-// rootReadme is the content of <root>/README.md (PLAN.md 7.1, 7.3).
-// It is operator-facing documentation, so it stays in ASD-STE100
+// rootReadme is the content of <root>/README.md. It is
+// operator-facing documentation, so it stays in ASD-STE100
 // style: short sentences, active voice, one instruction per sentence.
 const rootReadme = `# stunmesh-provd provisioning tree
 
@@ -65,10 +65,10 @@ copies ` + "`identity.pub`" + ` in from the node at node init.
 `
 
 // defaultProvdYAML is the content of <namespace>/provd.yaml that
-// `init` writes for a new namespace (PLAN.md 7.1, 7.3). It uses the
-// "plugins" map + "use_plugin" selector form (docs/format.md section
-// 3), the only form the store package accepts: a top-level "proxies"
-// key is rejected as malformed.
+// `init` writes for a new namespace. It uses the "plugins" map +
+// "use_plugin" selector form (docs/format.md section 3), the only
+// form the store package accepts: a top-level "proxies" key is
+// rejected as malformed.
 const defaultProvdYAML = `plugins:
   dht:
     type: dhtproxy
@@ -91,8 +91,8 @@ const rootDirMode = 0o755
 // directory that holds a secret file.
 const namespaceDirMode = 0o700
 
-// runInit implements `stunmesh-provd init [<namespace>]` (PLAN.md
-// 7.3). It is safe to run more than once against the same root: every
+// runInit implements `stunmesh-provd init [<namespace>]`. It is safe
+// to run more than once against the same root: every
 // step it takes treats "already there" as success, and it never
 // generates a new controller key pair over an existing
 // controller.key.
@@ -182,31 +182,9 @@ const (
 // controller.key and controller.pub, generating a new pair only when
 // controller.key is absent.
 //
-// Order of operations matters here: a re-run must never generate a
-// fresh key pair on top of an existing controller.key, and it must
-// never leave a controller.pub that does not match the
-// controller.key on disk.
-//
-//  1. If controller.key already exists, read and parse it. Do not
-//     generate anything. Derive the public key from it with
-//     crypto.Public.
-//  2. If controller.key does not exist, generate a new pair with
-//     crypto.Keygen and write controller.key (mode 0600) first. Only
-//     after that write succeeds does the private key in step 3 come
-//     from the newly generated pair.
-//  3. Write controller.pub (mode 0644) derived from whichever private
-//     key is now the one of record (either just-read or
-//     just-generated). store.WriteFile never overwrites, so an
-//     existing controller.pub is left untouched.
-//
-// This order makes a partial failure self-healing rather than
-// dangerous: if the process dies after step 2 but before step 3, the
-// next run takes the "already exists" branch of step 1, reads the
-// same private key back, and (re)writes a controller.pub derived from
-// that same key -- it can never produce a mismatched pair. The one
-// failure mode this cannot fix is controller.key being lost or
-// replaced by hand after being written; that is an operator error
-// outside init's control, not a partial-failure case.
+// An existing controller.key is never replaced, and controller.pub is
+// always derived from the key of record, so a re-run after a partial
+// failure cannot produce a mismatched pair.
 func ensureControllerKeyPair(nsDir string) (pub crypto.Key, status keyStatus, err error) {
 	keyPath := filepath.Join(nsDir, "controller.key")
 	pubPath := filepath.Join(nsDir, "controller.pub")
@@ -266,15 +244,11 @@ func readControllerKey(path string) (crypto.Key, error) {
 
 // randomNamespace makes a random namespace name from r. The name is
 // lowercase hex, so it can never contain "/" or start with ".": both
-// store.ResolveName and dhtkey.Key reject those. Standard and URL
-// base64 were considered and rejected: standard base64 can produce
-// "/" and "+", and even base64url's "-" and "_" buy nothing over hex
-// here for a name this short, while hex keeps the result trivially
-// safe and easy to read aloud or type by hand during node init.
+// store.ResolveName and dhtkey.Key reject those.
 //
 // 8 random bytes (16 hex characters) give 64 bits of entropy, ample
-// to make the DHT key hard to guess (PLAN.md 2.5) without producing
-// an unwieldy directory name.
+// to make the DHT key hard to guess (docs/format.md 2) without
+// producing an unwieldy directory name.
 func randomNamespace(r io.Reader) (string, error) {
 	buf := make([]byte, 8)
 	if _, err := io.ReadFull(r, buf); err != nil {

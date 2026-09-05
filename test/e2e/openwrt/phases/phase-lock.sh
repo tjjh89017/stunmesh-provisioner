@@ -1,37 +1,24 @@
 #!/usr/bin/env bash
-# phase-lock.sh -- assertions D: the lock (stage5 checklist item 12's
-# "lock prevents overlap"; PLAN.md section 5: "A second fetch while
-# one runs exits 0 at once with a log line").
+# phase-lock.sh -- assertions D: the lock prevents overlap.
 #
-# contrib/openwrt/tests/ already covers that both shipped scripts
-# never add their own locking on top of --lock (README.md section 4's
-# last paragraph). What is untested anywhere is the lock itself under
-# a real race: two real `stunmesh-agent fetch` processes, in the
-# guest, actually contending for the same flock(2) at the same time.
-#
-# Constructing a real overlap deterministically needs the winner to
-# hold the lock for long enough that a second process, launched
-# moments later, reliably arrives while the first still holds it. A
-# plain local round trip to the fake dhtproxy is too fast to trust for
-# that (a flaky, sometimes-overlaps race would prove nothing on the
-# run where it did not overlap). This phase starts a second, dedicated
-# fakeproxy instance (lib.sh's start_delayed_fake_proxy) that delays
-# every GET by lockGetDelay, publishes one bundle to it, and points
-# both racing fetches at it with an explicit --proxy flag -- the main
-# fakeproxy instance every other phase uses stays fast throughout.
+# Two real `stunmesh-agent --oneshot` processes, in the guest, contend
+# for the same flock(2) at the same time. This phase starts a second,
+# dedicated fakeproxy instance (lib.sh's start_delayed_fake_proxy) that
+# delays every GET by lockGetDelay, publishes one bundle to it, and
+# points both racing runs at it with an explicit --config flag naming
+# a config.yaml pointed at the delayed proxy.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE, E2E_NODE_ID,
 # FAKEPROXY_HOST_URL and FAKEPROXY_BIN, all set by run.sh or lib.sh
-# before any phase runs. Self-contained like every other phase (see
-# run.sh's own doc comment): it does not assume any other phase
-# already ran or already applied wg0.
+# before any phase runs.
+# Self-contained: publishes its own fixture.
 set -euo pipefail
 
 # lockGetDelay must comfortably exceed the stagger between launching
-# the two racing fetches (1s, in phase_lock_overlap) so the second
+# the two racing runs (1s, in phase_lock_overlap) so the second
 # one always starts while the first still holds the lock, and must
-# stay comfortably under fetch_cmd.go's fetchTimeout (30s) so the
+# stay comfortably under fetch.go's fetchTimeout (30s) so the
 # winner's own GET does not time out waiting on itself.
 LOCK_GET_DELAY="3s"
 LOCK_FAKEPROXY_PORT="${E2E_LOCK_FAKEPROXY_PORT:-8788}"
@@ -39,10 +26,9 @@ LOCK_FAKEPROXY_PORT="${E2E_LOCK_FAKEPROXY_PORT:-8788}"
 # render_lock_fixture -- renders fixtures/lock/wg.yaml.tmpl with fresh
 # WireGuard key material into a directory under $WORK. Sets
 # LOCK_FIXTURE_DIR and LOCK_PEER_PUBKEY (the peer public key later
-# assertions check the winner actually applied), the same pattern
-# phase-fetch-basic.sh's render_fetch_basic_fixture uses, including
-# the same "call plainly, never through command substitution" rule
-# (see that function's own comment for why).
+# assertions check the winner actually applied). Called plainly, never
+# through command substitution, so the variables it sets stay visible
+# to the caller.
 render_lock_fixture() {
 	local node_priv peer_pub rendered_dir
 	read -r node_priv _ < <(generate_wg_keypair)

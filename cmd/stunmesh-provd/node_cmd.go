@@ -22,10 +22,10 @@ const nodeAddUsage = "usage: stunmesh-provd node add <namespace> <node_id> [<ide
 const nodesDirMode = 0o755
 
 // nodeDirMode is the mode for one <namespace>/nodes/<node_id>/
-// directory. It holds wg.yaml, which contains the tunnel private key
-// (PLAN.md 7.1), so it gets the tighter mode a secret-holding
-// directory needs, the same reasoning that gives the namespace
-// directory 0700 in init_cmd.go.
+// directory. It holds wg.yaml, which contains the tunnel private key,
+// so it gets the tighter mode a secret-holding directory needs, the
+// same reasoning that gives the namespace directory 0700 in
+// init_cmd.go.
 const nodeDirMode = 0o700
 
 // wgYAMLTemplate is the content `node add` writes for a new node's
@@ -33,17 +33,8 @@ const nodeDirMode = 0o700
 // the file parses as the YAML document `null`, not as an empty map
 // (`{}`).
 //
-// That choice is deliberate. wg.yaml becomes the bundle's `wg`
-// section (PLAN.md 4.2, 4.3), and `wg` is required but may
-// legitimately be an explicit empty map (`{}` means "remove every
-// interface"). If the template parsed as `{}`, an operator who forgot
-// to edit wg.yaml would get a bundle that validates and publishes
-// successfully -- it would just silently tell the node to remove all
-// its interfaces. Parsing as `null` instead makes stage 2 item 6
-// (bundle assembly, which embeds this content under the `wg` key and
-// validates with internal/bundle) reject the unedited file loudly, as
-// a null value, right where the operator can see it -- instead of a
-// working `publish` cycle that quietly wipes a node's tunnels.
+// The template parses as `null`, not `{}`, so an unedited file is
+// rejected instead of wiping every interface.
 const wgYAMLTemplate = `# wg.yaml -- WireGuard settings for this node.
 #
 # This file becomes the "wg" section of the node's bundle. Uncomment
@@ -85,13 +76,13 @@ const wgYAMLTemplate = `# wg.yaml -- WireGuard settings for this node.
 
 // stunmeshYAMLTemplate is the content `node add` writes for a new
 // node's stunmesh.yaml. It is empty on purpose: an empty file is a
-// legitimate bundle "stunmesh" value (PLAN.md 4.3) meaning "no
-// stunmesh config", so an operator who has no stunmesh-go settings
-// for this node does not need to edit this file at all.
+// legitimate bundle "stunmesh" value meaning "no stunmesh config", so
+// an operator who has no stunmesh-go settings for this node does not
+// need to edit this file at all.
 const stunmeshYAMLTemplate = ``
 
 // runNode dispatches `stunmesh-provd node <subcommand>`. "add" is the
-// only subcommand v1 defines (PLAN.md 7.4).
+// only subcommand.
 func runNode(env *Env, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprint(env.Stderr, nodeAddUsage)
@@ -109,13 +100,10 @@ func runNode(env *Env, args []string) int {
 }
 
 // runNodeAdd implements `stunmesh-provd node add <namespace>
-// <node_id> [<identity_pub_key>]` (PLAN.md 7.4).
+// <node_id> [<identity_pub_key>]`.
 //
 // The identity key comes from the third positional argument when it
-// is given. Otherwise runNodeAdd reads it from env.Stdin. This mirrors
-// how init already treats "no namespace argument" as a request for a
-// generated value, rather than introducing a separate "-" sentinel
-// for the same idea.
+// is given. Otherwise runNodeAdd reads it from env.Stdin.
 //
 // It is safe to run more than once against the same node: every write
 // treats an existing file as success and leaves it untouched, so a
@@ -241,9 +229,10 @@ func writeNodeFile(env *Env, path string, data []byte, mode fs.FileMode, label s
 	return nil
 }
 
-// printNodeConstants prints the five values PLAN.md section 3 lists
-// for node init, in the four the controller can supply (the fifth,
-// the node's own identity private key, never leaves the node).
+// printNodeConstants prints the four values the controller can supply
+// for node init: namespace, node ID, controller public key, and each
+// DHT proxy URL. The node's own identity private key never leaves the
+// node.
 func printNodeConstants(env *Env, namespace, nodeID string, deployment *store.Deployment) {
 	fmt.Fprintf(env.Stdout, "NAMESPACE=%s\n", namespace)
 	fmt.Fprintf(env.Stdout, "NODE_ID=%s\n", nodeID)

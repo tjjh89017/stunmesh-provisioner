@@ -1,14 +1,14 @@
-// Package bundle defines the inner bundle format (PLAN.md section 4.2, 4.3).
+// Package bundle defines the inner bundle format (docs/format.md 5, 6).
 //
 // A bundle is the plain-text configuration that the controller sends to
 // one node through the DHT. It holds zero or more WireGuard interfaces
 // and one stunmesh-go config text.
 //
 // The `timestamp` field is not content. It only picks the newest of
-// several values (PLAN.md 4.6). Canonical drops it, so two bundles
-// that differ only in `timestamp` compare equal.
+// several values (docs/format.md 9). Canonical drops it, so two
+// bundles that differ only in `timestamp` compare equal.
 //
-// Validate checks the fields in PLAN.md 4.4: version, namespace,
+// Validate checks the fields in docs/format.md 7: version, namespace,
 // node_id, a positive timestamp, and structural presence of the
 // required sub-fields. It does not check WireGuard key syntax
 // (base64, length) or CIDR syntax. Those checks are out of scope for
@@ -23,13 +23,14 @@
 // as received: a bundle parsed from JSON that explicitly has
 // `"wg":{}`, `"routes":[]`, or `"options":{}` keeps that key in its
 // canonical form, matching the `jq -S -c 'del(.timestamp)'` reference
-// (PLAN.md 4.5). A key that was absent from the input stays absent.
+// (docs/format.md 8). A key that was absent from the input stays
+// absent.
 //
 // Presence is significant: an absent `wg` and an explicit empty `wg`
 // canonicalize to different bytes, so Equal is false between them.
-// `wg` is required (PLAN.md 4.3): Validate rejects an absent `wg`
-// with ErrWG. An explicit empty `wg` (`{}`) is valid; it means remove
-// every interface.
+// `wg` is required: Validate rejects an absent `wg` with ErrWG. An
+// explicit empty `wg` (`{}`) is valid; it means remove every
+// interface.
 //
 // Parse rejects a JSON `null` anywhere in the input, at any depth, as
 // an object value or an array element, with ErrNull. Omit a key
@@ -60,7 +61,7 @@ import (
 	"strings"
 )
 
-// Bundle is the inner bundle (PLAN.md 4.2).
+// Bundle is the inner bundle (docs/format.md 5).
 //
 // The json struct tags below are used only for decoding (Parse decodes
 // through the standard reflection path, so json.Decoder.
@@ -76,9 +77,8 @@ type Bundle struct {
 	// Stunmesh is *string, not string, so an absent `stunmesh` key
 	// stays distinguishable from an explicit `""`: nil means absent,
 	// a pointer to "" means the input had `"stunmesh":""`, which is
-	// the legitimate "no stunmesh config" value (PLAN.md 4.5,
-	// docs/format.md 6). `stunmesh` is required, so Validate rejects
-	// nil with ErrStunmesh.
+	// the legitimate "no stunmesh config" value (docs/format.md 6).
+	// `stunmesh` is required, so Validate rejects nil with ErrStunmesh.
 	Stunmesh *string `json:"stunmesh"`
 }
 
@@ -108,7 +108,7 @@ func (b Bundle) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// Interface is one WireGuard interface inside a bundle (PLAN.md 4.3).
+// Interface is one WireGuard interface inside a bundle (docs/format.md 6).
 // See the Bundle doc comment: the json tags apply to decoding only.
 type Interface struct {
 	PrivateKey string `json:"private_key"`
@@ -188,7 +188,7 @@ func (i Interface) MarshalJSON() ([]byte, error) {
 }
 
 // RouteAllowedIPsOrDefault returns RouteAllowedIPs, or the default value
-// true when it is absent (PLAN.md 4.3).
+// true when it is absent.
 func (i Interface) RouteAllowedIPsOrDefault() bool {
 	if i.RouteAllowedIPs == nil {
 		return true
@@ -196,7 +196,7 @@ func (i Interface) RouteAllowedIPsOrDefault() bool {
 	return *i.RouteAllowedIPs
 }
 
-// Route is one static route on an interface (PLAN.md 4.3).
+// Route is one static route on an interface (docs/format.md 6).
 //
 // Gateway is a *string, not a string with `omitempty`, so an
 // explicit `""` in the input stays distinguishable from an absent
@@ -213,7 +213,8 @@ type Route struct {
 	Metric *int64 `json:"metric,omitempty"`
 }
 
-// Peer is one WireGuard peer inside an interface (PLAN.md 4.3). See
+// Peer is one WireGuard peer inside an interface (docs/format.md 6).
+// See
 // the Bundle doc comment: the json tags apply to decoding only.
 //
 // PresharedKey and Endpoint are *string, not string with
@@ -298,7 +299,7 @@ var ErrSurrogate = errors.New("bundle: unpaired UTF-16 high-surrogate escape")
 
 // Parse decodes an inner bundle from JSON.
 //
-// Parse rejects any key that is not in the field table of PLAN.md 4.3,
+// Parse rejects any key that is not in the field table of docs/format.md 6,
 // at any level, rejects data that follows the JSON object, rejects a
 // `null` anywhere in the input (ErrNull), rejects a JSON number
 // literal that is not a plain base-10 integer representable exactly
@@ -498,7 +499,7 @@ var (
 	// float64 arithmetic: a value outside the bound would round
 	// differently under jq than it decodes in Go, breaking the
 	// `jq -S -c 'del(.timestamp)'` byte-equality contract of
-	// Canonical (PLAN.md 4.5).
+	// Canonical (docs/format.md 8).
 	ErrRange = errors.New("bundle: numeric field is out of range")
 	// ErrStunmesh means the bundle stunmesh field is absent. An
 	// explicit empty string is valid; only a missing key is not.
@@ -546,7 +547,7 @@ func validateRoutingTableValue(v, field, name string) error {
 	return nil
 }
 
-// Validate checks a decoded bundle against PLAN.md 4.4.
+// Validate checks a decoded bundle against docs/format.md 7.
 //
 // Validate does not check WireGuard key syntax or CIDR syntax; that is
 // out of scope for this package.
@@ -566,7 +567,7 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 	// 2^53-1: the largest integer jq's float64 arithmetic represents
 	// exactly. A larger timestamp would round under jq but not under
 	// Go's int64, breaking Canonical's byte-equality with the jq
-	// reference (PLAN.md 4.5).
+	// reference (docs/format.md 8).
 	//
 	// Typed as int64 explicitly: an untyped constant this large
 	// defaults to Go's `int` when passed to fmt.Errorf below, which
@@ -657,7 +658,7 @@ func (b *Bundle) Validate(namespace, nodeID string) error {
 }
 
 // Canonical returns the bundle as canonical JSON for change detection
-// (PLAN.md 4.5): the bundle without `timestamp`, with keys sorted
+// (docs/format.md 8): the bundle without `timestamp`, with keys sorted
 // recursively, no whitespace, and no trailing newline.
 //
 // When b was produced by Parse, Canonical works from the exact bytes
@@ -682,7 +683,7 @@ func (b *Bundle) Canonical() ([]byte, error) {
 
 	// json.Marshal HTML-escapes '&', '<', and '>' by default, which would
 	// diverge from the `jq -S -c 'del(.timestamp)'` reference bytes
-	// (PLAN.md 4.5). Use an Encoder with HTML escaping turned off instead.
+	// (docs/format.md 8). Use an Encoder with HTML escaping turned off instead.
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -692,7 +693,7 @@ func (b *Bundle) Canonical() ([]byte, error) {
 	// encoding/json and jq -S -c disagree on the escape spelling of a
 	// handful of bytes; normalizeEscapes rewrites Go's output to jq's
 	// choices so Canonical matches the `jq -S -c 'del(.timestamp)'`
-	// reference byte for byte (PLAN.md 4.5).
+	// reference byte for byte (docs/format.md 8).
 	out := normalizeEscapes(buf.Bytes())
 	// Encode always appends a trailing newline; the canonical form has none.
 	return bytes.TrimRight(out, "\n"), nil
@@ -785,7 +786,7 @@ func unescapeLineSeparators(data []byte) []byte {
 }
 
 // Equal reports whether two bundles have the same content, ignoring
-// `timestamp` (PLAN.md 4.5).
+// `timestamp` (docs/format.md 8).
 func (b *Bundle) Equal(other *Bundle) (bool, error) {
 	a, err := b.Canonical()
 	if err != nil {

@@ -13,9 +13,9 @@ import (
 // runKeygen implements `stunmesh-agent keygen`'s flag parsing: only
 // --config-dir (default defaultConfigDir), from which it derives
 // identity.key's path. keygen never reads config.yaml: it writes
-// exactly one file and needs nothing else from it (PLAN.md section 5
-// runs keygen before a node is provisioned at all, so config.yaml may
-// not even exist yet).
+// exactly one file and needs nothing else from it, so it runs before
+// a node is provisioned at all, even when config.yaml does not exist
+// yet.
 func runKeygen(env *Env, args []string) int {
 	fs := flag.NewFlagSet("stunmesh-agent keygen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -37,49 +37,21 @@ func runKeygen(env *Env, args []string) int {
 	return doKeygen(env, filepath.Join(*configDir, "identity.key"))
 }
 
-// identityKeyMode is the file mode for the identity private key
-// (PLAN.md section 3: "identity private key | One node | Decrypts the
-// bundle. Own file, mode 0600."). It is enforced both when a new key
-// is generated and when an existing file is reused (see doKeygen), so
-// a key file that predates this rule, or was copied in by hand at a
-// looser mode, is tightened the next time keygen runs against it.
+// identityKeyMode is the file mode for the identity private key. It
+// is enforced both when a new key is generated and when an existing
+// file is reused (see doKeygen), so a key file that predates this
+// rule, or was copied in by hand at a looser mode, is tightened the
+// next time keygen runs against it.
 const identityKeyMode = 0o600
 
-// doKeygen implements `stunmesh-agent keygen` (PLAN.md section 5): make
-// an identity key pair, write the private key to path (mode 0600),
-// and print the public key to env.Stdout.
+// doKeygen implements `stunmesh-agent keygen`: make an identity key
+// pair, write the private key to path (mode 0600), and print the
+// public key to env.Stdout.
 //
-// # An existing key file is reused, never overwritten
-//
-// keygen never generates a new key pair when path already holds one:
-// it reads the existing key back, prints its public key, and returns
-// success. The only change it ever makes to an existing, valid key
-// file is to tighten its mode to 0600 if it was looser.
-//
-// This mirrors stunmesh-provd init's ensureControllerKeyPair
-// (cmd/stunmesh-provd/init_cmd.go): both commands treat "the key file
-// is already there" as calm, idempotent success, not an error and not
-// license to replace it. keygen is deliberately not stricter
-// (refusing outright) and not looser (overwriting): PLAN.md 2.3 says
-// the identity key "does not change", and it is the one credential
-// that lets the controller recognize this specific node. A node that
-// silently got a new identity key on a second run, a re-imaged disk
-// that kept old files, or any other accident would be cut off from
-// the controller until the operator deletes the file and re-registers
-// the node's new public key by hand -- a failure that would surface
-// far from its cause, at the next fetch. Reusing the existing key
-// removes that failure mode: running keygen twice, or a thousand
-// times, always reports the same identity, exactly like running init
-// twice always reports the same controller key.
-//
-// If the file exists but does not parse as a valid key, doKeygen
-// fails instead of discarding it and writing a fresh key in its
-// place: the file might be corrupt, or it might be an unrelated file
-// left at the wrong path by mistake, and either way overwriting it
-// without the operator noticing risks a second silent identity
-// change. The error names the path, never the file's content.
-//
-// # A new key file is written atomically
+// An existing key file is reused and its mode tightened to 0600, so
+// running keygen twice never changes the node's identity. A file that
+// does not parse as a valid key is an error, never overwritten: the
+// error names the path, never the file's content.
 //
 // When path does not exist, doKeygen generates a new key pair with
 // crypto.Keygen and writes it with writeIdentityKeyAtomic, which
@@ -87,16 +59,9 @@ const identityKeyMode = 0o600
 // at mode 0600 -- never truncated, empty, or briefly at a wider mode --
 // even if the process is killed mid-write.
 //
-// # Output
-//
-// doKeygen prints exactly one line to env.Stdout: the public key, in
-// standard base64 with padding -- the same encoding crypto.Key.String
-// returns and the same one stunmesh-provd prints for controller.pub
-// and reads back for `node add`'s identity key argument. Nothing else
-// goes to env.Stdout, so the operator can pipe this output straight
-// into `stunmesh-provd node add <namespace> <node_id>`. The private
-// key never appears on env.Stdout, env.Stderr, or in any error
-// message.
+// Prints the public key alone, so it can be piped into
+// `stunmesh-provd node add`. The private key never appears on
+// env.Stdout, env.Stderr, or in any error message.
 func doKeygen(env *Env, path string) int {
 	priv, err := loadOrCreateIdentityKey(path)
 	if err != nil {
@@ -160,21 +125,15 @@ func loadOrCreateIdentityKey(path string) (crypto.Key, error) {
 //
 // os.Link only succeeds if path does not already exist, so this also
 // closes the race a bare existence check followed by a separate write
-// would leave open: two concurrent keygen runs against the same,
-// still-absent path can only ever have one winner. The loser's error
-// is reported like any other "already exists" case; it never touches
-// path.
+// would leave open.
 func writeIdentityKeyAtomic(path string, priv crypto.Key) (err error) {
 	dir := filepath.Dir(path)
 
 	// The identity key's default directory, /etc/stunmesh/agent/, does
-	// not exist on a fresh OpenWrt install: nothing else on the router
-	// creates it. keygen is normally the very first command run
-	// against a new node (PLAN.md section 5), so it makes the
-	// directory itself rather than requiring a separate provisioning
-	// step. 0755 matches /etc/stunmesh/config.yaml's directory; the
-	// key file itself stays 0600, set explicitly below and by
-	// os.CreateTemp regardless of this directory's mode.
+	// not exist on a fresh OpenWrt install, so keygen makes it itself.
+	// 0755 matches /etc/stunmesh/config.yaml's directory; the key file
+	// itself stays 0600, set explicitly below and by os.CreateTemp
+	// regardless of this directory's mode.
 	if merr := os.MkdirAll(dir, 0o755); merr != nil {
 		return fmt.Errorf("create directory %s: %w", dir, merr)
 	}

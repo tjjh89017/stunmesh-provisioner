@@ -16,13 +16,8 @@ runs:
       shell: bash
       run: make vet
 
-    # Deliberate exception to "CI calls make targets": golangci-lint runs
-    # through the official action instead of a `make lint` target, so its
-    # own install/cache/annotation behaviour stays owned by golangci-lint
-    # upstream rather than reimplemented in the Makefile. @v9 is the
-    # major-version tag golangci-lint-action itself moves forward, the
-    # same ref style stunmesh-go's own lint action uses; the linter
-    # version it installs is pinned exactly, so a run is reproducible.
+    # golangci-lint runs through the official action, not a `make lint` target.
+    # @v9 is the major-version tag; the linter version is pinned exactly.
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v9
       with:

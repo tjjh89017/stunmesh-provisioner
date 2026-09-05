@@ -1,8 +1,8 @@
 # stunmesh-provisioner OpenWrt scripts
 
-Four files here are the OpenWrt integration; a fifth is an optional
+Three files here are the agent integration; a fourth is an optional
 init script for the controller, `stunmesh-provd`. The `stunmesh-openwrt`
-package repository copies all five from a release tarball; this
+package repository copies all four from a release tarball; this
 repository does not build an OpenWrt package.
 
 - `stunmesh-agent.init` -- installs to `/etc/init.d/stunmesh-agent`.
@@ -18,15 +18,11 @@ repository does not build an OpenWrt package.
 
 ## 1. `stunmesh-agent` is a daemon
 
-`stunmesh-agent` is a long-running process, not a cron-driven one-shot
-command any more (see this repository's top-level `CLAUDE.md`). Its
-default mode -- no flags beyond `--config-dir`/`--config` -- fetches,
-decrypts, checks, and applies once at start, then keeps running: it
-ticks on its own `refresh_interval` (a normal cycle) and
-`full_apply_interval` (a periodic full re-apply), both read from
-`config.yaml`. There is no more cron integration, and no more exit
-code 3 for "nothing changed" -- see this repository's top-level
-`CLAUDE.md` for the exit code table.
+`stunmesh-agent` is a long-running process. Its default mode -- no
+flags beyond `--config-dir`/`--config` -- fetches, decrypts, checks,
+and applies once at start, then keeps running: it ticks on its own
+`refresh_interval` (a normal cycle) and `full_apply_interval` (a
+periodic full re-apply), both read from `config.yaml`.
 
 `stunmesh-agent.init` reflects this:
 
@@ -39,18 +35,14 @@ code 3 for "nothing changed" -- see this repository's top-level
   missing a required option, is treated as "not provisioned yet":
   `write_config` returns 1, and `start_service` returns 0 without
   ever opening a procd instance -- calm and quiet, not an error.
-- There is no `reload_signal`: `stunmesh-agent` has no SIGHUP handler
-  in any mode. `/etc/init.d/stunmesh-agent reload` (`reload_service`)
+- There is no `reload_signal`: `stunmesh-agent` has no SIGHUP handler.
+  `/etc/init.d/stunmesh-agent reload` (`reload_service`)
   regenerates `config.yaml` from the current UCI state and then
   restarts the process outright (the default rc.common `restart`,
   stop then start). The daemon's own startup already does "read
   config.yaml, run one cycle immediately", so a restart already is
   the reload an operator wants.
-- There is no `boot_delay` any more. A cycle that fails at startup
-  (WAN not up yet, dhtproxy unreachable) is logged and retried on the
-  next `refresh_interval` tick, not fatal -- the daemon's own retry
-  loop already covers what a fixed boot delay used to work around, so
-  reintroducing one here would only add a fixed wait with no benefit.
+- A failed startup cycle is retried on the next `refresh_interval` tick.
 - `/etc/init.d/stunmesh-agent enable|disable` -- the standard
   rc.common mechanism -- controls whether the service starts at boot
   at all.
@@ -81,10 +73,8 @@ config stunmesh-agent-plugin 'mydht'
 
 Every UCI option name is the same as its `config.yaml` key: this
 mapping is purely mechanical, `option` for a scalar and `list` for an
-array, with no renaming in either direction. There is only `list
-proxies` (plural) inside a `stunmesh-agent-plugin` section -- no `list
-proxy` (singular): that was the old, retired UCI option name from the
-cron-driven agent, and it no longer exists.
+array, with no renaming in either direction. `list proxies` is the
+only accepted list name.
 
 | UCI option (`main`) | `config.yaml` key | Required |
 |---|---|---|
@@ -192,39 +182,20 @@ Checked with `shellcheck -s dash`.
 `make test` (and so CI) runs `test-openwrt` before `go test ./...`;
 run it alone with `make test-openwrt` or `sh contrib/openwrt/tests/run.sh`.
 
-`test_init.sh` loads `stunmesh-agent.init`'s functions by sourcing a
-filtered copy with only the `. /lib/functions.sh` line (and
-`CONFIG_DIR`) replaced -- OpenWrt's real `config_load`/`config_get`
-and procd's `procd_*` functions do not exist off an OpenWrt device, so
-this file supplies minimal fakes for both. Every function body it
-tests is the real, unmodified script text. It covers `write_config`'s
-rendering of every scalar and of a `use_plugin`/`plugins` entry,
-mode 0600, skipping an incomplete or absent UCI config, and
-`start_service`'s dispatch (skips procd entirely when not
-provisioned; passes `--config-dir` and `respawn` to procd otherwise).
-Every rendered `config.yaml` is parsed back with a real YAML parser
-(Python's PyYAML, skipped if unavailable) and its values checked --
-including one case with a `"` and a `\` in a UCI value, to prove
-`yaml_quote`'s escaping survives a real round trip, not just a string
-comparison against the expected escaped text.
+`test_init.sh` sources a filtered copy of `stunmesh-agent.init` with
+fakes for `config_load`/`config_get` and `procd_*`. It covers
+`write_config`'s rendering (every scalar, a `use_plugin`/`plugins`
+entry, mode 0600, an incomplete or absent UCI config) and
+`start_service`'s procd dispatch, and parses each rendered
+`config.yaml` back with a real YAML parser to check `yaml_quote`'s
+escaping.
 
-`test_hotplug.sh` runs the real, unmodified `hotplug-iface` for its
-guard clauses (only `ACTION=ifup` on `INTERFACE=wan` proceeds; every
-other event exits 0 before the script ever touches
-`/etc/init.d/stunmesh-agent`). For the restart-dispatch path it uses a
-filtered copy pointing `$INIT` at a fake init script that records
-which subcommands (`running`, `restart`) it was called with, proving
-`hotplug-iface` restarts only when the service reports itself running,
-and does nothing when the init script is missing.
+`test_hotplug.sh` runs the real, unmodified `hotplug-iface` against
+its guard clauses and, with a fake init script standing in for
+`/etc/init.d/stunmesh-agent`, checks the restart-dispatch path.
 
-Both test files run twice: once under `sh` (dash on the Debian/Ubuntu
-CI runner) and, when a `busybox` binary is on `PATH`, once under
-`busybox ash`, the scripts' actual target interpreter. When busybox
-is not installed -- the common case on a stock CI runner -- only the
-`sh` pass runs, and `run.sh` says so. Neither pass proves BusyBox
-*utility* behaviour (its `awk`, `sed`, `mktemp`, etc. can differ from
-GNU coreutils in edge cases): both prove the scripts' own control
-flow and POSIX-ish shell syntax under an ash-family shell.
+Both test files run under `sh` (dash) and, when a `busybox` binary is
+on `PATH`, under `busybox ash` too; `run.sh` reports which ran.
 
 ## 7. `stunmesh-provd.init` (the controller service)
 
@@ -237,5 +208,4 @@ Reads `/etc/config/stunmesh-provd` (`dir`, default
 when the config section or the `dir` tree (provisioned with
 `stunmesh-provd init`/`node add`) is missing. Never writes to that
 tree. No test file yet -- its only real logic is the `dir`-exists
-guard in `start_service`. This script is unchanged by the
-agent-embeds-stunmesh-go rework in this repository's other files.
+guard in `start_service`.

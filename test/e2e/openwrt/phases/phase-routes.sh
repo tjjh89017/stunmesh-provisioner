@@ -1,21 +1,12 @@
 #!/usr/bin/env bash
-# phase-routes.sh -- assertions E: route_allowed_ips: false (stage5
-# checklist item 16: "route_allowed_ips: false plus routes gives
-# exactly the listed routes").
-#
-# internal/uci's golden tests already prove BuildInterface emits the
-# right *UCI* commands for routes[] and route_allowed_ips. What is
-# untested anywhere is what netifd actually does with those commands
-# once "ubus call network reload" runs against them: whether the
-# kernel's real routing table ends up with exactly the routes named in
-# the bundle, and nothing derived from a peer's allowed_ips.
+# phase-routes.sh -- assertions E: route_allowed_ips: false plus
+# routes gives exactly the listed routes, in the kernel's real routing
+# table, nothing derived from a peer's allowed_ips.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
-# all set by run.sh or lib.sh before any phase runs. Self-contained
-# like every other phase
-# (see run.sh's own doc comment): it publishes its own fixture and
-# does not assume any other phase's wg0 state.
+# all set by run.sh or lib.sh before any phase runs.
+# Self-contained: publishes its own fixture.
 set -euo pipefail
 
 # render_routes_fixture -- renders fixtures/routes/wg.yaml.tmpl with

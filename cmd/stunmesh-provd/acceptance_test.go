@@ -1,13 +1,12 @@
 package main
 
-// This file pins the three Acceptance criteria of
-// .plan/stage2-provd.md (stage 2 item 10, the last item of the
-// controller stage):
+// This file pins three acceptance criteria for the controller:
 //
 //	(a) `publish --once` against a fake proxy produces a value that
 //	    internal/crypto.Open decrypts to the expected bundle.
-//	(b) a second `publish --once` with unchanged files puts identical
-//	    bytes.
+//	(b) the republish loop re-puts identical bytes across rounds
+//	    within one running process, as long as canonical bundle
+//	    content and identity.pub are unchanged.
 //	(c) the tool never modifies wg.yaml, stunmesh.yaml, or provd.yaml.
 //
 // Every test here builds its tree with the real runInit and
@@ -15,28 +14,14 @@ package main
 // httptest fake proxy (see capturingProxy in publish_cmd_test.go), so
 // each test exercises the same path an operator would drive by hand.
 //
-// # Criterion (b): the stage file's literal wording does not hold
-//
-// crypto.Seal draws a fresh random nonce on every call (see
-// internal/crypto's doc comment). Two separate `publish --once`
-// *process* invocations therefore seal the same plaintext bundle to
-// different ciphertext, even when every file on disk is byte-for-byte
-// unchanged between them. PLAN.md 7.1 states "There is no state
-// file": making two separate `--once` processes agree on ciphertext
-// would require persisting the sealed bytes to disk between runs,
-// which the plan rules out.
-//
-// What IS specified and implemented is narrower: PLAN.md 7.2 step 6
-// and stage 2 item 6 (republish_loop.go) keep each node's sealed
-// bytes in memory and re-put them unchanged across rounds *within one
-// running process*, as long as the canonical bundle content and
-// identity.pub have not changed. TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged
-// below pins that behavior.
+// crypto.Seal draws a fresh random nonce on every call, so two
+// separate `publish --once` process invocations seal the same
+// plaintext bundle to different ciphertext, even when every file on
+// disk is byte-for-byte unchanged between them.
 // TestAcceptance_TwoSeparatePublishOnceInvocationsProduceDifferentBytes
-// pins the other half honestly: it proves two separate `--once`
-// processes over unchanged files put *different* bytes, so this
-// discrepancy against the stage file's literal wording lives in code
-// instead of only in a report.
+// pins that. TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged
+// pins the narrower guarantee that actually holds: unchanged content
+// re-puts identical bytes only within one running republish loop.
 //
 // The republish loop's own reseal-on-change behavior (a content edit,
 // or an identity.pub change, forces a fresh seal even inside one
@@ -59,7 +44,7 @@ import (
 )
 
 // decryptedBundle is the subset of the inner bundle JSON this file's
-// tests check field-by-field. It mirrors PLAN.md 4.2's shape closely
+// tests check field-by-field. It mirrors the bundle's shape closely
 // enough to compare wg.yaml/stunmesh.yaml content end to end, without
 // pulling in internal/bundle's full validation-oriented type.
 type decryptedBundle struct {
@@ -181,15 +166,9 @@ func TestAcceptance_PublishOnceDecryptsToExpectedBundle(t *testing.T) {
 // TestAcceptance_TwoSeparatePublishOnceInvocationsProduceDifferentBytes
 // documents, in code, the actual behavior of two separate `publish
 // --once` process invocations over unchanged files: they put
-// different bytes. See this file's package doc comment above for why
-// that is expected and why it does not satisfy the stage file's
-// literal wording of criterion (b).
-//
-// If this test ever starts failing because the two invocations now
-// agree, that is not a bug to silently work around: it means either
-// crypto.Seal stopped using a random nonce, or a state file was added
-// against PLAN.md 7.1. Either way, update this test deliberately, not
-// by loosening its assertion.
+// different bytes, because crypto.Seal draws a fresh random nonce on
+// every call and there is no state file to persist sealed bytes
+// between process invocations.
 func TestAcceptance_TwoSeparatePublishOnceInvocationsProduceDifferentBytes(t *testing.T) {
 	proxy := newCapturingProxy()
 	srv := proxy.server()
@@ -216,23 +195,20 @@ func TestAcceptance_TwoSeparatePublishOnceInvocationsProduceDifferentBytes(t *te
 	}
 	if fields[0] == fields[1] {
 		t.Fatal("two separate `publish --once` invocations over unchanged files put identical bytes; " +
-			"this contradicts crypto.Seal's random nonce and would mean the stage file's literal " +
-			"wording of Acceptance criterion (b) now holds across process invocations -- " +
-			"do not just relax this assertion, re-check the report that explains the discrepancy")
+			"this contradicts crypto.Seal's random nonce")
 	}
 }
 
 // TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged pins
-// the behavior that IS specified for criterion (b): PLAN.md 7.2 step
-// 6's republish loop re-puts the identical, cached sealed bytes on a
-// second round within the same running process, as long as the
-// canonical bundle content and identity.pub have not changed.
+// the behavior specified for criterion (b): the republish loop
+// re-puts the identical, cached sealed bytes on a second round within
+// the same running process, as long as the canonical bundle content
+// and identity.pub have not changed.
 //
-// This overlaps in spirit with
+// This overlaps with
 // TestRunRepublishLoop_UnchangedContentPutsIdenticalBytesAcrossRounds
-// in republish_loop_test.go, which already pins the same behavior
-// from item 6's own work; this test is kept short and named for the
-// Acceptance criterion so a reviewer can find the criterion's pin
+// in republish_loop_test.go; this test is kept short and named for
+// the Acceptance criterion so a reviewer can find the criterion's pin
 // without cross-referencing another file.
 func TestAcceptance_LoopPutsIdenticalBytesAcrossRoundsWhenUnchanged(t *testing.T) {
 	proxy := newCapturingProxy()
@@ -348,7 +324,7 @@ func TestAcceptance_PublishNeverModifiesOperatorFiles(t *testing.T) {
 	for _, p := range paths {
 		after := snap(p)
 		if !bytes.Equal(before[p].content, after.content) {
-			t.Errorf("%s content changed: stunmesh-provd must never edit operator files (PLAN.md 7.1)", p)
+			t.Errorf("%s content changed: stunmesh-provd must never edit operator files", p)
 		}
 		if !after.modTime.Equal(before[p].modTime) {
 			t.Errorf("%s modification time changed from %v to %v: stunmesh-provd must never write this file", p, before[p].modTime, after.modTime)

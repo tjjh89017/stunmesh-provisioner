@@ -16,7 +16,7 @@ import (
 // Every subcommand reads and writes through Dir. It never uses the
 // default path constant directly.
 //
-// Now and Rand are seams for later items. Init makes a key pair with
+// Now and Rand are seams for tests. Init makes a key pair with
 // Rand. Init, node add, and publish stamp timestamps with Now. Fixing
 // both in a test makes the output deterministic.
 //
@@ -26,8 +26,7 @@ import (
 // HTTPClient to point every proxy request at an httptest.Server
 // instead of a real Jami instance.
 //
-// Sleep is the seam the republish loop (stage 2 item 8) uses to wait
-// between rounds. It blocks until either d elapses or ctx is
+// Sleep is the seam the republish loop uses to wait between rounds. It blocks until either d elapses or ctx is
 // canceled, and returns ctx.Err() in the second case, nil in the
 // first. A test replaces Sleep with a fake that returns at once
 // instead of waiting, so a multi-round test of the loop takes no

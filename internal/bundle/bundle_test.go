@@ -117,7 +117,7 @@ func TestCanonicalDoesNotHTMLEscapeCodeBuiltBundle(t *testing.T) {
 }
 
 // TestCanonicalMatchesJQForLineSeparators checks Canonical against
-// the jq reference (PLAN.md 4.5) for U+2028 and U+2029: Go's
+// the jq reference (docs/format.md 8) for U+2028 and U+2029: Go's
 // encoding/json always escapes these two runes as the six-byte
 // sequences `\u2028` / `\u2029`, even with SetEscapeHTML(false),
 // while jq emits their raw UTF-8 bytes. It also checks that literal
@@ -409,7 +409,7 @@ func TestParseAcceptsValidBundleWithNoNull(t *testing.T) {
 }
 
 // TestWGMayBeEmpty proves that an explicit `"wg":{}` validates: `wg`
-// is required (PLAN.md 4.3), but empty means "remove every
+// is required (docs/format.md 6), but empty means "remove every
 // interface", not an error.
 func TestWGMayBeEmpty(t *testing.T) {
 	data := `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"wg":{},"stunmesh":""}`
@@ -420,7 +420,7 @@ func TestWGMayBeEmpty(t *testing.T) {
 }
 
 // TestValidateRejectsMissingWG proves that an absent `wg` key fails
-// Validate with ErrWG: `wg` is required (PLAN.md 4.3), and absence is
+// Validate with ErrWG: `wg` is required (docs/format.md 6), and absence is
 // distinct from an explicit empty map.
 func TestValidateRejectsMissingWG(t *testing.T) {
 	data := `{"version":1,"namespace":"test-ns","node_id":"alpha","timestamp":1,"stunmesh":""}`
@@ -748,7 +748,7 @@ func TestCanonicalPreservesExplicitEmptyRoutesAndOptions(t *testing.T) {
 }
 
 // TestCanonicalMatchesJQReference checks Canonical against the
-// `jq -S -c 'del(.timestamp)'` reference command (PLAN.md 4.5), on
+// `jq -S -c 'del(.timestamp)'` reference command (docs/format.md 8), on
 // inputs that carry explicitly empty containers plus the golden
 // vector. It skips when jq is not on PATH.
 func TestCanonicalMatchesJQReference(t *testing.T) {
@@ -885,7 +885,7 @@ func TestValidateRejectsNonPositiveTimestamp(t *testing.T) {
 
 // jqOrSkip returns the path to jq, or skips the test if jq is not on
 // PATH. Tests that check Canonical byte-for-byte against the
-// `jq -S -c 'del(.timestamp)'` reference (PLAN.md 4.5) use this.
+// `jq -S -c 'del(.timestamp)'` reference (docs/format.md 8) use this.
 func jqOrSkip(t *testing.T) string {
 	t.Helper()
 	jqPath, err := exec.LookPath("jq")
@@ -1189,7 +1189,7 @@ func TestPeerOptionsStates(t *testing.T) {
 // Explicit zero is outside the valid range (1-65535, see
 // TestValidateListenPortRange), so it is covered here as a rejection,
 // not as a jq-equality case: the byte-equality contract of Canonical
-// only applies to input Validate accepts (PLAN.md 4.5).
+// only applies to input Validate accepts (docs/format.md 8).
 func TestInterfaceListenPortStates(t *testing.T) {
 	jqPath := jqOrSkip(t)
 
@@ -1230,7 +1230,7 @@ func TestInterfaceListenPortStates(t *testing.T) {
 // outside the valid range (576-65535, see TestValidateMTURange), so
 // it is covered here as a rejection, not as a jq-equality case: the
 // byte-equality contract of Canonical only applies to input Validate
-// accepts (PLAN.md 4.5).
+// accepts (docs/format.md 8).
 func TestInterfaceMTUStates(t *testing.T) {
 	jqPath := jqOrSkip(t)
 

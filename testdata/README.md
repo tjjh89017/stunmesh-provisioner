@@ -40,7 +40,7 @@ bundle carries a tunnel key, not the node's identity key). It reuses
 
 ## `bundle.json`
 
-A pretty-printed inner bundle, as defined in `PLAN.md` section 4.2, for
+A pretty-printed inner bundle, as defined in `docs/format.md` section 5, for
 namespace `test-ns`, node `alpha`. It has one interface (`wg0`) and two peers
 (`bravo`, `charlie`), and covers most optional fields: `listen_port`, `mtu`,
 interface `options`, `route_allowed_ips`, `routes` (with and without a
@@ -73,12 +73,12 @@ printf '%s' 'test-ns/alpha' | sha1sum
 
 `nonce(24) || nacl/box ciphertext` of `canonical.json`, base64 standard with
 padding, one line, trailing newline. This is the wire format defined in
-`PLAN.md` section 4.1: nothing is in plain text and there is no outer JSON.
+`docs/format.md` section 4: nothing is in plain text and there is no outer JSON.
 
 Plaintext: `canonical.json` (not `bundle.json` -- the sealed value carries the
 canonical form). Recipient: `node.pub` (the node identity key). Sender:
-`controller.key` (the controller private key), matching `PLAN.md` section
-2.4. Nonce: fixed at the 24 bytes `0x00, 0x01, ... 0x17`, not random, so the
+`controller.key` (the controller private key), matching `docs/format.md`
+section 2. Nonce: fixed at the 24 bytes `0x00, 0x01, ... 0x17`, not random, so the
 vector is reproducible; production code in `internal/crypto` always uses a
 random nonce.
 

@@ -1,16 +1,11 @@
 // Package dial is the one shared construction point for a
 // backend.Store, selected by a resolved backend type (docs/format.md
 // section 3). cmd/stunmesh-provd and cmd/stunmesh-agent both go
-// through New instead of each keeping its own copy of the type
-// switch (a stage 6 code-review finding: the two copies had already
-// started to drift in how they wired an HTTP client override and a
-// per-request timeout).
+// through New instead of each keeping its own copy of the type switch.
 //
 // dial lives in its own package, not in internal/backend, because
-// internal/dhtproxy already imports internal/backend (to implement
-// backend.Store); a constructor inside internal/backend that also
-// imported dhtproxy would import it back, an import cycle. dial sits
-// one level up and imports both, which is not a cycle.
+// internal/dhtproxy already imports internal/backend; a constructor
+// here that also imported dhtproxy would create an import cycle.
 package dial
 
 import (
@@ -48,13 +43,9 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// New builds the backend.Store cfg selects. It never names cfg.Type's
-// actual value in the returned error, so a caller cannot leak an
-// operator-supplied (or, for stunmesh-agent, flag-supplied) type
-// string into a log line: this is the one construction point every
-// backend.Store either binary builds goes through, and a future
-// backend type landing here before its case is added must fail
-// loudly, not crash or silently pick the wrong implementation.
+// New builds the backend.Store cfg selects. The returned error never
+// names cfg.Type, so an operator-supplied type string cannot leak
+// into a log line.
 func New(cfg Config) (backend.Store, error) {
 	switch cfg.Type {
 	case backend.TypeDHTProxy:

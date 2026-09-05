@@ -1,29 +1,22 @@
 #!/usr/bin/env bash
 # phase-fetch-basic.sh -- assertions A: basic apply of one WireGuard
-# interface (stage goal item 7).
+# interface.
 #
-# This is the first phase that runs the real `stunmesh-agent fetch` in
-# the guest. Every earlier phase proved the payload landed intact
-# (phase-payload.sh) or that the harness skeleton works
-# (phase-smoke.sh); neither ever asked the agent to do anything. This
-# phase publishes a second, realistic bundle -- one WireGuard
-# interface, one peer, generated key material -- and checks what the
-# agent's uci and ubus calls actually produced on real netifd: the
-# thing the Go unit tests cannot check, since they run against a fake
-# exec (PLAN.md section 5).
+# This phase publishes a realistic bundle -- one WireGuard interface,
+# one peer, generated key material -- and runs the real
+# `stunmesh-agent --oneshot` in the guest, checking what its uci and
+# ubus calls actually produced on real netifd.
 #
 # "Changes nothing" is proven by comparing two things captured before
 # and after the second fetch: a sha256sum of /etc/config/network (the
 # file `uci commit` would have rewritten) and a sha256sum of last.json
 # (the file a real apply would have rewritten). Both must be
 # identical, or the second fetch touched something it should not
-# have. --oneshot always exits 0 (there is no more separate "no
-# change" exit code, cli.go's ExitOK doc comment), so the exit code
-# itself cannot distinguish "applied" from "changed nothing" -- these
-# file comparisons are what does.
+# have. `--oneshot` always exits 0, so the file comparisons are the
+# evidence.
 #
 # Deliberately out of scope here: removing an interface, tearing down
-# stunmesh, and more than one interface. Those are the next item.
+# stunmesh, and more than one interface.
 #
 # Sourced by run.sh, which then calls every function named phase_*.
 # Uses HERE, WORK, SSH_PORT, SSH_KEY, E2E_NAMESPACE and E2E_NODE_ID,
@@ -76,8 +69,8 @@ phase_fetch_basic() {
 
 	assert_ssh_exit_code "first fetch applies the bundle (exit 0)" "$fetch_cmd" 0
 
-	# "ubus call network reload" (PLAN.md 6 step 5) only asks netifd to
-	# reconfigure; netifd brings the new interface up asynchronously.
+	# "ubus call network reload" only asks netifd to reconfigure; netifd
+	# brings the new interface up asynchronously.
 	# Give it a moment before asking wg/ubus what actually happened.
 	guest_exec "$SSH_PORT" "$SSH_KEY" "sleep 3" || true
 

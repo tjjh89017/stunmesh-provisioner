@@ -223,10 +223,10 @@ func TestDecryptAndSelect_RejectsValueThatFailsAFieldRule(t *testing.T) {
 }
 
 // TestDecryptAndSelect_OlderValidBeatsNewerInvalid pins the key
-// decision of this item (see decryptAndSelect's doc comment): a newer
-// value that fails a PLAN.md 4.4 check must never be selected over an
-// older value that passes every check, even though PLAN.md 4.6 says
-// "keep the largest timestamp" in isolation.
+// decision documented on decryptAndSelect: a newer value that fails a
+// check must never be selected over an older value that passes every
+// check, even though "keep the largest timestamp" says otherwise in
+// isolation.
 func TestDecryptAndSelect_OlderValidBeatsNewerInvalid(t *testing.T) {
 	senderPriv, _, _ := crypto.Keygen()
 	recipientPriv, recipientPub, _ := crypto.Keygen()

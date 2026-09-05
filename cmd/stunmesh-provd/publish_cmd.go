@@ -23,7 +23,7 @@ const publishUsage = "usage: stunmesh-provd publish [--namespace <ns>] [--once]\
 // proxy concurrently, so putTimeout is the worst-case wall-clock cost
 // of one node, no matter how many proxies are configured or how many
 // of them hang. Without it, a single unresponsive proxy could stall
-// the whole publish round forever (stage 2 item 7 requirement).
+// the whole publish round forever.
 //
 // 30s is generous next to dhtproxy's own default per-request timeout
 // (10s, see internal/dhtproxy.defaultTimeout): it lets that default
@@ -35,18 +35,12 @@ const putTimeout = 30 * time.Second
 // nodeReport is the outcome of processing one node during a publish
 // round. publishRound returns one nodeReport per node it attempted,
 // whether the node published successfully or not: a per-node failure
-// never stops the round (stage 2 item 7 requirement -- one bad node
-// must not abort the others).
+// never stops the round.
 //
-// Bundle, IdentityPublicKey, and Sealed are exported for stage 2 item
-// 8 (the republish loop), which wraps publishRound. Item 8 keeps the
-// last round's Bundle and IdentityPublicKey for each node and, when
-// neither has changed (bundle.Bundle.Equal already ignores
-// timestamp), re-puts the cached Sealed bytes unchanged instead of
-// calling publishRound again -- publishRound always produces a fresh
-// Sealed value, because crypto.Seal picks a random nonce on every
-// call. Bundle, IdentityPublicKey, and Sealed are the zero value when
-// Err is non-nil; a caller must check Err first.
+// The republish loop compares Bundle and IdentityPublicKey, and
+// re-puts Sealed unchanged when neither moved. Bundle, IdentityPublicKey,
+// and Sealed are the zero value when Err is non-nil; a caller must
+// check Err first.
 type nodeReport struct {
 	// Namespace and NodeID identify the node this report is about.
 	// NodeID is empty when Err describes a namespace-level failure
@@ -56,20 +50,20 @@ type nodeReport struct {
 	NodeID    string
 
 	// Key is the DHT key this node publishes under, hex-encoded. It
-	// is safe to log: PLAN.md 2.5 only asks that the namespace and
-	// node ID that make up the key stay out of error messages, not
-	// the derived key itself, and cli.go's node_cmd.go and init_cmd.go
-	// already treat public identifiers as safe to print.
+	// is safe to log: docs/format.md 2 only asks that the namespace
+	// and node ID that make up the key stay out of error messages,
+	// not the derived key itself.
 	Key string
 
 	// Bundle is the validated inner bundle built for this node this
-	// round. See the type doc for how item 8 uses it.
+	// round. See the type doc for how republish_loop.go uses it.
 	Bundle *bundle.Bundle
 	// IdentityPublicKey is the node's identity.pub this round. See the
-	// type doc for how item 8 uses it.
+	// type doc for how republish_loop.go uses it.
 	IdentityPublicKey crypto.Key
 	// Sealed is nonce||nacl/box(ciphertext) of Bundle's JSON, put to
-	// every proxy this round. See the type doc for how item 8 uses it.
+	// every proxy this round. See the type doc for how republish_loop.go
+	// uses it.
 	Sealed []byte
 
 	// Err is non-nil when this node's build, seal, or put failed. It
@@ -80,8 +74,7 @@ type nodeReport struct {
 // printPublishReport writes one node's outcome. It is the single
 // implementation both --once (runPublish, above) and the republish
 // loop (runRepublishLoop, republish_loop.go) use, so an operator sees
-// identical messages whichever path produced the report and a future
-// change to the wording only has to happen once.
+// identical messages whichever path produced the report.
 func printPublishReport(env *Env, r nodeReport) {
 	label := r.Namespace
 	if r.NodeID != "" {
@@ -95,14 +88,13 @@ func printPublishReport(env *Env, r nodeReport) {
 }
 
 // runPublish implements `stunmesh-provd publish [--namespace <ns>]
-// [--once]` (PLAN.md 7.2).
+// [--once]`.
 //
 // --once runs exactly one publish round and exits; see the exit code
 // rule below. Without --once, runPublish runs the republish loop
-// (stage 2 item 8, PLAN.md 7.2 step 6, republish_loop.go) until
-// SIGINT or SIGTERM, and always exits ExitOK on that clean shutdown --
-// a running service being asked to stop is not a failure, whatever a
-// node's last round looked like.
+// (republish_loop.go) until SIGINT or SIGTERM, and always exits ExitOK
+// on that clean shutdown -- a running service being asked to stop is
+// not a failure, whatever a node's last round looked like.
 //
 // Exit code (--once only): ExitOK when every node in the round published
 // successfully (including the trivial case of zero nodes to
@@ -169,8 +161,8 @@ func runPublish(env *Env, args []string) int {
 	return ExitOK
 }
 
-// publishRound runs one publish round (PLAN.md 7.2): for every
-// namespace named by ns (or, when ns is empty, every namespace under
+// publishRound runs one publish round: for every namespace named by
+// ns (or, when ns is empty, every namespace under
 // env.Dir), for every node in it, build the bundle, seal it, compute
 // its DHT key, and put it to every proxy in that namespace's
 // provd.yaml. now is stamped once for the whole round and passed to
@@ -191,7 +183,7 @@ func runPublish(env *Env, args []string) int {
 // namespace or one node and recorded in that entry's nodeReport.Err
 // instead of stopping the round: a broken provd.yaml in one namespace,
 // or a bad wg.yaml in one node, must not keep the rest from
-// publishing (stage 2 item 7 requirement).
+// publishing.
 func publishRound(ctx context.Context, env *Env, ns string) ([]nodeReport, error) {
 	namespaces, err := resolveNamespaces(env, ns)
 	if err != nil {
@@ -259,23 +251,12 @@ func publishNamespace(ctx context.Context, env *Env, namespace string, now time.
 // newBackend builds the backend.Store a namespace's round uses,
 // selected by cfg.Type (docs/format.md section 3), through
 // internal/backend/dial's one shared construction point (also used by
-// cmd/stunmesh-agent). "dhtproxy" (backend.TypeDHTProxy) is the only
-// type store.ReadDeployment ever hands back today -- it rejects every
-// other value in provd.yaml before a store.BackendConfig is ever
-// built (internal/store's backendConfig) -- so dial.New's default arm
-// is unreachable in practice. It still returns an error rather than
-// panicking, naming the field and not deployment.Backend.Type's
-// value: dial.New is the one construction point every backend.Store
-// this binary can build goes through, and a future backend type
-// landing here before its case is added must fail loudly, not crash
-// or silently pick the wrong implementation.
+// cmd/stunmesh-agent).
 //
 // It prefers env.HTTPClient when a test set one (see Env's doc), so a
 // test tree points every proxy call at an httptest.Server instead of
-// the real network; a production run leaves it nil and gets
-// internal/dhtproxy's own client and default per-request timeout.
-// publishNamespace and publishNamespaceCached (republish_loop.go)
-// share this one construction point.
+// the real network. publishNamespace and publishNamespaceCached
+// (republish_loop.go) share this one construction point.
 func newBackend(env *Env, cfg store.BackendConfig) (backend.Store, error) {
 	return dial.New(dial.Config{
 		Type:       cfg.Type,
@@ -284,18 +265,17 @@ func newBackend(env *Env, cfg store.BackendConfig) (backend.Store, error) {
 	})
 }
 
-// publishNode builds, seals, and puts the bundle for one node (PLAN.md
-// 7.2 steps 1-5). It never returns an error directly: every failure is
-// recorded on the returned nodeReport's Err field instead, so one bad
-// node's problem never stops publishNamespace's loop over the rest.
+// publishNode builds, seals, and puts the bundle for one node. It
+// never returns an error directly: every failure is recorded on the
+// returned nodeReport's Err field instead, so one bad node's problem
+// never stops publishNamespace's loop over the rest.
 //
 // publishNode always seals fresh, even when nothing changed since the
 // last round: it is the building block --once uses, and --once has no
-// prior round to compare against. Stage 2 item 8's republish loop
-// calls prepareNode and sealAndPutNode directly instead, so it can
-// compare the prepared Bundle and IdentityPublicKey against a cached
-// prior round before deciding whether to seal again (see
-// republish_loop.go).
+// prior round to compare against. republish_loop.go calls prepareNode
+// and sealAndPutNode directly instead, so it can compare the prepared
+// Bundle and IdentityPublicKey against a cached prior round before
+// deciding whether to seal again.
 func publishNode(ctx context.Context, env *Env, proxy backend.Store, deployment *store.Deployment, nodeID string, now time.Time) nodeReport {
 	report, node, plain, err := prepareNode(env, deployment, nodeID, now)
 	if err != nil {
@@ -305,8 +285,7 @@ func publishNode(ctx context.Context, env *Env, proxy backend.Store, deployment 
 }
 
 // prepareNode reads one node's files, builds and validates its inner
-// bundle, and computes its DHT key (PLAN.md 7.2 steps 1-3). It stops
-// short of encryption: the returned plain is the exact bundle JSON
+// bundle, and computes its DHT key. It stops short of encryption: the returned plain is the exact bundle JSON
 // that still needs sealing, and report already carries Namespace,
 // NodeID, IdentityPublicKey, Bundle, and Key.
 //
@@ -352,14 +331,14 @@ func prepareNode(env *Env, deployment *store.Deployment, nodeID string, now time
 }
 
 // sealAndPutNode seals plain to node's identity key and puts it to
-// every proxy under report.Key (PLAN.md 7.2 steps 4-5). report must
-// come from a successful prepareNode call for the same node.
+// every proxy under report.Key. report must come from a successful
+// prepareNode call for the same node.
 func sealAndPutNode(ctx context.Context, proxy backend.Store, deployment *store.Deployment, node *store.Node, report nodeReport, plain []byte) nodeReport {
 	// The controller is the sender: it seals with its own private key
 	// (deployment.ControllerPrivateKey) and the node's identity public
-	// key (node.IdentityPublicKey) as the recipient (PLAN.md 2.4,
-	// docs/format.md 4). Getting this order backwards would produce a
-	// value only the controller itself could open.
+	// key (node.IdentityPublicKey) as the recipient (docs/format.md 4).
+	// Getting this order backwards would produce a value only the
+	// controller itself could open.
 	sealed, err := crypto.Seal(plain, node.IdentityPublicKey, deployment.ControllerPrivateKey)
 	if err != nil {
 		report.Err = fmt.Errorf("seal: %w", err)
@@ -374,9 +353,9 @@ func sealAndPutNode(ctx context.Context, proxy backend.Store, deployment *store.
 	return report
 }
 
-// putSealed puts sealed to every proxy under key (PLAN.md 7.2 step
-// 5). It is shared by sealAndPutNode (a freshly sealed value) and
-// stage 2 item 8's republish loop (a cached value re-put unchanged).
+// putSealed puts sealed to every proxy under key. It is shared by
+// sealAndPutNode (a freshly sealed value) and republish_loop.go (a
+// cached value re-put unchanged).
 //
 // putTimeout bounds this one put, derived from ctx rather than
 // context.Background(): ctx is the cancellable context that reaches

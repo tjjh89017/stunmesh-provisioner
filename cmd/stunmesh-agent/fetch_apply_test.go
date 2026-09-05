@@ -46,8 +46,8 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 	// index 13 is manageFirewall's "uci get firewall.stunmesh" probe
 	// (writeUCI's own 13 calls, index 0-12, come first -- see the "want"
 	// comments below). Scripting it to fail means "not there yet": a
-	// fresh zone, so manageFirewall creates it (PLAN.md 6 "Firewall
-	// zone"). Every other call defaults to success.
+	// fresh zone, so manageFirewall creates it. Every other call
+	// defaults to success.
 	results := make([]execx.Result, 14)
 	results[13] = execx.Result{Err: errors.New("no such section")}
 	fake := execx.NewFake(results...)
@@ -88,9 +88,9 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.public_key=bravo-key"}},
 		{Name: "uci", Args: []string{"add_list", "network.wg0_p_bravo.allowed_ips=10.0.0.2/32"}},
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.route_allowed_ips=1"}},
-		// manageFirewall (PLAN.md 6 "Firewall zone"): wg0 is New and not
-		// yet a recorded zone member, so it probes ("uci get", scripted
-		// to fail above), creates the zone, then clears and (re)adds
+		// manageFirewall: wg0 is New and not yet a recorded zone
+		// member, so it probes ("uci get", scripted to fail above),
+		// creates the zone, then clears and (re)adds
 		// wg0's network entry (see manageFirewall's doc comment "Retry
 		// safety" for why del_list runs before add_list).
 		{Name: "uci", Args: []string{"get", "firewall.stunmesh"}},
@@ -100,14 +100,11 @@ func TestApplyDiff_NewInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.output=ACCEPT"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.forward=ACCEPT"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh.mtu_fix=1"}},
-		// The three default forwardings (PLAN.md 6 "Firewall zone")
-		// are created right after the zone, only on this first
-		// creation: lan->stunmesh, stunmesh->lan, and stunmesh->wan.
-		// Neither the zone nor any forwarding ever sets "masq": no NAT
-		// happens between "lan" and "stunmesh" in either direction
-		// (see uci.BuildFirewallZoneCreate's doc comment); egress to
-		// "wan" still gets NAT, but from "wan"'s own masq setting, not
-		// from anything staged here.
+		// The three default forwardings are created right after the
+		// zone, only on this first creation: lan->stunmesh,
+		// stunmesh->lan, and stunmesh->wan. Neither the zone nor any
+		// forwarding ever sets "masq", so no NAT happens between
+		// "lan" and "stunmesh" in either direction.
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh=forwarding"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh.src=lan"}},
 		{Name: "uci", Args: []string{"set", "firewall.stunmesh_fwd_lan_stunmesh.dest=stunmesh"}},
@@ -183,10 +180,8 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 	}
 	// wg0 is already a recorded firewall zone member (a previous apply
 	// added it): InterfaceChanged does not affect zone membership, so
-	// manageFirewall (PLAN.md 6 "Firewall zone") has nothing to add or
-	// remove here and stages no firewall uci call at all -- see this
-	// test's "want" below, and TestApplyDiff_NewInterface for the case
-	// where it does.
+	// manageFirewall has nothing to add or remove here and stages no
+	// firewall uci call at all.
 	firewall := last.FirewallState{ZoneOwned: true, Members: []string{"wg0"}}
 	state := &last.State{Version: last.CurrentVersion, WG: map[string]last.Interface{}, Stunmesh: "unchanged text", Firewall: firewall}
 
@@ -222,13 +217,8 @@ func TestApplyDiff_ChangedInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"set", "network.wg0_p_bravo.route_allowed_ips=1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
-		// ifupChangedInterfaces (fetch_apply.go): wg0 is InterfaceChanged,
-		// so it gets an explicit "ifup" after the reload -- this is the
-		// exact case the e2e harness measured "network reload" alone as
-		// not enough for (a changed peer never reaching the kernel).
+		// A changed interface gets an explicit "ifup" after the reload.
 		{Name: "ifup", Args: []string{"wg0"}},
-		// stunmesh unchanged, but the interface changed: step 6 runs
-		// "reload" (not "stop": stunmesh text is not empty).
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Calls() =\n%+v\nwant\n%+v", got, want)
@@ -278,9 +268,7 @@ func TestApplyDiff_RemovedInterface(t *testing.T) {
 		{Name: "uci", Args: []string{"delete", "network.wg1"}},
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},
-		// No "ifup wg1": InterfaceRemoved never gets one
-		// (ifupChangedInterfaces's doc comment) -- the e2e harness
-		// measured that "network reload" alone already tears a removed
+		// No "ifup wg1": "network reload" already tears a removed
 		// interface's kernel netdev down.
 	}
 	if got := fake.Calls(); !reflect.DeepEqual(got, want) {
@@ -367,11 +355,8 @@ func TestApplyDiff_StunmeshOnlyChange(t *testing.T) {
 		t.Fatalf("code = %d, want %d", code, ExitOK)
 	}
 
-	// No interface changed, so no uci command runs at all; only the
-	// commit, reload, and stunmesh reload (PLAN.md 6 step 3/4 have
-	// nothing to do, but step 3/4's own commands still run: "uci commit
-	// network" and "ubus call network reload" always run once per
-	// apply).
+	// No interface changed, so no uci command runs at all. Only
+	// `uci commit network` and `ubus call network reload` run.
 	want := []execx.Call{
 		{Name: "uci", Args: []string{"commit", "network"}},
 		{Name: "ubus", Args: []string{"call", "network", "reload"}},

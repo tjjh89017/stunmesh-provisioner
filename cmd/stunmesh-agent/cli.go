@@ -12,10 +12,9 @@ import (
 //	0  ExitOK     the daemon shut down cleanly (SIGINT/SIGTERM), a
 //	               --oneshot run applied the newest bundle (or found
 //	               nothing usable to apply -- that is not a failure),
-//	               or keygen ran to completion. There is no longer a
-//	               separate "no change" code: --oneshot always runs a
-//	               full apply (see runOneshot), so a run that changes
-//	               nothing still exits 0, the same as one that does.
+//	               or keygen ran to completion. --oneshot always runs a
+//	               full apply, so a run that changes nothing exits 0,
+//	               the same as one that does.
 //	1  ExitError  a bad flag, a missing or malformed config.yaml, or a
 //	               real failure while doing the work (I/O error, DHT
 //	               get failed, decryption failed, an apply step

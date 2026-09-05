@@ -43,13 +43,13 @@ type fetchOutcome struct {
 	Applied bool
 	// Diff is set only when Applied is true. The caller inspects
 	// Diff.Stunmesh to decide whether the embedded stunmesh-go app
-	// needs to be rebuilt (see manageEmbeddedApp in daemon.go).
+	// needs to be rebuilt (see reconcileEmbedded in daemon.go).
 	Diff *Diff
 }
 
 // runFetchApply runs one full fetch -> decrypt -> validate -> diff ->
-// apply cycle (PLAN.md 4-6, docs/format.md sections 4-8), shared by
-// the daemon loop and --oneshot. It does not take cfg.LockPath itself:
+// apply cycle (docs/format.md sections 4-8), shared by the daemon
+// loop and --oneshot. It does not take cfg.LockPath itself:
 // the caller (runOneshot, the daemon) holds the lock for its own
 // duration (a single cycle for --oneshot, the whole process lifetime
 // for the daemon).
@@ -57,9 +57,8 @@ type fetchOutcome struct {
 // forceAll skips the "no change since last.json" shortcut and makes
 // computeDiff classify every interface present on both sides as
 // changed and every non-empty stunmesh text as changed (see
-// computeDiff's doc comment): --oneshot always sets it true (the CLI
-// no longer has a "no change" exit code, see cli.go), and the daemon
-// sets it true only on its periodic full-apply tick.
+// computeDiff's doc comment): --oneshot always sets it true, and the
+// daemon sets it true only on its periodic full-apply tick.
 //
 // A "nothing to do" outcome (no value published yet, no value this
 // node's key can use, or no change) is reported as fetchOutcome{} with
@@ -164,12 +163,11 @@ func backendDialConfig(env *Env, cfg *Config) dial.Config {
 	}
 }
 
-// checkAndApply is the seam that reads last.json (PLAN.md 4.5),
-// compares it with b's content (unless forceAll), computes the
-// per-interface diff (fetch_diff.go), and runs the apply procedure
-// (PLAN.md 6, fetch_apply.go). b has already passed every PLAN.md 4.4
-// check inside decryptAndSelect, so checkAndApply never needs to call
-// bundle.Validate again.
+// checkAndApply is the seam that reads last.json, compares it with
+// b's content (unless forceAll), computes the per-interface diff
+// (fetch_diff.go), and runs the apply procedure (fetch_apply.go). b
+// has already passed every check inside decryptAndSelect, so
+// checkAndApply never needs to call bundle.Validate again.
 func checkAndApply(env *Env, cfg *Config, b *bundle.Bundle, forceAll bool) (fetchOutcome, error) {
 	state, err := last.Read(cfg.LastPath)
 	if err != nil {

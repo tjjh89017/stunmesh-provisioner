@@ -1,9 +1,7 @@
 version: "2"
 run:
-  # embedca matches CA_TAG in the Makefile, so lint sees the same files a
-  # build does (PLAN.md-adjacent: the embedca fallback path). builtin_all
-  # matches AGENT_TAGS, so lint also sees stunmesh-go's builtin plugin code
-  # paths (opendht, cloudflare) that stunmesh-agent links in.
+  # embedca matches CA_TAG; builtin_all matches AGENT_TAGS, so lint sees
+  # the same files a build does.
   build-tags:
     - embedca
     - builtin_all

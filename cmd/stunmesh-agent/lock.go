@@ -8,10 +8,9 @@ import (
 )
 
 // errLockHeld reports that another instance already holds the lock.
-// This is the normal, expected outcome (PLAN.md section 5): cron and
-// the WAN hotplug script both start fetch, and they overlap
-// routinely. The caller logs one line and exits 0; it is not a
-// failure.
+// This is the normal, expected outcome: the daemon and a
+// hotplug-driven restart can overlap. The caller logs one line and
+// exits 0; it is not a failure.
 var errLockHeld = errors.New("locked by another instance")
 
 // lockFile is one held stunmesh-agent lock, returned by acquireLock.
@@ -22,22 +21,13 @@ type lockFile struct {
 // acquireLock takes the exclusive, non-blocking lock at path.
 //
 // It uses flock(2) (syscall.Flock), not a PID file. flock ties the
-// lock to the open file descriptor, not to a recorded PID. The
-// kernel drops the lock the instant the holding process exits, for
-// any reason, including a crash or a kill -9. A PID file needs extra
-// code to detect a stale entry and to decide when it is safe to
-// remove it; flock needs none, so a lock can never wedge the node.
-// This matters here: the node runs fetch from cron every few minutes
-// and also from a WAN hotplug event, so two instances starting at
-// once, and the risk of one dying mid-run, are routine, not rare.
+// lock to the file descriptor, so the kernel drops it when the
+// process dies.
 //
 // acquireLock creates path if it does not exist, mode 0644. The file
 // holds no secret; it only gives flock(2) something to lock.
-// acquireLock never removes path, on success or on Release: deleting
-// a lock file races a second process that is about to open and lock
-// the same name, which would let two instances hold "the lock" on
-// two different inodes at once. An empty file left behind costs
-// nothing.
+// acquireLock never removes the lock file: a delete races a second
+// opener.
 //
 // acquireLock returns an error wrapping errLockHeld when another
 // instance already holds the lock. Any other error (the directory
@@ -61,9 +51,9 @@ func acquireLock(path string) (*lockFile, error) {
 }
 
 // Release unlocks and closes the lock file. Release is safe to call
-// from a defer on every doFetch exit path, including failure. It is
-// also safe to call on a nil *lockFile, so a caller does not need to
-// guard the defer behind the acquireLock error check.
+// from a defer on every exit path, including failure. It is also safe
+// to call on a nil *lockFile, so a caller does not need to guard the
+// defer behind the acquireLock error check.
 func (l *lockFile) Release() error {
 	if l == nil || l.f == nil {
 		return nil

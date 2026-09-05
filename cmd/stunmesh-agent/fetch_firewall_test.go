@@ -11,8 +11,8 @@ import (
 )
 
 // TestManageFirewall_RemoveOneOfSeveralInterfacesKeepsZone pins the
-// user-facing deletion semantics (PLAN.md 6 "Firewall zone"): when
-// several interfaces share the "stunmesh" zone and only one is
+// user-facing deletion semantics: when several interfaces share the
+// "stunmesh" zone and only one is
 // removed, manageFirewall removes that one interface's "network" list
 // entry only. The zone section itself, and every other interface's
 // membership, is left untouched -- it is not deleted and not
@@ -65,8 +65,8 @@ func TestManageFirewall_RemoveOneOfSeveralInterfacesKeepsZone(t *testing.T) {
 // TestManageFirewall_RemoveLastInterfaceDeletesZone pins the other
 // half of the same rule: once the last agent-managed interface is
 // removed, manageFirewall deletes the whole "stunmesh" zone section
-// (by its exact, known name -- PLAN.md 6 "Rules"), rather than
-// leaving an empty, agent-owned zone behind.
+// by its exact, known name, rather than leaving an empty, agent-owned
+// zone behind.
 func TestManageFirewall_RemoveLastInterfaceDeletesZone(t *testing.T) {
 	fake := execx.NewFake()
 	have := last.FirewallState{ZoneOwned: true, Members: []string{"wg0"}}
@@ -138,9 +138,9 @@ func TestManageFirewall_RemovingUnrecordedMemberIsANoOp(t *testing.T) {
 }
 
 // TestManageFirewall_OperatorOwnedZoneIsNeverTouched pins the
-// clobber-avoidance rule (PLAN.md 6 "Rules"): a firewall.stunmesh that
-// already exists and is not recorded as agent-owned is left
-// completely alone -- manageFirewall only probes it, stages no
+// clobber-avoidance rule: a firewall.stunmesh that already exists and
+// is not recorded as agent-owned is left completely alone --
+// manageFirewall only probes it, stages no
 // change, and last.json keeps recording "not owned" so a later apply
 // probes again.
 func TestManageFirewall_OperatorOwnedZoneIsNeverTouched(t *testing.T) {
@@ -174,18 +174,15 @@ func TestManageFirewall_OperatorOwnedZoneIsNeverTouched(t *testing.T) {
 }
 
 // TestApplyDiff_FullApplyMultipleInterfacesOneZoneNoDuplicates covers
-// --full-apply (PLAN.md section 3, Config.FullApply) against three
-// already-applied interfaces: computeDiff(forceAll=true) classifies
-// every one of them as InterfaceChanged even though their content did
-// not change (TestComputeDiff_ForceAllPromotesUnchangedToChanged
+// a full apply (forceAll true, driven by full_apply_interval) against
+// three already-applied interfaces: computeDiff(forceAll=true)
+// classifies every one of them as InterfaceChanged even though their
+// content did not change (TestComputeDiff_ForceAllPromotesUnchangedToChanged
 // already pins that classification on its own). This test drives the
 // resulting Diff through applyDiff and pins what a full apply must do
 // to the firewall zone: exactly one zone (created only once, not once
 // per interface), all three interfaces present in its "network" list,
-// and no interface's entry duplicated -- a full apply reruns every
-// interface's UCI create batch, so a firewall step that is not
-// itself idempotent would double every add_list on the very first
-// --full-apply run after this feature ships.
+// and no interface's entry duplicated.
 func TestApplyDiff_FullApplyMultipleInterfacesOneZoneNoDuplicates(t *testing.T) {
 	cfg := applyTestConfig(t)
 	env := newEnv(strings.NewReader(""), new(strings.Builder), new(strings.Builder))

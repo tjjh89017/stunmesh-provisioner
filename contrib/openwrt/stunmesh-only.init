@@ -9,28 +9,12 @@
 #
 # # Disabled by default
 #
-# This service is NOT enabled by this script, and the package that
-# installs it must not call "enable" on it either: a deployment runs
-# either stunmesh-agent (the full daemon, which manages its own
-# embedded stunmesh-go app already) or stunmesh-only, never both --
-# running both would start two stunmesh-go instances against the same
-# config file. An operator who wants stunmesh-go without this
-# repository's fetch/apply pipeline (a node that gets its WireGuard
-# and UCI state some other way) enables this service by hand:
+# This service is NOT enabled by this script. A deployment runs either
+# stunmesh-agent or stunmesh-only, never both; an operator who wants
+# this service enables it by hand and leaves stunmesh-agent disabled.
 #
-#   /etc/init.d/stunmesh-only enable
-#   /etc/init.d/stunmesh-only start
-#
-# and leaves /etc/init.d/stunmesh-agent disabled. This script does not
-# check for that mistake itself (no mutual-exclusion guard): see
-# README.md's "Two services, pick one" for the operator-facing
-# explanation of why not.
-#
-# # No reload_signal
-#
-# Same reasoning as stunmesh-agent.init: stunmesh-agent has no SIGHUP
-# handler in any mode, so a reload here is the default rc.common
-# restart (stop then start), not a signal.
+# stunmesh-agent has no SIGHUP handler, so a reload here is the
+# default rc.common restart (stop then start), not a signal.
 
 START=95
 STOP=10

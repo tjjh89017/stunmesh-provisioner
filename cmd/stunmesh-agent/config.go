@@ -107,8 +107,7 @@ type StunmeshConfig struct {
 // sigs.k8s.io/yaml.YAMLToJSON and then encoding/json with
 // DisallowUnknownFields, the same strict pattern internal/bundle uses
 // for the wire format, so a typo in a key name is rejected rather
-// than silently ignored (unlike internal/store's permissive provd.yaml
-// decode, which predates this rule and is left as-is elsewhere).
+// than silently ignored.
 type rawConfig struct {
 	Namespace         *string                       `json:"namespace"`
 	NodeID            *string                       `json:"node_id"`
@@ -282,17 +281,9 @@ func buildConfig(rc *rawConfig, configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// durationString decodes a YAML/JSON duration value that may be
-// written either quoted ("5m", "0") or bare (0): sigs.k8s.io/yaml
-// turns an unquoted YAML "0" into the JSON number 0, not the string
-// "0", and a plain *string field would then fail to decode with a
-// confusing "cannot unmarshal number into Go string" error -- exactly
-// the spelling an operator writing "full_apply_interval: 0" to disable
-// the periodic full apply (this package's own doc, and the README) is
-// likely to reach for. UnmarshalJSON accepts both spellings and
-// normalizes to text that time.ParseDuration reads the same way
-// either way ("0" parses with no unit, matching time.ParseDuration's
-// own special case for a zero value).
+// durationString decodes a YAML/JSON duration value written either
+// quoted ("5m", "0") or bare (0): unquoted YAML "0" decodes as the
+// JSON number 0, not the string "0", so both spellings are accepted.
 type durationString string
 
 func (d *durationString) UnmarshalJSON(data []byte) error {

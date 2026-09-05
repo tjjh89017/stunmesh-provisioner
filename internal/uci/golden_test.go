@@ -194,9 +194,9 @@ func TestBuildInterface_MultiplePeersRoutes(t *testing.T) {
 
 // TestBuildInterface_EmptyVsNilOptions pins that a nil Options map
 // and a non-nil, explicitly empty one produce byte-identical UCI
-// output. bundle presence rules (PLAN.md 4.3) tell the two apart at
-// the JSON level, but UCI has no notion of "an explicitly empty
-// option set"; see optionCommands' doc comment.
+// output. Bundle presence rules tell the two apart at the JSON level,
+// but UCI has no notion of "an explicitly empty option set"; see
+// optionCommands' doc comment.
 func TestBuildInterface_EmptyVsNilOptions(t *testing.T) {
 	base := bundle.Interface{
 		PrivateKey: "wg0-private-key",
@@ -416,8 +416,8 @@ func createdSectionNames(batch uci.Batch, wantRouteCount int) (routes, peers []s
 }
 
 // TestBuildFirewallZoneCreate pins the exact batch that creates the
-// shared "stunmesh" firewall zone (PLAN.md 6 "Firewall zone"): the
-// zone section itself, plus its name/input/output/forward options.
+// shared "stunmesh" firewall zone: the zone section itself, plus its
+// name/input/output/forward options.
 func TestBuildFirewallZoneCreate(t *testing.T) {
 	got := uci.BuildFirewallZoneCreate().Text()
 	checkGolden(t, "firewall_zone_create.golden", got)
@@ -450,8 +450,8 @@ func TestDeleteFirewallZone(t *testing.T) {
 }
 
 // TestBuildFirewallForwardingsCreate pins the exact batch that creates
-// the three default forwarding sections (PLAN.md 6 "Firewall zone"):
-// lan->stunmesh, stunmesh->lan, and stunmesh->wan. It also pins, by
+// the three default forwarding sections: lan->stunmesh, stunmesh->lan,
+// and stunmesh->wan. It also pins, by
 // omission, that BuildFirewallZoneCreate's own golden file
 // (TestBuildFirewallZoneCreate) never sets `option masq`: the zone
 // batch and this batch are disjoint, and neither one names "masq"
@@ -498,8 +498,8 @@ func TestBuildDelete_InterfaceOnly(t *testing.T) {
 	checkGolden(t, "delete_interface_only.golden", got)
 }
 
-// TestBuildDelete_ExactNamesNotPattern pins PLAN.md 6's "Rules": the
-// delete batch names only the sections last.json recorded, never a
+// TestBuildDelete_ExactNamesNotPattern pins that the delete batch
+// names only the sections last.json recorded, never a
 // derived or guessed name. A section recorded under a name that does
 // not follow the "<iface>_p_<peer>" / "<iface>_r_<n>" convention (for
 // example, left over from a future format change) is still deleted

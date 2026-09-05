@@ -1,6 +1,5 @@
-# This image ships stunmesh-provd only. The agent binary is not a daemon
-# (contrib/openwrt runs it from cron/hotplug) and never runs in a
-# container, so it has no image of its own.
+# This image ships stunmesh-provd only. The agent runs on the router,
+# not in a container, so it has no image of its own.
 
 FROM --platform=$BUILDPLATFORM golang:latest AS builder
 
@@ -49,7 +48,7 @@ VOLUME ["/etc/stunmesh/provd"]
 
 # ENTRYPOINT fixes the binary; CMD supplies only the default command, so
 # "docker run <image>" starts the republish loop (publish with no --once,
-# PLAN.md 7: runs until SIGINT/SIGTERM) while "docker run <image> init ns"
+# runs until SIGINT/SIGTERM) while "docker run <image> init ns"
 # or "docker run <image> node add ns id" still reach the same binary with
 # their own arguments in place of "publish".
 ENTRYPOINT ["/app/stunmesh-provd"]
