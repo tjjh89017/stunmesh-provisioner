@@ -61,9 +61,10 @@ docker build -t stunmesh-provd --build-arg VERSION=$(git describe --tags --dirty
 ```
 
 builds the controller-only image (`Dockerfile`, root). `.github/workflows/main.yaml`
-builds it (no push) on every pull request and pushes `ghcr.io/tjjh89017/stunmesh-provd:main`
-on a merge to main; `.github/workflows/release.yml` builds release binaries/tarballs
-and pushes `vX.Y.Z`/`latest` container tags on a pushed tag.
+builds and pushes `ghcr.io/tjjh89017/stunmesh-provd:main` only on a push to
+main; a pull request does not build it. `.github/workflows/release.yml`
+builds release binaries/tarballs and pushes `vX.Y.Z`/`latest` container tags
+on a pushed tag.
 
 ## Architecture
 
