@@ -62,6 +62,17 @@ main; a pull request does not build it. `.github/workflows/release.yml`
 builds release binaries/tarballs and pushes `vX.Y.Z`/`latest` container tags
 on a pushed tag.
 
+## Updating stunmesh-go and releasing downstream
+
+1. Bump stunmesh-go: merge the Dependabot PR, or run
+   `go get github.com/tjjh89017/stunmesh-go@vX.Y.Z && go mod tidy`. Verify
+   `make build` with builtin tags still compiles.
+2. Release: push a `v*` tag. `release.yml` publishes binaries, tarballs, and
+   the container tags.
+3. Downstream: `stunmesh-openwrt` must bump
+   `net/stunmesh-provisioner/Makefile` (`PKG_VERSION`, `PKG_RELEASE:=1`,
+   `PKG_HASH`). `stunmesh-openwrt-firmware` needs no edit.
+
 ## Architecture
 
 Shared packages under `internal/` are used by both binaries:
