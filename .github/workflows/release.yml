@@ -4,10 +4,9 @@
 # builds and pushes the container image. Steps live in .github/actions/*;
 # the Makefile is the source of truth for every binary it builds.
 #
-# No lint/test job here: the tagged commit already went through CI.yaml
-# on its way to main (branch protection requires the check/build/e2e
-# chain to be green before a merge), so re-running it on the tag would
-# only repeat work already done.
+# No lint/test job here: the tagged commit is expected to have already
+# passed main.yaml's check/build/e2e chain on main, so re-running it on
+# the tag would only repeat work already done.
 
 name: Release
 
