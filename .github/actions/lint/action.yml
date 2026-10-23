@@ -17,8 +17,6 @@ runs:
       run: make vet
 
     # golangci-lint runs through the official action, not a `make lint` target.
-    # @v9 is the major-version tag; the linter version is pinned exactly.
+    # @v9 is the major-version tag; the action installs the latest golangci-lint.
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v9
-      with:
-        version: v2.13.2
