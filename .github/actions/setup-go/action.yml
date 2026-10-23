@@ -2,15 +2,15 @@ name: 'Set Up Go'
 description: 'Install the Go toolchain and enable its build cache.'
 
 inputs:
-  go-version-file:
-    description: 'Path to the go.mod file that pins the Go version'
+  go-version:
+    description: 'Go version to install; stable tracks the latest patched release'
     required: false
-    default: 'go.mod'
+    default: 'stable'
 
 runs:
   using: 'composite'
   steps:
     - uses: actions/setup-go@v7
       with:
-        go-version-file: ${{ inputs.go-version-file }}
+        go-version: ${{ inputs.go-version }}
         cache: true
