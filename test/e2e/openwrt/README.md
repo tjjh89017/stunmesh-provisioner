@@ -221,7 +221,7 @@ the agent run has nothing to publish or establish and returns quickly,
 with no dependency on real STUN or network reachability from the
 guest. It also carries one `plugins` entry, a builtin `opendht`
 plugin, so `--oneshot` constructs it at startup: an agent build
-missing the `builtin_all` (or `builtin_opendht`) tag fails that
+missing the `stunmesh-go/builtin/all` import fails that
 construction and exits non-zero, which the existing exit-0 assertion
 in `phase-diff-removal.sh` catches. The plugin's endpoint is never
 contacted -- construction only resolves and validates configuration.

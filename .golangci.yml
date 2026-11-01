@@ -1,10 +1,8 @@
 version: "2"
 run:
-  # embedca matches CA_TAG; builtin_all matches AGENT_TAGS, so lint sees
-  # the same files a build does.
+  # embedca matches CA_TAG, so lint sees the same files a build does.
   build-tags:
     - embedca
-    - builtin_all
 linters:
   settings:
     errcheck:

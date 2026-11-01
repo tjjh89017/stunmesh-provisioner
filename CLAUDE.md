@@ -66,7 +66,9 @@ on a pushed tag.
 
 1. Bump stunmesh-go: merge the Dependabot PR, or run
    `go get github.com/tjjh89017/stunmesh-go@vX.Y.Z && go mod tidy`. Verify
-   `make build` with builtin tags still compiles.
+   `make build` still compiles. Built-in plugins come from the blank import
+   of `github.com/tjjh89017/stunmesh-go/builtin/all` in
+   `cmd/stunmesh-agent/main.go`, not from build tags.
 2. Release: push a `v*` tag. `release.yml` publishes binaries, tarballs, and
    the container tags.
 3. Downstream: `stunmesh-openwrt` must bump
