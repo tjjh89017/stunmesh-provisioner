@@ -2,7 +2,12 @@
 // applies config bundles published by stunmesh-provd.
 package main
 
-import "os"
+import (
+	"os"
+
+	// The embedded stunmesh-go daemon has no built-in plugins without this import.
+	_ "github.com/tjjh89017/stunmesh-go/builtin/all"
+)
 
 // version is the build version. Set it via -ldflags at build time.
 var version = "dev"
